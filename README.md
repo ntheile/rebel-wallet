@@ -21,5 +21,14 @@ Nostr, persistence, and routing state.
 brew install xcodegen
 cargo check -p rebel-wallet-core
 just ios-build
-cd ios && xcodegen generate
+just ios-xcodeproj
 ```
+
+iOS signing defaults live in `.env`. Put machine-specific overrides in `.env.local`, which is ignored by git:
+
+```env
+IOS_BUNDLE_ID=com.nicktee.rebelwallet
+IOS_DEVELOPMENT_TEAM=YOURTEAMID
+```
+
+Use `just ios-xcodeproj` instead of running `xcodegen generate` directly so those env files are loaded before the Xcode project is regenerated.

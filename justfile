@@ -5,7 +5,7 @@ LIB_NAME := "rebel_wallet_core"
 XCF_NAME := "RebelWalletCore"
 ICED_PACKAGE := "rebel-wallet-core_desktop_iced"
 DYLIB_EXT := if os() == "macos" { "dylib" } else { "so" }
-IOS_BUNDLE_ID := "com.rebelwallet.app"
+DEFAULT_IOS_BUNDLE_ID := "com.rebelwallet.app"
 
 default:
   @just --list
@@ -31,9 +31,14 @@ run-ios:
 ios-devices:
   xcrun devicectl list devices
 
-run-ios-phone bundle_id=IOS_BUNDLE_ID: ios-rust ios-xcframework ios-xcodeproj
+run-ios-phone bundle_id="": ios-rust ios-xcframework ios-xcodeproj
   #!/usr/bin/env bash
   set -euo pipefail
+  set -a
+  [ ! -f .env ] || source .env
+  [ ! -f .env.local ] || source .env.local
+  set +a
+  BUNDLE_ID="${bundle_id:-${IOS_BUNDLE_ID:-{{DEFAULT_IOS_BUNDLE_ID}}}}"
   DEVICE_ID="$(xcrun devicectl list devices \
     | grep -E 'connected|available \(paired\)' \
     | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-Fa-f-]{36}$/) { print $i; exit } }')"
@@ -49,11 +54,12 @@ run-ios-phone bundle_id=IOS_BUNDLE_ID: ios-rust ios-xcframework ios-xcodeproj
     -project ios/App.xcodeproj -scheme App \
     -destination "generic/platform=iOS" \
     -configuration Debug \
+    -allowProvisioningUpdates \
     -derivedDataPath "$DERIVED_DATA" \
-    PRODUCT_BUNDLE_IDENTIFIER="{{bundle_id}}"
+    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
   APP_PATH="$DERIVED_DATA/Build/Products/Debug-iphoneos/App.app"
   xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
-  xcrun devicectl device process launch --device "$DEVICE_ID" "{{bundle_id}}"
+  xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID"
 
 ios-gen-swift: rust-build-host
   cargo run -p uniffi-bindgen -- generate \
@@ -95,6 +101,12 @@ ios-xcframework:
   rm -rf staging
 
 ios-xcodeproj:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  set -a
+  [ ! -f .env ] || source .env
+  [ ! -f .env.local ] || source .env.local
+  set +a
   cd ios && xcodegen generate
 
 # Build the iOS app for simulator.
