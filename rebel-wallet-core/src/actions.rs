@@ -100,6 +100,10 @@ pub enum AppAction {
         image_base64: Option<String>,
     },
     CancelCapabilityRequest,
+    SetPushNotificationRegistration {
+        apns_device_token: Option<String>,
+        registration_status: String,
+    },
     GenerateNostrKey,
     ImportNostrSecret {
         nsec_or_hex: String,

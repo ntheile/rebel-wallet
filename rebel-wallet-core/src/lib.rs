@@ -25,9 +25,9 @@ use profile_cache::normalize_profile_picture_to_jpeg;
 pub use state::{
     ActivityIconKind, ActivityItem, AppState, BusyState, CapabilityRequest, CapabilityRequestKind,
     Contact, CurrencyOption, LightningAddressRegistrationPhase, LightningAddressState, MainTab,
-    NetworkOption, NostrMessage, NostrState, PriceCurrency, ReceiveMethod, ReceivePhase,
-    ReceiveState, Router, Screen, SendDestinationKind, SendPhase, SendState, SetupState,
-    WalletNetwork, WalletState,
+    NetworkOption, NostrMessage, NostrState, PriceCurrency, PushNotificationState, ReceiveMethod,
+    ReceivePhase, ReceiveState, Router, Screen, SendDestinationKind, SendPhase, SendState,
+    SetupState, WalletNetwork, WalletState,
 };
 pub use updates::{AppUpdate, HapticFeedback};
 pub(crate) use updates::{AsyncMsg, CoreMsg};

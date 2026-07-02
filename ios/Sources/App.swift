@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct RebelWalletApp: App {
+    @UIApplicationDelegateAdaptor(RebelWalletAppDelegate.self) private var appDelegate
     @State private var manager = AppManager()
     @State private var easterEgg = WalletEasterEgg()
     @Environment(\.scenePhase) private var scenePhase

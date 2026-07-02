@@ -458,6 +458,13 @@ impl AppCore {
                 }
             }
             AppAction::CancelCapabilityRequest => self.state.capability_request = None,
+            AppAction::SetPushNotificationRegistration {
+                apns_device_token,
+                registration_status,
+            } => {
+                self.state.push_notifications.apns_device_token = apns_device_token;
+                self.state.push_notifications.registration_status = registration_status;
+            }
             AppAction::GenerateNostrKey => self.generate_nostr_key(),
             AppAction::ImportNostrSecret { nsec_or_hex } => self.import_nostr_secret(nsec_or_hex),
             AppAction::ExportNostrSecret => self.export_nostr_secret(),

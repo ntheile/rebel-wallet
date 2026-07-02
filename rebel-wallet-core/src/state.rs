@@ -26,6 +26,13 @@ pub struct AppState {
     pub toast: Option<String>,
     pub busy: BusyState,
     pub capability_request: Option<CapabilityRequest>,
+    pub push_notifications: PushNotificationState,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct PushNotificationState {
+    pub apns_device_token: Option<String>,
+    pub registration_status: String,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -541,6 +548,10 @@ impl AppState {
             toast: None,
             busy: BusyState::default(),
             capability_request: None,
+            push_notifications: PushNotificationState {
+                apns_device_token: None,
+                registration_status: "Not requested".to_string(),
+            },
         }
     }
 

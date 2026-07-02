@@ -11,7 +11,9 @@
 		09A525B52C7C1F5F8D67B32A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936FB1B08FF781A9F9997609 /* SettingsView.swift */; };
 		10D82D8BEDF6F8B87C9D3393 /* RebelWalletCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 91954F33C35E52090B74C11A /* RebelWalletCore.xcframework */; };
 		11A29977382725FC272B253A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08790D56E6532CF87DC5EAF5 /* ContentView.swift */; };
+		19450B4EB3A474AF0761CD2E /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0C4E8C892F802690C2E03D /* NotificationService.swift */; };
 		2491CE80085619618553486A /* QRScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8285F313C1C4D80E03963B /* QRScanner.swift */; };
+		25E210A188760A59A81C19FE /* NotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = ED3F1AA2DED717C2ED0B471C /* NotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		288007FEAC5B508686DAF685 /* ReceiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D898E612217B1C89FA7CA6B2 /* ReceiveView.swift */; };
 		2E3FDAA9662F0D04DEC86F30 /* WalletEasterEgg.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07DF4B0F56CEA10895EF3067 /* WalletEasterEgg.swift */; };
 		2F71F386BE8E65B77B9C4A44 /* MainWalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B27DDADBA14C23A4E2298B /* MainWalletView.swift */; };
@@ -34,8 +36,33 @@
 		D4D47575C3B6FFA1C555EF10 /* CommonComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 747F6D6E419A7475169ACED6 /* CommonComponents.swift */; };
 		E621BAA395FB93293F83B59E /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AF276A85A4339254182EB73 /* SetupView.swift */; };
 		E9395E0EC132A904BCDC7939 /* RebelTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00AD3E0EC1FCD4F0CF40360 /* RebelTheme.swift */; };
+		EA14FDB5261179B6A75334DD /* PushNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = C896475D71C07B62CA72814E /* PushNotifications.swift */; };
 		EC041799A677360DB6FB8799 /* ContactsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 771215578CB9B3F8F64C9139 /* ContactsView.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		DDC400187F0AF9A2A745F08E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6B590BF25178DC7D824D09CE /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ECB916C2EEA55E04724E6E38;
+			remoteInfo = NotificationService;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		7C6B2DB89D01A1E9B8F2A565 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				25E210A188760A59A81C19FE /* NotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		07DF4B0F56CEA10895EF3067 /* WalletEasterEgg.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletEasterEgg.swift; sourceTree = "<group>"; };
@@ -47,12 +74,15 @@
 		1D45F236CEBCEB5E130D6D65 /* ButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ButtonStyles.swift; sourceTree = "<group>"; };
 		49D88A349FD70A9153DD2C03 /* App.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		503FC468B99283614CA26E34 /* LightningAddressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightningAddressView.swift; sourceTree = "<group>"; };
+		509EAF54E660C3D06373EA44 /* NotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotificationService.entitlements; sourceTree = "<group>"; };
+		60A0551DCC45FC270B470B96 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6865C8CFB78CE40B67FA1DB2 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		6AF276A85A4339254182EB73 /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		747F6D6E419A7475169ACED6 /* CommonComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommonComponents.swift; sourceTree = "<group>"; };
 		771215578CB9B3F8F64C9139 /* ContactsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactsView.swift; sourceTree = "<group>"; };
 		7E9E3BFC2B0F15669B263EA9 /* Haptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Haptics.swift; sourceTree = "<group>"; };
 		82FC9EE794A5E7927FEE7DF8 /* ContactDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactDetailView.swift; sourceTree = "<group>"; };
+		8B0C4E8C892F802690C2E03D /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		8F8285F313C1C4D80E03963B /* QRScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScanner.swift; sourceTree = "<group>"; };
 		91954F33C35E52090B74C11A /* RebelWalletCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = RebelWalletCore.xcframework; path = Frameworks/RebelWalletCore.xcframework; sourceTree = "<group>"; };
 		936FB1B08FF781A9F9997609 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -60,12 +90,14 @@
 		B4B27DDADBA14C23A4E2298B /* MainWalletView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWalletView.swift; sourceTree = "<group>"; };
 		B95DB396C0ACC1FB08D6D500 /* rebel_wallet_core.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = rebel_wallet_core.swift; sourceTree = "<group>"; };
 		BC5043C96A336BFDB3828A80 /* SendView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendView.swift; sourceTree = "<group>"; };
+		C896475D71C07B62CA72814E /* PushNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotifications.swift; sourceTree = "<group>"; };
 		D00AD3E0EC1FCD4F0CF40360 /* RebelTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RebelTheme.swift; sourceTree = "<group>"; };
 		D3E5E1121C48A2C550F94906 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		D76402BBB1CEAF24094C36E2 /* QRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeView.swift; sourceTree = "<group>"; };
 		D898E612217B1C89FA7CA6B2 /* ReceiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReceiveView.swift; sourceTree = "<group>"; };
 		EA0C4BD0B40C39BFEC75E99F /* ProfileImageLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileImageLoader.swift; sourceTree = "<group>"; };
 		EC33CB686ACF317A895B9BB7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		ED3F1AA2DED717C2ED0B471C /* NotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		F0F0724D7DE35C122B119C79 /* DisplayText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayText.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -85,6 +117,7 @@
 			isa = PBXGroup;
 			children = (
 				6589618691820EE07F22E58B /* Bindings */,
+				8C60060937C6709C9262FE31 /* NotificationService */,
 				7F78907537685DA9B94ECD46 /* Sources */,
 				BDD1182E50DC622819F25364 /* Frameworks */,
 				E9C3DB3EC6D7655028A9C0D3 /* Products */,
@@ -116,6 +149,7 @@
 				08790D56E6532CF87DC5EAF5 /* ContentView.swift */,
 				F0F0724D7DE35C122B119C79 /* DisplayText.swift */,
 				7E9E3BFC2B0F15669B263EA9 /* Haptics.swift */,
+				C896475D71C07B62CA72814E /* PushNotifications.swift */,
 				D00AD3E0EC1FCD4F0CF40360 /* RebelTheme.swift */,
 				07DF4B0F56CEA10895EF3067 /* WalletEasterEgg.swift */,
 				9BED51F3FB75136969C70004 /* Capabilities */,
@@ -125,6 +159,16 @@
 				A3FB5A3A73FC5C9493069E5D /* Views */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		8C60060937C6709C9262FE31 /* NotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				60A0551DCC45FC270B470B96 /* Info.plist */,
+				509EAF54E660C3D06373EA44 /* NotificationService.entitlements */,
+				8B0C4E8C892F802690C2E03D /* NotificationService.swift */,
+			);
+			path = NotificationService;
 			sourceTree = "<group>";
 		};
 		8EB165A1A41A6C1DBA2779EF /* Services */ = {
@@ -174,6 +218,7 @@
 			isa = PBXGroup;
 			children = (
 				49D88A349FD70A9153DD2C03 /* App.app */,
+				ED3F1AA2DED717C2ED0B471C /* NotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -198,10 +243,12 @@
 				B77F0AF073564580D75A2CF1 /* Sources */,
 				37BFF6A8CB5CC7FA21AD3FA3 /* Resources */,
 				BC0DC3536DED64E0E8C9923E /* Frameworks */,
+				7C6B2DB89D01A1E9B8F2A565 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				4AF6D56A028A47ED9724248D /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
@@ -209,6 +256,23 @@
 			productName = App;
 			productReference = 49D88A349FD70A9153DD2C03 /* App.app */;
 			productType = "com.apple.product-type.application";
+		};
+		ECB916C2EEA55E04724E6E38 /* NotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6707CD602AF3D8B3AE7A959D /* Build configuration list for PBXNativeTarget "NotificationService" */;
+			buildPhases = (
+				665BFF2C96462D4FFC391BD5 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NotificationService;
+			packageProductDependencies = (
+			);
+			productName = NotificationService;
+			productReference = ED3F1AA2DED717C2ED0B471C /* NotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -220,6 +284,10 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					93E9E330FC2CE7458D9C925F = {
+						DevelopmentTeam = DL83L5X82U;
+						ProvisioningStyle = Automatic;
+					};
+					ECB916C2EEA55E04724E6E38 = {
 						DevelopmentTeam = DL83L5X82U;
 						ProvisioningStyle = Automatic;
 					};
@@ -240,6 +308,7 @@
 			projectRoot = "";
 			targets = (
 				93E9E330FC2CE7458D9C925F /* App */,
+				ECB916C2EEA55E04724E6E38 /* NotificationService */,
 			);
 		};
 /* End PBXProject section */
@@ -256,6 +325,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		665BFF2C96462D4FFC391BD5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				19450B4EB3A474AF0761CD2E /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B77F0AF073564580D75A2CF1 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -276,6 +353,7 @@
 				2F71F386BE8E65B77B9C4A44 /* MainWalletView.swift in Sources */,
 				67A132F02B1DCFCF92F79629 /* ProfileImageLoader.swift in Sources */,
 				D096C657DFB51D8FC3F689AE /* ProfileView.swift in Sources */,
+				EA14FDB5261179B6A75334DD /* PushNotifications.swift in Sources */,
 				77918D97F5494E74BC085BC7 /* QRCodeView.swift in Sources */,
 				2491CE80085619618553486A /* QRScanner.swift in Sources */,
 				E9395E0EC132A904BCDC7939 /* RebelTheme.swift in Sources */,
@@ -291,11 +369,20 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		4AF6D56A028A47ED9724248D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = ECB916C2EEA55E04724E6E38 /* NotificationService */;
+			targetProxy = DDC400187F0AF9A2A745F08E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		4A0C935808978B5A7673E412 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -361,6 +448,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IOS_APS_ENVIRONMENT = development;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
@@ -374,10 +462,43 @@
 			};
 			name = Release;
 		};
+		743428175B81DAF72DE18D97 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
+				INFOPLIST_FILE = NotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.nicktee.rebelwallet.NotificationService;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		92FA7E3706106CC724638995 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
+				INFOPLIST_FILE = NotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.nicktee.rebelwallet.NotificationService;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		EB1CC3A930E09FEBECF9195D /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -447,6 +568,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IOS_APS_ENVIRONMENT = development;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
@@ -464,6 +586,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		6707CD602AF3D8B3AE7A959D /* Build configuration list for PBXNativeTarget "NotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				743428175B81DAF72DE18D97 /* Debug */,
+				92FA7E3706106CC724638995 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		B3FD05C59F197F398A0B04AB /* Build configuration list for PBXProject "App" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

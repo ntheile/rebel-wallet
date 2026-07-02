@@ -55,8 +55,7 @@ run-ios-phone bundle_id="": ios-rust ios-xcframework ios-xcodeproj
     -destination "generic/platform=iOS" \
     -configuration Debug \
     -allowProvisioningUpdates \
-    -derivedDataPath "$DERIVED_DATA" \
-    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+    -derivedDataPath "$DERIVED_DATA"
   APP_PATH="$DERIVED_DATA/Build/Products/Debug-iphoneos/App.app"
   xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
   xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID"

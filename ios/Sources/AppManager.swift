@@ -10,6 +10,7 @@ final class AppManager: AppReconciler {
     var state: AppState
     private var lastRevApplied: UInt64
     private var receiveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var notificationObservers: [NSObjectProtocol] = []
 
     init() {
         let fm = FileManager.default
@@ -29,6 +30,7 @@ final class AppManager: AppReconciler {
         self.lastRevApplied = initial.rev
 
         rust.listenForUpdates(reconciler: self)
+        observePushNotificationRegistration()
         rust.dispatch(action: .bootstrap)
     }
 
@@ -87,6 +89,25 @@ final class AppManager: AppReconciler {
 
     func requestHaptic(_ feedback: HapticFeedback) {
         dispatch(.requestHaptic(feedback: feedback))
+    }
+
+    private func observePushNotificationRegistration() {
+        let observer = NotificationCenter.default.addObserver(
+            forName: PushNotificationEvents.registrationDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let status = notification.userInfo?[PushNotificationEvents.statusKey] as? String
+            let deviceToken = notification.userInfo?[PushNotificationEvents.deviceTokenKey] as? String
+
+            Task { @MainActor [weak self] in
+                self?.dispatch(.setPushNotificationRegistration(
+                    apnsDeviceToken: deviceToken,
+                    registrationStatus: status ?? "Unknown"
+                ))
+            }
+        }
+        notificationObservers.append(observer)
     }
 
     private static func removeLegacyProfileCache(from dataDirUrl: URL) {
