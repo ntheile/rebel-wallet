@@ -3,6 +3,7 @@ import UserNotifications
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttemptContent: UNMutableNotificationContent?
+    private var currentWake: StoredNwcWakeRequest?
 
     override func didReceive(
         _ request: UNNotificationRequest,
@@ -14,18 +15,15 @@ final class NotificationService: UNNotificationServiceExtension {
         bestAttemptContent = content
 
         if let wake = StoredNwcWakeRequest(userInfo: request.content.userInfo) {
+            currentWake = wake
             logWakePayload(wake)
-            NwcWakeInbox.appendDebug(
-                source: "NSE",
-                message: "Parsed nwc_wake event_id=\(wake.eventId) relay=\(wake.relay)"
-            )
             if respondToWakeIfPossible(wake) {
-                content.title = content.title.isEmpty ? "Payment request handled" : content.title
-                content.body = content.body.isEmpty ? "Rebel Wallet responded to a wallet request." : content.body
+                currentWake = nil
+                setGenericWakeNotification(content)
             } else {
                 NwcWakeInbox.enqueue(wake)
-                content.title = content.title.isEmpty ? "Payment request pending" : content.title
-                content.body = content.body.isEmpty ? "Open Rebel Wallet to continue." : content.body
+                currentWake = nil
+                setGenericWakeNotification(content)
             }
             content.userInfo = wake.normalizedUserInfo
         } else {
@@ -38,7 +36,15 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
+        if let currentWake {
+            NwcWakeInbox.enqueue(currentWake)
+            NwcWakeInbox.appendDebug(
+                source: "NSE",
+                message: "NSE time expired while processing \(currentWake.eventId); queued for app"
+            )
+        }
         if let bestAttemptContent {
+            setGenericWakeNotification(bestAttemptContent)
             contentHandler?(bestAttemptContent)
         }
     }
@@ -81,5 +87,13 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         NSLog("RebelWallet NSE wake response result: %@", result.message)
         return result.success
+    }
+
+    private func setGenericWakeNotification(_ content: UNMutableNotificationContent) {
+        content.title = "Wallet is processing in the background"
+        content.body = "Processing request..."
+        content.sound = nil
+        content.badge = nil
+        content.interruptionLevel = .passive
     }
 }
