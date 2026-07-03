@@ -17,13 +17,14 @@ final class NotificationService: UNNotificationServiceExtension {
         if let wake = StoredNwcWakeRequest(userInfo: request.content.userInfo) {
             currentWake = wake
             logWakePayload(wake)
-            if respondToWakeIfPossible(wake) {
+            let outcome = respondToWakeIfPossible(wake)
+            if outcome.handled {
                 currentWake = nil
-                setGenericWakeNotification(content)
+                setGenericWakeNotification(content, body: outcome.notificationBody)
             } else {
                 NwcWakeInbox.enqueue(wake)
                 currentWake = nil
-                setGenericWakeNotification(content)
+                setGenericWakeNotification(content, body: outcome.notificationBody)
             }
             content.userInfo = wake.normalizedUserInfo
         } else {
@@ -58,10 +59,15 @@ final class NotificationService: UNNotificationServiceExtension {
         )
     }
 
-    private func respondToWakeIfPossible(_ wake: StoredNwcWakeRequest) -> Bool {
+    private struct WakeProcessingOutcome {
+        let handled: Bool
+        let notificationBody: String
+    }
+
+    private func respondToWakeIfPossible(_ wake: StoredNwcWakeRequest) -> WakeProcessingOutcome {
         guard let snapshot = NwcWakeInbox.snapshot() else {
             NwcWakeInbox.appendDebug(source: "NSE", message: "No local NWC wake snapshot; queued for app")
-            return false
+            return WakeProcessingOutcome(handled: false, notificationBody: "Processing Request")
         }
 
         let result: NwcExtensionWakeResult
@@ -86,12 +92,15 @@ final class NotificationService: UNNotificationServiceExtension {
             NwcWakeInbox.saveSnapshot(updatedSnapshot)
         }
         NSLog("RebelWallet NSE wake response result: %@", result.message)
-        return result.success
+        return WakeProcessingOutcome(handled: result.success, notificationBody: result.notificationBody)
     }
 
-    private func setGenericWakeNotification(_ content: UNMutableNotificationContent) {
-        content.title = "Wallet is processing in the background"
-        content.body = "Processing request..."
+    private func setGenericWakeNotification(
+        _ content: UNMutableNotificationContent,
+        body: String = "Processing Request"
+    ) {
+        content.title = "Nostr Connect"
+        content.body = body
         content.sound = nil
         content.badge = nil
         content.interruptionLevel = .passive

@@ -1726,13 +1726,15 @@ public func FfiConverterTypeNwcConnection_lower(_ value: NwcConnection) -> RustB
 public struct NwcExtensionWakeResult: Equatable, Hashable {
     public var success: Bool
     public var message: String
+    public var notificationBody: String
     public var updatedSnapshotJson: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(success: Bool, message: String, updatedSnapshotJson: String?) {
+    public init(success: Bool, message: String, notificationBody: String, updatedSnapshotJson: String?) {
         self.success = success
         self.message = message
+        self.notificationBody = notificationBody
         self.updatedSnapshotJson = updatedSnapshotJson
     }
 
@@ -1754,6 +1756,7 @@ public struct FfiConverterTypeNwcExtensionWakeResult: FfiConverterRustBuffer {
             try NwcExtensionWakeResult(
                 success: FfiConverterBool.read(from: &buf), 
                 message: FfiConverterString.read(from: &buf), 
+                notificationBody: FfiConverterString.read(from: &buf), 
                 updatedSnapshotJson: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -1761,6 +1764,7 @@ public struct FfiConverterTypeNwcExtensionWakeResult: FfiConverterRustBuffer {
     public static func write(_ value: NwcExtensionWakeResult, into buf: inout [UInt8]) {
         FfiConverterBool.write(value.success, into: &buf)
         FfiConverterString.write(value.message, into: &buf)
+        FfiConverterString.write(value.notificationBody, into: &buf)
         FfiConverterOptionString.write(value.updatedSnapshotJson, into: &buf)
     }
 }

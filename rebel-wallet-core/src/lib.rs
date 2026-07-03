@@ -68,6 +68,7 @@ pub struct FfiApp {
 pub struct NwcExtensionWakeResult {
     pub success: bool,
     pub message: String,
+    pub notification_body: String,
     pub updated_snapshot_json: Option<String>,
 }
 
@@ -192,6 +193,7 @@ pub fn process_nwc_wake_from_snapshot(
             return NwcExtensionWakeResult {
                 success: false,
                 message: format!("failed to start NWC wake runtime: {e:#}"),
+                notification_body: nwc_notification_body(None),
                 updated_snapshot_json: None,
             }
         }
@@ -204,11 +206,13 @@ pub fn process_nwc_wake_from_snapshot(
                 "NSE responded to {} request {}",
                 processed.method, processed.wake.event_id
             ),
+            notification_body: nwc_notification_body(Some(&processed.method)),
             updated_snapshot_json: processed.updated_snapshot_json,
         },
         Err(e) => NwcExtensionWakeResult {
             success: false,
             message: format!("{e:#}"),
+            notification_body: nwc_notification_body(None),
             updated_snapshot_json: None,
         },
     }
@@ -235,6 +239,7 @@ pub fn process_nwc_event_from_snapshot(
             return NwcExtensionWakeResult {
                 success: false,
                 message: format!("failed to start NWC wake runtime: {e:#}"),
+                notification_body: nwc_notification_body(None),
                 updated_snapshot_json: None,
             }
         }
@@ -251,12 +256,31 @@ pub fn process_nwc_event_from_snapshot(
                 "NSE responded to {} request {}",
                 processed.method, processed.wake.event_id
             ),
+            notification_body: nwc_notification_body(Some(&processed.method)),
             updated_snapshot_json: processed.updated_snapshot_json,
         },
         Err(e) => NwcExtensionWakeResult {
             success: false,
             message: format!("{e:#}"),
+            notification_body: nwc_notification_body(None),
             updated_snapshot_json: None,
         },
     }
+}
+
+fn nwc_notification_body(method: Option<&str>) -> String {
+    match method {
+        Some("get_info") => "Getting Info",
+        Some("get_balance") => "Getting Balance",
+        Some("pay_invoice") => "Paying Invoice",
+        Some("pay_keysend") => "Sending Payment",
+        Some("make_invoice") => "Creating Invoice",
+        Some("lookup_invoice") => "Fetching Invoice",
+        Some("list_transactions") => "Fetching Transactions",
+        Some("make_hold_invoice") => "Creating Hold Invoice",
+        Some("cancel_hold_invoice") => "Canceling Hold Invoice",
+        Some("settle_hold_invoice") => "Settling Hold Invoice",
+        _ => "Processing Request",
+    }
+    .to_string()
 }
