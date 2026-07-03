@@ -1,5 +1,4 @@
 use bark::Wallet;
-use nostr_sdk::prelude::Event;
 
 use crate::nostr_support::FetchedProfileContact;
 use crate::persistence::ZapReceiptRecord;
@@ -151,16 +150,10 @@ pub(crate) enum AsyncMsg {
         event_id: String,
         error: String,
     },
-    NwcRelayRequestReceived {
-        relay: String,
-        event: Box<Event>,
-    },
-    NwcRelaySessionReady {
-        session_key: String,
+    NwcInfoEventPublished {
         relay: String,
     },
-    NwcRelaySessionFailed {
-        session_key: String,
+    NwcInfoEventFailed {
         relay: String,
         error: String,
     },

@@ -27,8 +27,6 @@ pub(crate) struct PersistedAppData {
     pub(crate) zap_receipts: Vec<ZapReceiptRecord>,
     #[serde(default)]
     pub(crate) nwc_connections: Vec<NwcConnection>,
-    #[serde(default = "default_nwc_websocket_enabled")]
-    pub(crate) nwc_websocket_enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,10 +115,6 @@ fn default_price_currency() -> PersistedPriceCurrency {
     PersistedPriceCurrency {
         currency: PriceCurrency::BTC,
     }
-}
-
-fn default_nwc_websocket_enabled() -> bool {
-    true
 }
 
 mod price_currency_serde {

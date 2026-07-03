@@ -23,7 +23,6 @@ struct RebelWalletApp: App {
                     switch phase {
                     case .active:
                         manager.drainQueuedNwcWakeRequests()
-                        manager.dispatch(.refreshNwcWebsocket)
                         manager.dispatch(.maintainVtxos)
                         // Re-attempt claiming an in-flight Lightning receive in case
                         // the payment landed while the app was suspended.

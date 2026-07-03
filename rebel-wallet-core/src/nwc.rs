@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
 use bark::actions::lightning::pay::LightningSendState;
@@ -21,6 +21,9 @@ use crate::nostr_support::public_key_from_npub_or_hex;
 use crate::persistence::ServerConfig;
 use crate::wallet::{open_bark_wallet, WalletOpenMode};
 use crate::{NwcConnection, NwcPermission, NwcWakeRequest, WalletNetwork};
+
+const NWC_EXTENSION_PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
+const NWC_EXTENSION_PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NwcWakeSnapshot {
@@ -201,6 +204,19 @@ pub(crate) fn build_nwc_info_event(keys: &Keys) -> anyhow::Result<Event> {
         .context("failed to sign NWC info event")
 }
 
+pub(crate) async fn publish_nwc_info_event(relay: String, keys: Keys) -> anyhow::Result<()> {
+    let client = client_for_relay(&relay).await?;
+    let info_event = build_nwc_info_event(&keys)?;
+    let result = client
+        .send_event(&info_event)
+        .to([relay.as_str()])
+        .await
+        .context("failed to publish NWC info event")
+        .map(|_| ());
+    client.shutdown().await;
+    result
+}
+
 fn authorized_connection<'a>(
     event: &Event,
     context: &'a NwcServiceContext,
@@ -374,6 +390,7 @@ async fn pay_invoice_response(
     let invoice = Bolt11Invoice::from_str(&params.invoice).context("invalid Lightning invoice")?;
     let amount_sat = pay_invoice_amount_sat(&invoice, params.amount)?;
     enforce_budget(connection, amount_sat)?;
+    let payment_hash: PaymentHash = (*invoice.payment_hash()).into();
 
     let user_amount = params
         .amount
@@ -383,21 +400,20 @@ async fn pay_invoice_response(
         .filter(|amount| *amount > 0)
         .map(Amount::from_sat);
 
-    let paid_invoice = wallet
-        .pay_lightning_invoice(invoice.clone(), user_amount, true)
-        .await
-        .context("Bark payment failed")?;
-    let payment_hash: PaymentHash = paid_invoice.payment_hash().into();
     let preimage = match wallet
         .lightning_send_state(payment_hash)
         .await
-        .context("could not read paid invoice state")?
+        .context("could not read invoice state")?
     {
         LightningSendState::Paid(paid) => paid.preimage.to_string(),
-        LightningSendState::InProgress(_) => {
-            anyhow::bail!("payment is still in progress after wait completed")
+        LightningSendState::InProgress(_) => wait_for_paid_invoice(&wallet, payment_hash).await?,
+        LightningSendState::Unknown => {
+            wallet
+                .pay_lightning_invoice(invoice.clone(), user_amount, false)
+                .await
+                .context("Bark payment failed")?;
+            wait_for_paid_invoice(&wallet, payment_hash).await?
         }
-        LightningSendState::Unknown => anyhow::bail!("paid invoice record was not found"),
     };
 
     let mut updated_connections = context.connections.clone();
@@ -422,6 +438,30 @@ async fn pay_invoice_response(
         amount_sat,
         updated_connections,
     ))
+}
+
+async fn wait_for_paid_invoice(
+    wallet: &bark::Wallet,
+    payment_hash: PaymentHash,
+) -> anyhow::Result<String> {
+    let deadline = Instant::now() + NWC_EXTENSION_PAYMENT_SETTLE_TIMEOUT;
+
+    loop {
+        match wallet
+            .check_lightning_payment(payment_hash, false)
+            .await
+            .context("could not drive paid invoice state")?
+        {
+            LightningSendState::Paid(paid) => return Ok(paid.preimage.to_string()),
+            LightningSendState::Unknown => anyhow::bail!("paid invoice record was not found"),
+            LightningSendState::InProgress(_) => {
+                if Instant::now() >= deadline {
+                    anyhow::bail!("payment is still in progress after extension wait window")
+                }
+                tokio::time::sleep(NWC_EXTENSION_PAYMENT_POLL_INTERVAL).await;
+            }
+        }
+    }
 }
 
 fn not_implemented_response(method: Method) -> Response {

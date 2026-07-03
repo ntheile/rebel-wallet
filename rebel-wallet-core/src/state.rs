@@ -40,9 +40,6 @@ pub struct PushNotificationState {
 pub struct NwcState {
     pub connections: Vec<NwcConnection>,
     pub default_relay: String,
-    pub websocket_enabled: bool,
-    pub websocket_online: bool,
-    pub websocket_status: String,
     pub pending_wake_requests: Vec<NwcWakeRequest>,
     pub processed_wake_requests: Vec<NwcProcessedWakeRequest>,
     pub last_wake_status: String,
@@ -685,9 +682,6 @@ impl AppState {
             nwc: NwcState {
                 connections: vec![],
                 default_relay: "wss://relay.getalby.com/v1".to_string(),
-                websocket_enabled: true,
-                websocket_online: false,
-                websocket_status: "Offline".to_string(),
                 pending_wake_requests: vec![],
                 processed_wake_requests: vec![],
                 last_wake_status: "No wake requests".to_string(),

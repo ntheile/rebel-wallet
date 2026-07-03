@@ -16,7 +16,6 @@ struct NwcConnectionsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 createLink
                 connectionsSection
-                websocketSection
                 NwcWakeDebugCard(manager: manager)
             }
             .padding(16)
@@ -49,57 +48,6 @@ struct NwcConnectionsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Create NWC")
-    }
-
-    private var websocketSection: some View {
-        SettingsCard(title: "NWC Websocket") {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 12) {
-                    NwcOnlineIndicator(
-                        enabled: manager.state.nwc.websocketEnabled,
-                        online: manager.state.nwc.websocketOnline
-                    )
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(websocketTitle)
-                            .font(.headline)
-                        Text(manager.state.nwc.websocketStatus)
-                            .font(.caption)
-                            .foregroundStyle(mutedText)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-
-                    Spacer()
-
-                    Toggle("Websocket", isOn: Binding(
-                        get: { manager.state.nwc.websocketEnabled },
-                        set: { manager.dispatch(.setNwcWebsocketEnabled(enabled: $0)) }
-                    ))
-                    .labelsHidden()
-                    .tint(rebelGreen)
-                }
-                .padding(14)
-                .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
-
-                Text("Optional. NWC Wake handles background delivery; keeping the websocket on can respond faster while Rebel Wallet is open and foregrounded.")
-                    .font(.caption)
-                    .foregroundStyle(mutedText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(14)
-        }
-    }
-
-    private var websocketTitle: String {
-        if manager.state.nwc.websocketOnline {
-            return "Online"
-        }
-        if manager.state.nwc.websocketEnabled {
-            return "Connecting"
-        }
-        return "Offline"
     }
 
     private var connectionsSection: some View {
@@ -557,34 +505,6 @@ private struct NwcPermissionPresetLabel: View {
         .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
         .contentShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct NwcOnlineIndicator: View {
-    let enabled: Bool
-    let online: Bool
-
-    private var color: Color {
-        if online {
-            return rebelGreen
-        }
-        if enabled {
-            return rebelBlue
-        }
-        return mutedText
-    }
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(color.opacity(0.18))
-            Circle()
-                .fill(color)
-                .frame(width: 13, height: 13)
-                .shadow(color: online ? color.opacity(0.65) : .clear, radius: 6)
-        }
-        .frame(width: 38, height: 38)
-        .accessibilityLabel(online ? "NWC websocket online" : "NWC websocket offline")
     }
 }
 

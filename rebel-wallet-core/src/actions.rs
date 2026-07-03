@@ -110,10 +110,6 @@ pub enum AppAction {
     ProcessNwcWakeRequests {
         requests: Vec<NwcWakeRequest>,
     },
-    SetNwcWebsocketEnabled {
-        enabled: bool,
-    },
-    RefreshNwcWebsocket,
     CreateNwcConnection {
         name: String,
         relay: String,

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -18,12 +18,11 @@ use bitcoin::{
     Amount,
 };
 use flume::Sender;
-use futures_util::StreamExt;
 use nostr::nips::nip47::NostrWalletConnectUri;
 use nostr_sdk::prelude::{
-    nip04, Client as NostrClient, ClientNotification, Contact as NostrContact, ContactListBuilder,
-    Event, EventBuilder, EventBuilderTemplate, Filter, FinalizeEvent, Keys, Kind,
-    PublicKey as NostrPublicKey, RelayUrl, SecretKey as NostrSecretKey, Tag, ToBech32,
+    nip04, Contact as NostrContact, ContactListBuilder, EventBuilder, EventBuilderTemplate, Filter,
+    FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, RelayUrl, SecretKey as NostrSecretKey,
+    Tag, ToBech32,
 };
 use tokio::runtime::Runtime;
 
@@ -39,9 +38,8 @@ use crate::nostr_support::{
     upload_profile_picture,
 };
 use crate::nwc::{
-    build_nwc_info_event, process_nwc_request_event,
-    process_nwc_wake_request as process_nwc_wake_request_event, validate_wallet_service_pubkey,
-    NwcServiceContext,
+    process_nwc_wake_request as process_nwc_wake_request_event, publish_nwc_info_event,
+    validate_wallet_service_pubkey, NwcServiceContext,
 };
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
 use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
@@ -268,74 +266,12 @@ struct AppCore {
     profile_picture_downloads: HashSet<String>,
     profile_picture_download_semaphore: Arc<tokio::sync::Semaphore>,
     profile_info_requests: HashSet<String>,
-    nwc_relay_sessions: HashMap<String, NostrClient>,
-    nwc_relay_online_sessions: HashSet<String>,
     payment_annotations: Vec<PaymentAnnotation>,
     zap_receipts: Vec<ZapReceiptRecord>,
     rev: u64,
     next_capability_id: u64,
     send_fee_estimate_request_id: u64,
     pending_haptics: Vec<HapticFeedback>,
-}
-
-async fn run_nwc_relay_session(
-    session_key: String,
-    relay: String,
-    service_pubkey: NostrPublicKey,
-    keys: Keys,
-    client: NostrClient,
-    tx: Sender<CoreMsg>,
-) -> anyhow::Result<()> {
-    client
-        .add_relay(relay.as_str())
-        .await
-        .context("invalid NWC relay")?;
-    client.connect().await;
-
-    let info_event = build_nwc_info_event(&keys)?;
-    client
-        .send_event(&info_event)
-        .to([relay.as_str()])
-        .await
-        .context("failed to publish NWC info event")?;
-
-    let mut notifications = client.notifications();
-    let filter = Filter::new()
-        .kind(Kind::WalletConnectRequest)
-        .pubkey(service_pubkey)
-        .limit(0);
-    client
-        .subscribe(filter)
-        .await
-        .context("failed to subscribe for NWC requests")?;
-
-    let _ = tx.send(CoreMsg::Async(AsyncMsg::NwcRelaySessionReady {
-        session_key: session_key.clone(),
-        relay: relay.clone(),
-    }));
-
-    while let Some(notification) = notifications.next().await {
-        if matches!(notification, ClientNotification::Shutdown) {
-            return Ok(());
-        }
-
-        let ClientNotification::Event {
-            relay_url, event, ..
-        } = notification
-        else {
-            continue;
-        };
-        if event.kind != Kind::WalletConnectRequest {
-            continue;
-        }
-
-        let _ = tx.send(CoreMsg::Async(AsyncMsg::NwcRelayRequestReceived {
-            relay: relay_url.to_string(),
-            event,
-        }));
-    }
-
-    anyhow::bail!("NWC relay notification stream ended")
 }
 
 impl AppCore {
@@ -360,8 +296,6 @@ impl AppCore {
             profile_picture_downloads: HashSet::new(),
             profile_picture_download_semaphore: new_profile_picture_download_semaphore(),
             profile_info_requests: HashSet::new(),
-            nwc_relay_sessions: HashMap::new(),
-            nwc_relay_online_sessions: HashSet::new(),
             payment_annotations: Vec::new(),
             zap_receipts: Vec::new(),
             rev: 0,
@@ -581,24 +515,6 @@ impl AppCore {
                     count => format!("Queued {count} NWC wake requests"),
                 };
                 self.process_pending_nwc_wake_requests();
-            }
-            AppAction::SetNwcWebsocketEnabled { enabled } => {
-                self.state.nwc.websocket_enabled = enabled;
-                self.save_app_data();
-                if enabled {
-                    self.state.nwc.websocket_status = "Connecting".to_string();
-                    self.ensure_nwc_relay_sessions();
-                } else {
-                    self.stop_nwc_relay_sessions();
-                    self.state.nwc.websocket_status = "Offline".to_string();
-                    self.state.nwc.last_wake_status = "NWC websocket disabled.".to_string();
-                }
-                self.request_haptic(HapticFeedback::Selection);
-            }
-            AppAction::RefreshNwcWebsocket => {
-                if self.state.nwc.websocket_enabled {
-                    self.ensure_nwc_relay_sessions();
-                }
             }
             AppAction::CreateNwcConnection {
                 name,
@@ -834,9 +750,18 @@ impl AppCore {
         self.state.toast = Some("NWC string created.".to_string());
         self.request_haptic(HapticFeedback::NotificationSuccess);
         self.save_app_data();
-        if self.state.nwc.websocket_enabled {
-            self.ensure_nwc_relay_sessions();
-        }
+        let tx = self.tx.clone();
+        let relay = relay_url.to_string();
+        self.rt.spawn(async move {
+            let msg = match publish_nwc_info_event(relay.clone(), service_keys).await {
+                Ok(()) => AsyncMsg::NwcInfoEventPublished { relay },
+                Err(e) => AsyncMsg::NwcInfoEventFailed {
+                    relay,
+                    error: format!("{e:#}"),
+                },
+            };
+            let _ = tx.send(CoreMsg::Async(msg));
+        });
     }
 
     fn delete_nwc_connection(&mut self, id: String) {
@@ -862,10 +787,6 @@ impl AppCore {
                     .delete_secret(nwc_client_secret_key(&client_pubkey));
             }
             self.save_app_data();
-            if self.state.nwc.connections.is_empty() {
-                self.stop_nwc_relay_sessions();
-                self.state.nwc.websocket_status = "No NWC strings".to_string();
-            }
         }
     }
 
@@ -951,8 +872,8 @@ impl AppCore {
         };
         Ok(NwcServiceContext {
             keys,
-            wallet_seed: None,
-            wallet_data_dir: None,
+            wallet_seed: self.secrets.get_secret(WALLET_SEED_KEY.to_string()),
+            wallet_data_dir: Some(self.data_dir.clone()),
             balance_sat: self.state.wallet.balance_sat,
             network: self.state.wallet.network.clone(),
             connections: self.state.nwc.connections.clone(),
@@ -989,143 +910,6 @@ impl AppCore {
         });
     }
 
-    fn process_nwc_relay_request_event(&mut self, relay: String, event: Box<Event>) {
-        if self.nwc_wake_request_is_known(&event.id.to_hex()) {
-            self.state.nwc.last_wake_status = "No new NWC wake requests".to_string();
-            return;
-        }
-
-        let request = NwcWakeRequest {
-            relay,
-            event_id: event.id.to_hex(),
-            wallet_service_pubkey: self
-                .nostr_keys()
-                .map(|keys| keys.public_key().to_hex())
-                .unwrap_or_default(),
-            received_at: now_unix(),
-        };
-
-        self.state.nwc.pending_wake_requests.push(request.clone());
-        self.cap_pending_nwc_wake_requests();
-        self.state.nwc.last_wake_status = "Processing live NWC request".to_string();
-
-        let context = match self.nwc_service_context() {
-            Ok(context) => context,
-            Err(reason) => {
-                self.state.nwc.last_wake_status = format!("NWC wake queued: {reason}");
-                return;
-            }
-        };
-
-        let tx = self.tx.clone();
-        self.rt.spawn(async move {
-            let event_id = request.event_id.clone();
-            let result = process_nwc_request_event(request, *event, context).await;
-
-            let msg = match result {
-                Ok(processed) => AsyncMsg::NwcWakeRequestProcessed(NwcProcessedWakeRequest {
-                    relay: processed.wake.relay,
-                    event_id: processed.wake.event_id,
-                    client_pubkey: processed.client_pubkey,
-                    method: processed.method,
-                    status: processed.status,
-                    amount_sat: processed.amount_sat,
-                    received_at: processed.wake.received_at,
-                    processed_at: processed.processed_at,
-                }),
-                Err(e) => AsyncMsg::NwcWakeRequestFailed {
-                    event_id,
-                    error: format!("{e:#}"),
-                },
-            };
-            let _ = tx.send(CoreMsg::Async(msg));
-        });
-    }
-
-    fn ensure_nwc_relay_sessions(&mut self) {
-        if !self.state.nwc.websocket_enabled {
-            self.state.nwc.websocket_online = false;
-            self.state.nwc.websocket_status = "Offline".to_string();
-            return;
-        }
-
-        if self.wallet.is_none() || self.state.nwc.connections.is_empty() {
-            self.state.nwc.websocket_online = false;
-            self.state.nwc.websocket_status = if self.state.nwc.connections.is_empty() {
-                "No NWC strings".to_string()
-            } else {
-                "Wallet closed".to_string()
-            };
-            return;
-        }
-
-        let keys = match self.nostr_keys() {
-            Ok(keys) => keys,
-            Err(e) => {
-                self.state.nwc.websocket_online = false;
-                self.state.nwc.websocket_status = "Key unavailable".to_string();
-                self.state.nwc.last_wake_status = format!("NWC relay not started: {e:#}");
-                return;
-            }
-        };
-        let service_pubkey = keys.public_key();
-        let relays = self
-            .state
-            .nwc
-            .connections
-            .iter()
-            .map(|connection| connection.relay.clone())
-            .collect::<HashSet<_>>();
-
-        for relay in relays {
-            let session_key = format!("{}:{relay}", service_pubkey.to_hex());
-            if self.nwc_relay_sessions.contains_key(&session_key) {
-                continue;
-            }
-
-            let tx = self.tx.clone();
-            let keys = keys.clone();
-            let client = NostrClient::default();
-            self.nwc_relay_sessions
-                .insert(session_key.clone(), client.clone());
-            self.state.nwc.websocket_status = "Connecting".to_string();
-            self.rt.spawn(async move {
-                let result = run_nwc_relay_session(
-                    session_key.clone(),
-                    relay.clone(),
-                    service_pubkey,
-                    keys,
-                    client,
-                    tx.clone(),
-                )
-                .await;
-                if let Err(e) = result {
-                    let _ = tx.send(CoreMsg::Async(AsyncMsg::NwcRelaySessionFailed {
-                        session_key,
-                        relay,
-                        error: format!("{e:#}"),
-                    }));
-                }
-            });
-        }
-    }
-
-    fn stop_nwc_relay_sessions(&mut self) {
-        let clients = self
-            .nwc_relay_sessions
-            .drain()
-            .map(|(_, client)| client)
-            .collect::<Vec<_>>();
-        self.nwc_relay_online_sessions.clear();
-        self.state.nwc.websocket_online = false;
-
-        for client in clients {
-            self.rt.spawn(async move {
-                client.shutdown().await;
-            });
-        }
-    }
-
     fn handle_async(&mut self, msg: AsyncMsg) {
         self.clear_busy_for_async(&msg);
         match msg {
@@ -1140,7 +924,6 @@ impl AppCore {
                     .set_secret(WALLET_SEED_KEY.to_string(), mnemonic);
                 self.ensure_wallet_derived_nostr_key();
                 self.ensure_lightning_address();
-                self.ensure_nwc_relay_sessions();
                 self.process_pending_nwc_wake_requests();
                 self.maintain_vtxos();
                 self.claim_pending_lightning_receives();
@@ -1503,37 +1286,12 @@ impl AppCore {
                     .retain(|request| request.event_id != event_id);
                 self.request_haptic(HapticFeedback::NotificationWarning);
             }
-            AsyncMsg::NwcRelayRequestReceived { relay, event } => {
-                self.process_nwc_relay_request_event(relay, event);
+            AsyncMsg::NwcInfoEventPublished { relay } => {
+                self.state.nwc.last_wake_status = format!("NWC info event published to {relay}");
             }
-            AsyncMsg::NwcRelaySessionReady { session_key, relay } => {
-                self.nwc_relay_online_sessions.insert(session_key);
-                self.state.nwc.websocket_online = true;
-                self.state.nwc.websocket_status = format!("Online on {relay}");
-                self.state.nwc.last_wake_status = format!("NWC relay listening on {relay}");
-            }
-            AsyncMsg::NwcRelaySessionFailed {
-                session_key,
-                relay,
-                error,
-            } => {
-                self.nwc_relay_sessions.remove(&session_key);
-                self.nwc_relay_online_sessions.remove(&session_key);
-                self.state.nwc.websocket_online = !self.nwc_relay_online_sessions.is_empty();
-                self.state.nwc.websocket_status = if self.state.nwc.websocket_online {
-                    "Partially online".to_string()
-                } else {
-                    format!("Failed on {relay}")
-                };
-                self.state.nwc.last_wake_status = format!("NWC relay failed: {error}");
-                if self.state.nwc.websocket_enabled && !self.state.nwc.connections.is_empty() {
-                    self.state.nwc.websocket_status = format!("Retrying {relay}");
-                    let tx = self.tx.clone();
-                    self.rt.spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        let _ = tx.send(CoreMsg::Action(AppAction::RefreshNwcWebsocket));
-                    });
-                }
+            AsyncMsg::NwcInfoEventFailed { relay, error } => {
+                self.state.nwc.last_wake_status =
+                    format!("NWC info event failed on {relay}: {error}");
             }
             AsyncMsg::PriceUpdated { currency, price } => {
                 self.state.wallet.price_currency = currency;
@@ -1633,9 +1391,8 @@ impl AppCore {
             | AsyncMsg::DirectMessageSent(_)
             | AsyncMsg::NwcWakeRequestProcessed(_)
             | AsyncMsg::NwcWakeRequestFailed { .. }
-            | AsyncMsg::NwcRelayRequestReceived { .. }
-            | AsyncMsg::NwcRelaySessionReady { .. }
-            | AsyncMsg::NwcRelaySessionFailed { .. }
+            | AsyncMsg::NwcInfoEventPublished { .. }
+            | AsyncMsg::NwcInfoEventFailed { .. }
             | AsyncMsg::NostrSearchLoaded { .. }
             | AsyncMsg::PrimalProfilesLoaded { .. }
             | AsyncMsg::PrimalProfilesFailed { .. }
@@ -2126,7 +1883,6 @@ impl AppCore {
     }
 
     fn reset_nostr_identity(&mut self, npub: String) {
-        self.stop_nwc_relay_sessions();
         self.state.nostr.npub = Some(npub);
         self.state.nostr.name = "Rebel".to_string();
         self.state.nostr.about.clear();
