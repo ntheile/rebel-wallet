@@ -13,11 +13,20 @@ final class NotificationService: UNNotificationServiceExtension {
             ?? UNMutableNotificationContent()
         bestAttemptContent = content
 
-        if let wake = NwcWakePayload(userInfo: request.content.userInfo) {
+        if let wake = StoredNwcWakeRequest(userInfo: request.content.userInfo) {
             logWakePayload(wake)
+            NwcWakeInbox.appendDebug(
+                source: "NSE",
+                message: "Parsed nwc_wake event_id=\(wake.eventId) relay=\(wake.relay)"
+            )
+            NwcWakeInbox.enqueue(wake)
             content.title = content.title.isEmpty ? "Payment request pending" : content.title
             content.body = content.body.isEmpty ? "Open Rebel Wallet to continue." : content.body
             content.userInfo = wake.normalizedUserInfo
+        } else {
+            let message = StoredNwcWakeRequest.parseFailureMessage(userInfo: request.content.userInfo)
+            NwcWakeInbox.appendDebug(source: "NSE", message: message)
+            NSLog("RebelWallet NSE did not parse push: %@", message)
         }
 
         contentHandler(content)
@@ -29,43 +38,12 @@ final class NotificationService: UNNotificationServiceExtension {
         }
     }
 
-    private func logWakePayload(_ payload: NwcWakePayload) {
+    private func logWakePayload(_ payload: StoredNwcWakeRequest) {
         NSLog(
             "RebelWallet NSE received nwc_wake event_id=%@ relay=%@ wallet_service_pubkey=%@",
             payload.eventId,
             payload.relay,
             payload.walletServicePubkey
         )
-    }
-}
-
-private struct NwcWakePayload {
-    let relay: String
-    let eventId: String
-    let walletServicePubkey: String
-
-    init?(userInfo: [AnyHashable: Any]) {
-        guard
-            (userInfo["protocol"] as? String) == "nwc_wake",
-            let relay = userInfo["relay"] as? String,
-            let eventId = userInfo["event_id"] as? String,
-            let walletServicePubkey = userInfo["wallet_service_pubkey"] as? String
-        else {
-            return nil
-        }
-
-        self.relay = relay
-        self.eventId = eventId
-        self.walletServicePubkey = walletServicePubkey
-    }
-
-    var normalizedUserInfo: [AnyHashable: Any] {
-        [
-            "protocol": "nwc_wake",
-            "version": "v1",
-            "relay": relay,
-            "event_id": eventId,
-            "wallet_service_pubkey": walletServicePubkey
-        ]
     }
 }

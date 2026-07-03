@@ -218,6 +218,8 @@ impl AppCore {
                 }
                 self.payment_annotations = data.payment_annotations;
                 self.zap_receipts = data.zap_receipts;
+                self.state.nwc.connections = data.nwc_connections;
+                self.state.nwc.websocket_enabled = data.nwc_websocket_enabled;
             }
             Err(e) => {
                 self.state.toast = Some(format!("Could not load local app data: {e}"));
@@ -272,6 +274,8 @@ impl AppCore {
             pending_custom_lightning_address,
             payment_annotations: self.payment_annotations.clone(),
             zap_receipts: self.zap_receipts.clone(),
+            nwc_connections: self.state.nwc.connections.clone(),
+            nwc_websocket_enabled: self.state.nwc.websocket_enabled,
         };
         if let Ok(raw) = serde_json::to_string_pretty(&data) {
             let _ = std::fs::create_dir_all(&self.data_dir);

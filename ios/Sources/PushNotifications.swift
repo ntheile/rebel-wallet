@@ -45,8 +45,18 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        if let wake = NwcWakeNotification(userInfo: response.notification.request.content.userInfo) {
+        if let wake = StoredNwcWakeRequest(userInfo: response.notification.request.content.userInfo) {
+            NwcWakeInbox.appendDebug(
+                source: "App",
+                message: "Notification tapped event_id=\(wake.eventId) relay=\(wake.relay)"
+            )
+            NwcWakeInbox.enqueue(wake)
             NSLog("RebelWallet opened nwc_wake notification event_id=%@ relay=%@", wake.eventId, wake.relay)
+        } else {
+            NwcWakeInbox.appendDebug(
+                source: "App",
+                message: StoredNwcWakeRequest.parseFailureMessage(userInfo: response.notification.request.content.userInfo)
+            )
         }
     }
 
@@ -82,23 +92,5 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
             object: nil,
             userInfo: userInfo
         )
-    }
-}
-
-private struct NwcWakeNotification {
-    let relay: String
-    let eventId: String
-
-    init?(userInfo: [AnyHashable: Any]) {
-        guard
-            (userInfo["protocol"] as? String) == "nwc_wake",
-            let relay = userInfo["relay"] as? String,
-            let eventId = userInfo["event_id"] as? String
-        else {
-            return nil
-        }
-
-        self.relay = relay
-        self.eventId = eventId
     }
 }

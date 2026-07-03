@@ -8,7 +8,9 @@ import UIKit
 final class AppManager: AppReconciler {
     let rust: FfiApp
     var state: AppState
+    var nwcWakeDebugEntries: [NwcWakeDebugEntry]
     private var lastRevApplied: UInt64
+    private var lastNwcWakeStatusLogged: String
     private var receiveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var notificationObservers: [NSObjectProtocol] = []
 
@@ -27,11 +29,15 @@ final class AppManager: AppReconciler {
 
         let initial = rust.state()
         self.state = initial
+        self.nwcWakeDebugEntries = NwcWakeInbox.debugEntries()
         self.lastRevApplied = initial.rev
+        self.lastNwcWakeStatusLogged = initial.nwc.lastWakeStatus
 
         rust.listenForUpdates(reconciler: self)
         observePushNotificationRegistration()
+        observeNwcWakeInbox()
         rust.dispatch(action: .bootstrap)
+        drainQueuedNwcWakeRequests()
     }
 
     nonisolated func reconcile(update: AppUpdate) {
@@ -44,6 +50,7 @@ final class AppManager: AppReconciler {
         switch update {
         case .fullState(let s):
             if s.rev <= lastRevApplied { return }
+            recordNwcWakeDebugChanges(nextState: s)
             lastRevApplied = s.rev
             state = s
             // If a Lightning receive completed (e.g. while backgrounded), release the
@@ -54,6 +61,23 @@ final class AppManager: AppReconciler {
         case .haptic(let feedback):
             Haptics.play(feedback)
         }
+    }
+
+    private func recordNwcWakeDebugChanges(nextState: AppState) {
+        if state.setup != .ready, nextState.setup == .ready, !nextState.nwc.pendingWakeRequests.isEmpty {
+            NwcWakeInbox.appendDebug(
+                source: "Rust",
+                message: "Wallet ready; retrying \(nextState.nwc.pendingWakeRequests.count) pending NWC wake request\(nextState.nwc.pendingWakeRequests.count == 1 ? "" : "s")"
+            )
+        }
+
+        let status = nextState.nwc.lastWakeStatus
+        if status != lastNwcWakeStatusLogged {
+            lastNwcWakeStatusLogged = status
+            NwcWakeInbox.appendDebug(source: "Rust", message: status)
+        }
+
+        refreshNwcWakeDebugEntries()
     }
 
     /// True while we are showing a receive request and still waiting for the
@@ -108,6 +132,48 @@ final class AppManager: AppReconciler {
             }
         }
         notificationObservers.append(observer)
+    }
+
+    private func observeNwcWakeInbox() {
+        let observer = NotificationCenter.default.addObserver(
+            forName: NwcWakeInboxEvents.didChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshNwcWakeDebugEntries()
+                self?.drainQueuedNwcWakeRequests()
+            }
+        }
+        notificationObservers.append(observer)
+    }
+
+    func drainQueuedNwcWakeRequests() {
+        let requests = NwcWakeInbox.drain()
+        guard !requests.isEmpty else { return }
+
+        NwcWakeInbox.appendDebug(
+            source: "App",
+            message: "Drained \(requests.count) queued nwc_wake request\(requests.count == 1 ? "" : "s")"
+        )
+        refreshNwcWakeDebugEntries()
+        dispatch(.processNwcWakeRequests(requests: requests.map {
+            NwcWakeRequest(
+                relay: $0.relay,
+                eventId: $0.eventId,
+                walletServicePubkey: $0.walletServicePubkey,
+                receivedAt: $0.receivedAt
+            )
+        }))
+    }
+
+    func refreshNwcWakeDebugEntries() {
+        nwcWakeDebugEntries = Array(NwcWakeInbox.debugEntries().reversed())
+    }
+
+    func clearNwcWakeDebugEntries() {
+        NwcWakeInbox.clearDebugEntries()
+        refreshNwcWakeDebugEntries()
     }
 
     private static func removeLegacyProfileCache(from dataDirUrl: URL) {

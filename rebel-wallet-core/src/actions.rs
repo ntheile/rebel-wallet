@@ -1,4 +1,7 @@
-use crate::{HapticFeedback, MainTab, PriceCurrency, ReceiveMethod, Screen, WalletNetwork};
+use crate::{
+    HapticFeedback, MainTab, NwcBudgetInterval, NwcPermission, NwcWakeRequest, PriceCurrency,
+    ReceiveMethod, Screen, WalletNetwork,
+};
 
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppAction {
@@ -103,6 +106,23 @@ pub enum AppAction {
     SetPushNotificationRegistration {
         apns_device_token: Option<String>,
         registration_status: String,
+    },
+    ProcessNwcWakeRequests {
+        requests: Vec<NwcWakeRequest>,
+    },
+    SetNwcWebsocketEnabled {
+        enabled: bool,
+    },
+    RefreshNwcWebsocket,
+    CreateNwcConnection {
+        name: String,
+        relay: String,
+        budget_sat: u64,
+        budget_interval: NwcBudgetInterval,
+        permissions: Vec<NwcPermission>,
+    },
+    DeleteNwcConnection {
+        id: String,
     },
     GenerateNostrKey,
     ImportNostrSecret {

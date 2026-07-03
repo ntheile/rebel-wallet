@@ -4,5 +4,9 @@
 <dict>
 	<key>aps-environment</key>
 	<string>$(IOS_APS_ENVIRONMENT)</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(IOS_APP_GROUP_ID)</string>
+	</array>
 </dict>
 </plist>

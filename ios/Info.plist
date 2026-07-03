@@ -28,6 +28,8 @@
 	<string>Dark</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Rebel Wallet uses the camera to scan payment QR codes.</string>
+	<key>RebelWalletAppGroupIdentifier</key>
+	<string>$(IOS_APP_GROUP_ID)</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

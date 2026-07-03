@@ -14,6 +14,7 @@ settings:
     DEVELOPMENT_TEAM: ${IOS_DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: ${IOS_CODE_SIGN_STYLE}
     IOS_APS_ENVIRONMENT: ${IOS_APS_ENVIRONMENT}
+    IOS_APP_GROUP_ID: ${IOS_APP_GROUP_ID}
   configs:
     Debug:
       PRODUCT_BUNDLE_IDENTIFIER: ${IOS_BUNDLE_ID}
@@ -26,6 +27,7 @@ targets:
     type: application
     platform: iOS
     sources:
+      - path: Shared
       - path: Sources
       - path: Bindings
         excludes:
@@ -46,6 +48,7 @@ targets:
     type: app-extension
     platform: iOS
     sources:
+      - path: Shared
       - path: NotificationService
     settings:
       base:

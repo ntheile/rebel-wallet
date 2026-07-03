@@ -55,6 +55,10 @@ struct SettingsView: View {
                     SettingsRow(title: "Nostr keys", caption: manager.state.nostr.npub ?? "No Nostr key") {
                         manager.dispatch(.pushScreen(screen: .profile))
                     }
+                    SettingsDivider()
+                    SettingsRow(title: "Nostr Wallet Connect", caption: nwcConnectionSummary, accent: rebelBlue) {
+                        manager.dispatch(.pushScreen(screen: .nwc))
+                    }
                 }
 
                 SettingsCard(title: "Push Notifications") {
@@ -138,6 +142,14 @@ struct SettingsView: View {
         }
 
         presenter.present(sheet, animated: true)
+    }
+
+    private var nwcConnectionSummary: String {
+        let count = manager.state.nwc.connections.count
+        if count == 1 {
+            return "1 active string"
+        }
+        return "\(count) active strings"
     }
 }
 

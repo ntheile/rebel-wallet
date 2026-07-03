@@ -6,6 +6,12 @@
 .DS_Store
 *.swp
 *.swo
+node_modules/
+.deno/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 *.a
 flake.lock
 staging/

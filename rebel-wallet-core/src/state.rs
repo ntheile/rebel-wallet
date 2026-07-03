@@ -27,12 +27,140 @@ pub struct AppState {
     pub busy: BusyState,
     pub capability_request: Option<CapabilityRequest>,
     pub push_notifications: PushNotificationState,
+    pub nwc: NwcState,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct PushNotificationState {
     pub apns_device_token: Option<String>,
     pub registration_status: String,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwcState {
+    pub connections: Vec<NwcConnection>,
+    pub default_relay: String,
+    pub websocket_enabled: bool,
+    pub websocket_online: bool,
+    pub websocket_status: String,
+    pub pending_wake_requests: Vec<NwcWakeRequest>,
+    pub processed_wake_requests: Vec<NwcProcessedWakeRequest>,
+    pub last_wake_status: String,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NwcConnection {
+    pub id: String,
+    pub name: String,
+    pub relay: String,
+    pub uri: String,
+    pub service_pubkey: String,
+    pub client_pubkey: String,
+    pub budget_sat: u64,
+    pub spent_sat: u64,
+    pub budget_display: String,
+    pub spent_display: String,
+    #[serde(default)]
+    pub budget_interval: NwcBudgetInterval,
+    #[serde(default)]
+    pub budget_interval_display: String,
+    #[serde(default)]
+    pub permissions: Vec<NwcPermission>,
+    #[serde(default)]
+    pub permissions_configured: bool,
+    pub allow_get_balance: bool,
+    pub allow_pay_invoice: bool,
+    pub created_at: u64,
+    pub last_used_at: Option<u64>,
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NwcPermission {
+    PayInvoice,
+    PayKeysend,
+    MakeInvoice,
+    LookupInvoice,
+    ListTransactions,
+    GetBalance,
+    GetInfo,
+    MakeHoldInvoice,
+    CancelHoldInvoice,
+    SettleHoldInvoice,
+}
+
+impl NwcPermission {
+    pub(crate) const ALL: [Self; 10] = [
+        Self::GetInfo,
+        Self::GetBalance,
+        Self::PayInvoice,
+        Self::PayKeysend,
+        Self::MakeInvoice,
+        Self::LookupInvoice,
+        Self::ListTransactions,
+        Self::MakeHoldInvoice,
+        Self::CancelHoldInvoice,
+        Self::SettleHoldInvoice,
+    ];
+}
+
+impl NwcConnection {
+    pub(crate) fn enabled_permissions(&self) -> Vec<NwcPermission> {
+        if self.permissions_configured {
+            return self.permissions.clone();
+        }
+
+        let mut permissions = vec![NwcPermission::GetInfo];
+        if self.allow_get_balance {
+            permissions.push(NwcPermission::GetBalance);
+        }
+        if self.allow_pay_invoice {
+            permissions.push(NwcPermission::PayInvoice);
+        }
+        permissions
+    }
+
+    pub(crate) fn allows_permission(&self, permission: NwcPermission) -> bool {
+        self.enabled_permissions().contains(&permission)
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NwcBudgetInterval {
+    Hourly,
+    #[default]
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl NwcBudgetInterval {
+    pub(crate) fn display_name(&self) -> &'static str {
+        match self {
+            Self::Hourly => "Hourly",
+            Self::Daily => "Daily",
+            Self::Weekly => "Weekly",
+            Self::Monthly => "Monthly",
+        }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwcWakeRequest {
+    pub relay: String,
+    pub event_id: String,
+    pub wallet_service_pubkey: String,
+    pub received_at: u64,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwcProcessedWakeRequest {
+    pub relay: String,
+    pub event_id: String,
+    pub client_pubkey: String,
+    pub method: String,
+    pub status: String,
+    pub received_at: u64,
+    pub processed_at: u64,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -98,6 +226,7 @@ pub enum Screen {
     Send,
     Receive,
     Profile,
+    Nwc,
     LightningAddress,
     Backup,
     Restore,
@@ -552,6 +681,16 @@ impl AppState {
                 apns_device_token: None,
                 registration_status: "Not requested".to_string(),
             },
+            nwc: NwcState {
+                connections: vec![],
+                default_relay: "wss://relay.getalby.com/v1".to_string(),
+                websocket_enabled: true,
+                websocket_online: false,
+                websocket_status: "Offline".to_string(),
+                pending_wake_requests: vec![],
+                processed_wake_requests: vec![],
+                last_wake_status: "No wake requests".to_string(),
+            },
         }
     }
 
@@ -616,6 +755,16 @@ impl AppState {
         };
 
         send::refresh_send_derived(self);
+
+        for connection in &mut self.nwc.connections {
+            if !connection.permissions_configured {
+                connection.permissions = connection.enabled_permissions();
+            }
+            connection.budget_display = format_sats(connection.budget_sat);
+            connection.spent_display = format_sats(connection.spent_sat);
+            connection.budget_interval_display =
+                connection.budget_interval.display_name().to_string();
+        }
 
         self.lightning_address.arkzap_address = self
             .lightning_address

@@ -10,6 +10,7 @@ mod activity;
 mod core;
 mod custom_address;
 mod nostr_support;
+mod nwc;
 mod payments;
 mod persistence;
 mod price;
@@ -25,9 +26,10 @@ use profile_cache::normalize_profile_picture_to_jpeg;
 pub use state::{
     ActivityIconKind, ActivityItem, AppState, BusyState, CapabilityRequest, CapabilityRequestKind,
     Contact, CurrencyOption, LightningAddressRegistrationPhase, LightningAddressState, MainTab,
-    NetworkOption, NostrMessage, NostrState, PriceCurrency, PushNotificationState, ReceiveMethod,
-    ReceivePhase, ReceiveState, Router, Screen, SendDestinationKind, SendPhase, SendState,
-    SetupState, WalletNetwork, WalletState,
+    NetworkOption, NostrMessage, NostrState, NwcBudgetInterval, NwcConnection, NwcPermission,
+    NwcProcessedWakeRequest, NwcState, NwcWakeRequest, PriceCurrency, PushNotificationState,
+    ReceiveMethod, ReceivePhase, ReceiveState, Router, Screen, SendDestinationKind, SendPhase,
+    SendState, SetupState, WalletNetwork, WalletState,
 };
 pub use updates::{AppUpdate, HapticFeedback};
 pub(crate) use updates::{AsyncMsg, CoreMsg};

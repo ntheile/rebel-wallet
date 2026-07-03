@@ -85,6 +85,8 @@ struct ContentView: View {
             ReceiveView(manager: manager)
         case .profile:
             ProfileView(manager: manager)
+        case .nwc:
+            NwcConnectionsView(manager: manager)
         case .lightningAddress:
             LightningAddressView(manager: manager)
         case .backup:
