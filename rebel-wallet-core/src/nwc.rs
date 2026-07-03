@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -13,8 +14,8 @@ use nostr::nips::nip47::{
     PayInvoiceResponse, Request, RequestParams, Response, ResponseResult,
 };
 use nostr_sdk::prelude::{
-    nip04, Client as NostrClient, Event, EventBuilder, EventId, Filter, FinalizeEvent, JsonUtil,
-    Keys, Kind, Tag, ToBech32,
+    nip04, Client as NostrClient, ClientNotification, Event, EventBuilder, EventId, Filter,
+    FinalizeEvent, JsonUtil, Keys, Kind, PublicKey, StreamExt, Tag, Timestamp, ToBech32,
 };
 
 use crate::nostr_support::public_key_from_npub_or_hex;
@@ -24,6 +25,10 @@ use crate::{NwcConnection, NwcPermission, NwcWakeRequest, WalletNetwork};
 
 const NWC_EXTENSION_PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
 const NWC_EXTENSION_PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const NWC_EXTENSION_TOTAL_BUDGET: Duration = Duration::from_secs(26);
+const NWC_EXTENSION_RELAY_LINGER: Duration = Duration::from_secs(4);
+const NWC_EXTENSION_MIN_LINGER_BUDGET: Duration = Duration::from_millis(750);
+const NWC_EXTENSION_MAX_LINGER_EVENTS: usize = 3;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NwcWakeSnapshot {
@@ -142,12 +147,14 @@ async fn process_nwc_event_with_extension_policy(
     event: Event,
     context: NwcServiceContext,
 ) -> anyhow::Result<NwcProcessedWake> {
+    let extension_deadline = Instant::now() + NWC_EXTENSION_TOTAL_BUDGET;
     let request = decrypt_nwc_request(&event, &context.keys)?;
     match request.params {
         RequestParams::GetInfo
         | RequestParams::GetBalance
         | RequestParams::MakeInvoice(_)
-        | RequestParams::PayInvoice(_) => {}
+        | RequestParams::PayInvoice(_)
+        | RequestParams::ListTransactions(_) => {}
         _ => {
             anyhow::bail!(
                 "NSE wake responder skipped {} request; queued for app",
@@ -156,7 +163,7 @@ async fn process_nwc_event_with_extension_policy(
         }
     }
 
-    process_nwc_request_event(wake, event, context).await
+    process_nwc_request_event_inner(wake, event, context, Some(extension_deadline)).await
 }
 
 pub(crate) async fn process_nwc_wake_request(
@@ -172,6 +179,35 @@ pub(crate) async fn process_nwc_request_event(
     event: Event,
     context: NwcServiceContext,
 ) -> anyhow::Result<NwcProcessedWake> {
+    process_nwc_request_event_inner(wake, event, context, None).await
+}
+
+async fn process_nwc_request_event_inner(
+    wake: NwcWakeRequest,
+    event: Event,
+    context: NwcServiceContext,
+    extension_deadline: Option<Instant>,
+) -> anyhow::Result<NwcProcessedWake> {
+    let relay = wake.relay.clone();
+    let client = client_for_relay(&relay).await?;
+    let mut processed =
+        process_nwc_request_event_with_client(&client, wake, event, &context).await?;
+
+    if let Some(deadline) = extension_deadline {
+        linger_for_followup_nwc_requests(&client, &relay, &context, &mut processed, deadline).await;
+    }
+
+    client.shutdown().await;
+
+    Ok(processed)
+}
+
+async fn process_nwc_request_event_with_client(
+    client: &NostrClient,
+    wake: NwcWakeRequest,
+    event: Event,
+    context: &NwcServiceContext,
+) -> anyhow::Result<NwcProcessedWake> {
     let connection = authorized_connection(&event, &context)?;
     let request = decrypt_nwc_request(&event, &context.keys)?;
     let method = request.method.as_str().to_string();
@@ -179,7 +215,6 @@ pub(crate) async fn process_nwc_request_event(
         response_for_request(&request, &context, connection).await;
     let response_event = build_nwc_response_event(&event, response, &context.keys)?;
 
-    let client = client_for_relay(&wake.relay).await?;
     client
         .send_event(&response_event)
         .to([wake.relay.as_str()])
@@ -195,6 +230,109 @@ pub(crate) async fn process_nwc_request_event(
         processed_at: crate::time::now_unix(),
         updated_snapshot_json,
     })
+}
+
+async fn linger_for_followup_nwc_requests(
+    client: &NostrClient,
+    relay: &str,
+    context: &NwcServiceContext,
+    processed: &mut NwcProcessedWake,
+    deadline: Instant,
+) {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining < NWC_EXTENSION_MIN_LINGER_BUDGET {
+        return;
+    }
+
+    let authors = authorized_client_pubkeys(context);
+    if authors.is_empty() {
+        return;
+    }
+
+    let filter = Filter::new()
+        .kind(Kind::WalletConnectRequest)
+        .pubkey(context.keys.public_key())
+        .authors(authors)
+        .since(Timestamp::now() - Duration::from_secs(2))
+        .limit(16);
+    let mut notifications = client.notifications();
+    let subscription = match client.subscribe(vec![(relay, vec![filter])]).await {
+        Ok(output) => output,
+        Err(_) => return,
+    };
+
+    let linger_until = Instant::now() + remaining.min(NWC_EXTENSION_RELAY_LINGER);
+    let mut seen_event_ids = HashSet::from([processed.wake.event_id.clone()]);
+    let mut followups = 0usize;
+
+    while Instant::now() < linger_until && followups < NWC_EXTENSION_MAX_LINGER_EVENTS {
+        let wait_for = linger_until.saturating_duration_since(Instant::now());
+        if wait_for.is_zero() {
+            break;
+        }
+
+        let Some(notification) = tokio::time::timeout(wait_for, notifications.next())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+
+        let ClientNotification::Event {
+            subscription_id,
+            event,
+            ..
+        } = notification
+        else {
+            continue;
+        };
+
+        if &subscription_id != subscription.id() || event.kind != Kind::WalletConnectRequest {
+            continue;
+        }
+
+        let event_id = event.id.to_hex();
+        if !seen_event_ids.insert(event_id.clone()) {
+            continue;
+        }
+
+        if event.verify().is_err() || authorized_connection(&event, context).is_err() {
+            continue;
+        }
+
+        let wake = NwcWakeRequest {
+            relay: relay.to_string(),
+            event_id,
+            wallet_service_pubkey: context.keys.public_key().to_hex(),
+            received_at: crate::time::now_unix(),
+        };
+
+        if let Ok(followup) =
+            process_nwc_request_event_with_client(client, wake, *event, context).await
+        {
+            if followup.updated_snapshot_json.is_some() {
+                processed.updated_snapshot_json = followup.updated_snapshot_json;
+            }
+            followups += 1;
+        }
+    }
+
+    let _ = client.unsubscribe(subscription.id()).await;
+    if followups > 0 {
+        processed.status = format!(
+            "Responded; linger processed {followups} follow-up request{}",
+            if followups == 1 { "" } else { "s" }
+        );
+    }
+}
+
+fn authorized_client_pubkeys(context: &NwcServiceContext) -> Vec<PublicKey> {
+    context
+        .connections
+        .iter()
+        .filter_map(|connection| public_key_from_npub_or_hex(&connection.client_pubkey).ok())
+        .collect()
 }
 
 pub(crate) fn build_nwc_info_event(keys: &Keys) -> anyhow::Result<Event> {
@@ -337,6 +475,15 @@ async fn response_for_request(
                 ),
             }
         }
+        RequestParams::ListTransactions(_) => (
+            Response {
+                result_type: Method::ListTransactions,
+                error: None,
+                result: Some(ResponseResult::ListTransactions(vec![])),
+            },
+            0,
+            None,
+        ),
         _ => (not_implemented_response(request.method.clone()), 0, None),
     };
 

@@ -209,8 +209,8 @@ pub fn process_nwc_wake_from_snapshot(
         Ok(processed) => NwcExtensionWakeResult {
             success: true,
             message: format!(
-                "NSE responded to {} request {}",
-                processed.method, processed.wake.event_id
+                "NSE responded to {} request {} ({})",
+                processed.method, processed.wake.event_id, processed.status
             ),
             notification_body: nwc_notification_body(Some(&processed.method)),
             updated_snapshot_json: processed.updated_snapshot_json,
@@ -259,8 +259,8 @@ pub fn process_nwc_event_from_snapshot(
         Ok(processed) => NwcExtensionWakeResult {
             success: true,
             message: format!(
-                "NSE responded to {} request {}",
-                processed.method, processed.wake.event_id
+                "NSE responded to {} request {} ({})",
+                processed.method, processed.wake.event_id, processed.status
             ),
             notification_body: nwc_notification_body(Some(&processed.method)),
             updated_snapshot_json: processed.updated_snapshot_json,
