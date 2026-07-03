@@ -22,6 +22,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>RebelWalletAppGroupIdentifier</key>
 	<string>$(IOS_APP_GROUP_ID)</string>
+	<key>RebelWalletKeychainAccessGroup</key>
+	<string>$(IOS_KEYCHAIN_ACCESS_GROUP)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>

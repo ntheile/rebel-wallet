@@ -34,6 +34,8 @@
 	<string>$(IOS_APS_ENVIRONMENT)</string>
 	<key>RebelWalletNwcWakeServerURL</key>
 	<string>$(NWC_WAKE_SERVER_URL)</string>
+	<key>RebelWalletKeychainAccessGroup</key>
+	<string>$(IOS_KEYCHAIN_ACCESS_GROUP)</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

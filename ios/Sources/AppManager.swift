@@ -257,6 +257,7 @@ final class AppManager: AppReconciler {
 
 final class KeychainSecretStore: SecretStore {
     private let service = "com.rebelwallet.app"
+    private let accessGroup = KeychainSecretStore.keychainAccessGroup
 
     func getSecret(key: String) -> String? {
         var query = baseQuery(key: key)
@@ -291,10 +292,25 @@ final class KeychainSecretStore: SecretStore {
     }
 
     private func baseQuery(key: String) -> [String: Any] {
-        [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
+    }
+
+    private static var keychainAccessGroup: String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "RebelWalletKeychainAccessGroup") as? String else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("$(") else {
+            return nil
+        }
+        return trimmed
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 enum NwcWakeInboxEvents {
     static let didChange = Notification.Name("RebelWalletNwcWakeInboxDidChange")
@@ -97,11 +98,16 @@ enum NwcWakeInbox {
     private static let queueKey = "nwcWakeQueue"
     private static let debugKey = "nwcWakeDebugLog"
     private static let snapshotKey = "nwcWakeSnapshot"
+    private static let processedEventIdsKey = "nwcWakeProcessedEventIds"
     private static let maxDebugEntries = 30
+    private static let maxProcessedEventIds = 100
 
     static func enqueue(_ request: StoredNwcWakeRequest) {
         guard let defaults = appGroupDefaults() else {
-            NSLog("RebelWallet could not open app group defaults for nwc_wake queue")
+            NSLog("Could not open app group defaults for nwc_wake queue")
+            return
+        }
+        guard !isProcessed(request.eventId, defaults: defaults) else {
             return
         }
 
@@ -118,13 +124,21 @@ enum NwcWakeInbox {
         }
 
         let requests = load(from: defaults)
-        defaults.removeObject(forKey: queueKey)
+            .filter { !isProcessed($0.eventId, defaults: defaults) }
+        let drainedIds = Set(requests.map(\.eventId))
+        let remaining = load(from: defaults)
+            .filter { !drainedIds.contains($0.eventId) && !isProcessed($0.eventId, defaults: defaults) }
+        if remaining.isEmpty {
+            defaults.removeObject(forKey: queueKey)
+        } else {
+            save(remaining, to: defaults)
+        }
         return requests
     }
 
     static func appendDebug(source: String, message: String) {
         guard let defaults = appGroupDefaults() else {
-            NSLog("RebelWallet could not open app group defaults for nwc_wake debug log")
+            NSLog("Could not open app group defaults for nwc_wake debug log")
             return
         }
 
@@ -154,22 +168,66 @@ enum NwcWakeInbox {
 
     static func saveSnapshot(_ snapshotJson: String?) {
         guard let defaults = appGroupDefaults() else {
-            NSLog("RebelWallet could not open app group defaults for nwc_wake snapshot")
+            NSLog("Could not open app group defaults for nwc_wake snapshot")
             return
         }
 
         if let snapshotJson, !snapshotJson.isEmpty {
-            defaults.set(snapshotJson, forKey: snapshotKey)
+            if !NwcWakeKeychainStore.set(snapshotJson, key: snapshotKey) {
+                NSLog("Could not save NWC wake snapshot to Keychain")
+            }
         } else {
-            defaults.removeObject(forKey: snapshotKey)
+            if !NwcWakeKeychainStore.delete(key: snapshotKey) {
+                NSLog("Could not delete NWC wake snapshot from Keychain")
+            }
         }
+        defaults.removeObject(forKey: snapshotKey)
     }
 
     static func snapshot() -> String? {
         guard let defaults = appGroupDefaults() else {
             return nil
         }
-        return defaults.string(forKey: snapshotKey)
+        if let snapshot = NwcWakeKeychainStore.get(key: snapshotKey) {
+            return snapshot
+        }
+        if let legacySnapshot = defaults.string(forKey: snapshotKey), !legacySnapshot.isEmpty {
+            saveSnapshot(legacySnapshot)
+            return legacySnapshot
+        }
+        return nil
+    }
+
+    static func markProcessed(eventId: String) {
+        guard let defaults = appGroupDefaults() else {
+            return
+        }
+
+        var ids = processedEventIds(from: defaults).filter { $0 != eventId }
+        ids.append(eventId)
+        if ids.count > maxProcessedEventIds {
+            ids.removeFirst(ids.count - maxProcessedEventIds)
+        }
+        defaults.set(ids, forKey: processedEventIdsKey)
+        NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+    }
+
+    static func unmarkProcessed(eventId: String) {
+        guard let defaults = appGroupDefaults() else {
+            return
+        }
+
+        var ids = processedEventIds(from: defaults)
+        ids.removeAll { $0 == eventId }
+        defaults.set(ids, forKey: processedEventIdsKey)
+        NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+    }
+
+    static func isProcessed(eventId: String) -> Bool {
+        guard let defaults = appGroupDefaults() else {
+            return false
+        }
+        return isProcessed(eventId, defaults: defaults)
     }
 
     private static func load(from defaults: UserDefaults) -> [StoredNwcWakeRequest] {
@@ -202,6 +260,14 @@ enum NwcWakeInbox {
         defaults.set(data, forKey: debugKey)
     }
 
+    private static func processedEventIds(from defaults: UserDefaults) -> [String] {
+        defaults.stringArray(forKey: processedEventIdsKey) ?? []
+    }
+
+    private static func isProcessed(_ eventId: String, defaults: UserDefaults) -> Bool {
+        processedEventIds(from: defaults).contains(eventId)
+    }
+
     private static func appGroupDefaults() -> UserDefaults? {
         guard
             let appGroupId = Bundle.main.object(forInfoDictionaryKey: "RebelWalletAppGroupIdentifier") as? String,
@@ -210,5 +276,65 @@ enum NwcWakeInbox {
             return nil
         }
         return UserDefaults(suiteName: appGroupId)
+    }
+}
+
+private enum NwcWakeKeychainStore {
+    private static let service = "com.rebelwallet.app.nwc-wake"
+
+    static func get(key: String) -> String? {
+        var query = baseQuery(key: key)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func set(_ value: String, key: String) -> Bool {
+        let data = Data(value.utf8)
+        var query = baseQuery(key: key)
+        let update: [String: Any] = [kSecValueData as String: data]
+
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return true
+        }
+
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func delete(key: String) -> Bool {
+        let status = SecItemDelete(baseQuery(key: key) as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
+    private static func baseQuery(key: String) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
+        ]
+        if let accessGroup = keychainAccessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
+    }
+
+    private static var keychainAccessGroup: String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "RebelWalletKeychainAccessGroup") as? String else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("$(") else {
+            return nil
+        }
+        return trimmed
     }
 }

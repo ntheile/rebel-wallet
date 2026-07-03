@@ -1,4 +1,10 @@
 import UserNotifications
+import os.log
+
+private let nseLog = OSLog(
+    subsystem: Bundle.main.bundleIdentifier ?? "NWC.NotificationService",
+    category: "NWCWake"
+)
 
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
@@ -17,20 +23,30 @@ final class NotificationService: UNNotificationServiceExtension {
         if let wake = StoredNwcWakeRequest(userInfo: request.content.userInfo) {
             currentWake = wake
             logWakePayload(wake)
-            let outcome = respondToWakeIfPossible(wake)
-            if outcome.handled {
+            if NwcWakeInbox.isProcessed(eventId: wake.eventId) {
                 currentWake = nil
-                setGenericWakeNotification(content, body: outcome.notificationBody)
+                setGenericWakeNotification(content, body: "Processing Request")
             } else {
-                NwcWakeInbox.enqueue(wake)
-                currentWake = nil
-                setGenericWakeNotification(content, body: outcome.notificationBody)
+                let outcome = respondToWakeIfPossible(wake)
+                if outcome.handled {
+                    currentWake = nil
+                    setGenericWakeNotification(content, body: outcome.notificationBody)
+                } else {
+                    NwcWakeInbox.enqueue(wake)
+                    currentWake = nil
+                    setGenericWakeNotification(content, body: outcome.notificationBody)
+                }
             }
             content.userInfo = wake.normalizedUserInfo
         } else {
             let message = StoredNwcWakeRequest.parseFailureMessage(userInfo: request.content.userInfo)
             NwcWakeInbox.appendDebug(source: "NSE", message: message)
-            NSLog("RebelWallet NSE did not parse push: %@", message)
+            os_log(
+                "NWC wake push did not parse: %{private}@",
+                log: nseLog,
+                type: .info,
+                message
+            )
         }
 
         contentHandler(content)
@@ -38,11 +54,13 @@ final class NotificationService: UNNotificationServiceExtension {
 
     override func serviceExtensionTimeWillExpire() {
         if let currentWake {
-            NwcWakeInbox.enqueue(currentWake)
-            NwcWakeInbox.appendDebug(
-                source: "NSE",
-                message: "NSE time expired while processing \(currentWake.eventId); queued for app"
-            )
+            if !NwcWakeInbox.isProcessed(eventId: currentWake.eventId) {
+                NwcWakeInbox.enqueue(currentWake)
+                NwcWakeInbox.appendDebug(
+                    source: "NSE",
+                    message: "NSE time expired while processing \(currentWake.eventId); queued for app"
+                )
+            }
         }
         if let bestAttemptContent {
             setGenericWakeNotification(bestAttemptContent)
@@ -51,8 +69,10 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private func logWakePayload(_ payload: StoredNwcWakeRequest) {
-        NSLog(
-            "RebelWallet NSE received nwc_wake event_id=%@ relay=%@ wallet_service_pubkey=%@",
+        os_log(
+            "NWC wake received event_id=%{private}@ relay=%{private}@ wallet_service_pubkey=%{private}@",
+            log: nseLog,
+            type: .info,
             payload.eventId,
             payload.relay,
             payload.walletServicePubkey
@@ -69,6 +89,8 @@ final class NotificationService: UNNotificationServiceExtension {
             NwcWakeInbox.appendDebug(source: "NSE", message: "No local NWC wake snapshot; queued for app")
             return WakeProcessingOutcome(handled: false, notificationBody: "Processing Request")
         }
+
+        NwcWakeInbox.markProcessed(eventId: wake.eventId)
 
         let result: NwcExtensionWakeResult
         if let eventJson = wake.eventJson {
@@ -88,10 +110,19 @@ final class NotificationService: UNNotificationServiceExtension {
             )
         }
         NwcWakeInbox.appendDebug(source: "NSE", message: result.message)
-        if let updatedSnapshot = result.updatedSnapshotJson {
-            NwcWakeInbox.saveSnapshot(updatedSnapshot)
+        if result.success {
+            if let updatedSnapshot = result.updatedSnapshotJson {
+                NwcWakeInbox.saveSnapshot(updatedSnapshot)
+            }
+        } else {
+            NwcWakeInbox.unmarkProcessed(eventId: wake.eventId)
         }
-        NSLog("RebelWallet NSE wake response result: %@", result.message)
+        os_log(
+            "NWC wake response result: %{private}@",
+            log: nseLog,
+            type: .info,
+            result.message
+        )
         return WakeProcessingOutcome(handled: result.success, notificationBody: result.notificationBody)
     }
 

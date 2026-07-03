@@ -7,7 +7,7 @@ use bip39::Mnemonic;
 use super::custom_address_flow::{
     lightning_address_local_part, pending_custom_lightning_address_matches_name,
 };
-use super::{AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
+use super::{nwc_client_secret_key, AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
 use crate::custom_address::amount_msats_to_sat;
 use crate::persistence::{PersistedAppData, PersistedPriceCurrency, ServerConfig};
 use crate::profile_cache::{
@@ -57,6 +57,11 @@ impl AppCore {
             errors.push("wallet seed".to_string());
         }
         let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
+        for connection in &self.state.nwc.connections {
+            let _ = self
+                .secrets
+                .delete_secret(nwc_client_secret_key(&connection.client_pubkey));
+        }
 
         for network in [WalletNetwork::Mainnet, WalletNetwork::Signet] {
             let db_path = self.data_dir.join(network.db_file_name());
@@ -220,6 +225,7 @@ impl AppCore {
                 self.zap_receipts = data.zap_receipts;
                 self.state.nwc.connections = data.nwc_connections;
                 self.state.nwc.websocket_enabled = data.nwc_websocket_enabled;
+                self.hydrate_nwc_connection_uris();
             }
             Err(e) => {
                 self.state.toast = Some(format!("Could not load local app data: {e}"));
@@ -259,6 +265,11 @@ impl AppCore {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| self.state.lightning_address.custom_name.clone());
+        let mut nwc_connections = self.state.nwc.connections.clone();
+        for connection in &mut nwc_connections {
+            connection.uri.clear();
+        }
+
         let data = PersistedAppData {
             nostr,
             receive_amount_sat: self.state.receive.amount_sat,
@@ -274,7 +285,7 @@ impl AppCore {
             pending_custom_lightning_address,
             payment_annotations: self.payment_annotations.clone(),
             zap_receipts: self.zap_receipts.clone(),
-            nwc_connections: self.state.nwc.connections.clone(),
+            nwc_connections,
             nwc_websocket_enabled: self.state.nwc.websocket_enabled,
         };
         if let Ok(raw) = serde_json::to_string_pretty(&data) {

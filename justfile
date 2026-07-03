@@ -31,7 +31,7 @@ run-ios:
 ios-devices:
   xcrun devicectl list devices
 
-run-ios-phone bundle_id="": ios-rust ios-xcframework ios-xcodeproj
+run-ios-phone $bundle_id="": ios-rust ios-xcframework ios-xcodeproj
   #!/usr/bin/env bash
   set -euo pipefail
   set -a

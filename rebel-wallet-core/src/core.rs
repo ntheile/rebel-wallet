@@ -23,7 +23,7 @@ use nostr::nips::nip47::NostrWalletConnectUri;
 use nostr_sdk::prelude::{
     nip04, Client as NostrClient, ClientNotification, Contact as NostrContact, ContactListBuilder,
     Event, EventBuilder, EventBuilderTemplate, Filter, FinalizeEvent, Keys, Kind,
-    PublicKey as NostrPublicKey, RelayUrl, Tag, ToBech32,
+    PublicKey as NostrPublicKey, RelayUrl, SecretKey as NostrSecretKey, Tag, ToBech32,
 };
 use tokio::runtime::Runtime;
 
@@ -68,6 +68,8 @@ mod wallet_lifecycle;
 
 pub(crate) const WALLET_SEED_KEY: &str = "wallet_seed";
 pub(crate) const NOSTR_SECRET_KEY: &str = "nostr_secret";
+const NWC_CLIENT_SECRET_KEY_PREFIX: &str = "nwc_client_secret:";
+const MAX_NWC_WAKE_HISTORY: usize = 30;
 const NOSTR_DERIVATION_PATH: &str = "m/44'/1237'/0'/0/0";
 
 fn profile_picture_download_key(pubkey: &str, remote_url: &str) -> String {
@@ -92,6 +94,22 @@ pub(crate) fn derive_nostr_keys_from_mnemonic(mnemonic: &str) -> anyhow::Result<
         .context("could not derive Nostr key")?;
     let secret_hex = child.private_key.display_secret().to_string();
     Keys::parse(&secret_hex).context("derived invalid Nostr key")
+}
+
+fn nwc_client_secret_key(client_pubkey: &str) -> String {
+    format!("{NWC_CLIENT_SECRET_KEY_PREFIX}{client_pubkey}")
+}
+
+fn build_nwc_connection_uri(
+    secrets: &dyn SecretStore,
+    lud16: Option<String>,
+    connection: &NwcConnection,
+) -> Option<String> {
+    let service_pubkey = public_key_from_npub_or_hex(&connection.service_pubkey).ok()?;
+    let relay = RelayUrl::parse(&connection.relay).ok()?;
+    let client_secret = secrets.get_secret(nwc_client_secret_key(&connection.client_pubkey))?;
+    let client_secret = NostrSecretKey::parse(&client_secret).ok()?;
+    Some(NostrWalletConnectUri::new(service_pubkey, vec![relay], client_secret, lud16).to_string())
 }
 
 async fn wallet_synced_msg(
@@ -555,6 +573,7 @@ impl AppCore {
                         added_requests.push(request);
                     }
                 }
+                self.cap_pending_nwc_wake_requests();
 
                 self.state.nwc.last_wake_status = match added_requests.len() {
                     0 => "No new NWC wake requests".to_string(),
@@ -764,6 +783,15 @@ impl AppCore {
 
         let client_keys = Keys::generate();
         let client_pubkey = client_keys.public_key().to_hex();
+        let client_secret = client_keys.secret_key().to_secret_hex();
+        if !self
+            .secrets
+            .set_secret(nwc_client_secret_key(&client_pubkey), client_secret)
+        {
+            self.state.toast = Some("Could not store NWC secret in Keychain.".to_string());
+            self.request_haptic(HapticFeedback::NotificationError);
+            return;
+        }
         let uri = NostrWalletConnectUri::new(
             service_keys.public_key(),
             vec![relay_url.clone()],
@@ -812,6 +840,14 @@ impl AppCore {
     }
 
     fn delete_nwc_connection(&mut self, id: String) {
+        let deleted_client_pubkeys = self
+            .state
+            .nwc
+            .connections
+            .iter()
+            .filter(|connection| connection.id == id)
+            .map(|connection| connection.client_pubkey.clone())
+            .collect::<Vec<_>>();
         let before = self.state.nwc.connections.len();
         self.state
             .nwc
@@ -820,11 +856,51 @@ impl AppCore {
         if self.state.nwc.connections.len() < before {
             self.state.toast = Some("NWC string deleted.".to_string());
             self.request_haptic(HapticFeedback::NotificationWarning);
+            for client_pubkey in deleted_client_pubkeys {
+                let _ = self
+                    .secrets
+                    .delete_secret(nwc_client_secret_key(&client_pubkey));
+            }
             self.save_app_data();
             if self.state.nwc.connections.is_empty() {
                 self.stop_nwc_relay_sessions();
                 self.state.nwc.websocket_status = "No NWC strings".to_string();
             }
+        }
+    }
+
+    pub(super) fn hydrate_nwc_connection_uris(&mut self) {
+        let secrets = self.secrets.clone();
+        let lud16 = self.state.lightning_address.address.clone();
+        for connection in &mut self.state.nwc.connections {
+            let secret_key = nwc_client_secret_key(&connection.client_pubkey);
+            if secrets.get_secret(secret_key.clone()).is_none() && !connection.uri.is_empty() {
+                if let Ok(uri) = NostrWalletConnectUri::parse(&connection.uri) {
+                    let _ = secrets.set_secret(secret_key, uri.secret.to_secret_hex());
+                }
+            }
+            connection.uri = build_nwc_connection_uri(secrets.as_ref(), lud16.clone(), connection)
+                .unwrap_or_default();
+        }
+    }
+
+    fn cap_pending_nwc_wake_requests(&mut self) {
+        let len = self.state.nwc.pending_wake_requests.len();
+        if len > MAX_NWC_WAKE_HISTORY {
+            self.state
+                .nwc
+                .pending_wake_requests
+                .drain(0..len - MAX_NWC_WAKE_HISTORY);
+        }
+    }
+
+    fn cap_processed_nwc_wake_requests(&mut self) {
+        let len = self.state.nwc.processed_wake_requests.len();
+        if len > MAX_NWC_WAKE_HISTORY {
+            self.state
+                .nwc
+                .processed_wake_requests
+                .drain(0..len - MAX_NWC_WAKE_HISTORY);
         }
     }
 
@@ -930,6 +1006,7 @@ impl AppCore {
         };
 
         self.state.nwc.pending_wake_requests.push(request.clone());
+        self.cap_pending_nwc_wake_requests();
         self.state.nwc.last_wake_status = "Processing live NWC request".to_string();
 
         let context = match self.nwc_service_context() {
@@ -1415,6 +1492,7 @@ impl AppCore {
                 self.state.nwc.last_wake_status =
                     format!("NWC {} request responded.", processed.method);
                 self.state.nwc.processed_wake_requests.push(processed);
+                self.cap_processed_nwc_wake_requests();
                 self.request_haptic(HapticFeedback::NotificationSuccess);
             }
             AsyncMsg::NwcWakeRequestFailed { event_id, error } => {
@@ -1448,7 +1526,14 @@ impl AppCore {
                     format!("Failed on {relay}")
                 };
                 self.state.nwc.last_wake_status = format!("NWC relay failed: {error}");
-                self.request_haptic(HapticFeedback::NotificationWarning);
+                if self.state.nwc.websocket_enabled && !self.state.nwc.connections.is_empty() {
+                    self.state.nwc.websocket_status = format!("Retrying {relay}");
+                    let tx = self.tx.clone();
+                    self.rt.spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        let _ = tx.send(CoreMsg::Action(AppAction::RefreshNwcWebsocket));
+                    });
+                }
             }
             AsyncMsg::PriceUpdated { currency, price } => {
                 self.state.wallet.price_currency = currency;

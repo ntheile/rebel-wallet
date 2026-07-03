@@ -72,6 +72,12 @@ pub struct NwcExtensionWakeResult {
     pub updated_snapshot_json: Option<String>,
 }
 
+fn nwc_extension_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 #[uniffi::export]
 impl FfiApp {
     #[uniffi::constructor]
@@ -187,7 +193,7 @@ pub fn process_nwc_wake_from_snapshot(
         received_at: time::now_unix(),
     };
 
-    let runtime = match tokio::runtime::Runtime::new() {
+    let runtime = match nwc_extension_runtime() {
         Ok(runtime) => runtime,
         Err(e) => {
             return NwcExtensionWakeResult {
@@ -233,7 +239,7 @@ pub fn process_nwc_event_from_snapshot(
         received_at: time::now_unix(),
     };
 
-    let runtime = match tokio::runtime::Runtime::new() {
+    let runtime = match nwc_extension_runtime() {
         Ok(runtime) => runtime,
         Err(e) => {
             return NwcExtensionWakeResult {

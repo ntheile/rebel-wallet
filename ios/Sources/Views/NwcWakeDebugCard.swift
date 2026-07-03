@@ -40,7 +40,7 @@ struct NwcWakeDebugCard: View {
                                 Spacer()
                                 Text(pushRegistrationStatus)
                                     .font(.caption.bold())
-                                    .foregroundStyle(apnsDeviceToken.isEmpty ? mutedText : rebelGreen)
+                                    .foregroundStyle(pushRegistrationStatus == "Registered" ? rebelGreen : mutedText)
                             }
 
                             Text(apnsDeviceToken.isEmpty ? "No device token yet" : apnsDeviceToken)
