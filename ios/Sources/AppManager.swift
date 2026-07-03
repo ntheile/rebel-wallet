@@ -129,6 +129,10 @@ final class AppManager: AppReconciler {
         dispatch(.requestHaptic(feedback: feedback))
     }
 
+    func unregisterNwcWakeConnection(_ connection: NwcConnection) {
+        nwcWakeRegistration.unregister(state: state, connection: connection)
+    }
+
     private func observePushNotificationRegistration() {
         let observer = NotificationCenter.default.addObserver(
             forName: PushNotificationEvents.registrationDidChange,

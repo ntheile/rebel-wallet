@@ -32,7 +32,8 @@ final class NwcWakeRegistrationService {
                         deviceToken: deviceToken,
                         bundleId: bundleId,
                         environment: environment,
-                        connection: connection
+                        connection: connection,
+                        enabled: true
                     )
                 }
                 await MainActor.run {
@@ -46,6 +47,38 @@ final class NwcWakeRegistrationService {
                     self.failedFingerprint = fingerprint
                     self.inFlightFingerprint = nil
                     NwcWakeInbox.appendDebug(source: "App", message: "NWC wake registration failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func unregister(state: AppState, connection: NwcConnection) {
+        guard let serverURL = Self.serverURL else { return }
+        guard let deviceToken = state.pushNotifications.apnsDeviceToken, !deviceToken.isEmpty else { return }
+
+        let installId = installId()
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.nicktee.rebelwallet"
+        let environment = Self.apnsEnvironment
+
+        Task {
+            do {
+                try await Self.register(
+                    serverURL: serverURL,
+                    installId: installId,
+                    deviceToken: deviceToken,
+                    bundleId: bundleId,
+                    environment: environment,
+                    connection: connection,
+                    enabled: false
+                )
+                await MainActor.run {
+                    self.registeredFingerprint = nil
+                    self.failedFingerprint = nil
+                    NwcWakeInbox.appendDebug(source: "App", message: "Unregistered NWC wake connection \(connection.name)")
+                }
+            } catch {
+                await MainActor.run {
+                    NwcWakeInbox.appendDebug(source: "App", message: "NWC wake unregister failed: \(error.localizedDescription)")
                 }
             }
         }
@@ -103,7 +136,8 @@ final class NwcWakeRegistrationService {
         deviceToken: String,
         bundleId: String,
         environment: String,
-        connection: NwcConnection
+        connection: NwcConnection,
+        enabled: Bool
     ) async throws {
         let url = serverURL.appendingPathComponent("register-apns-nwc")
         var request = URLRequest(url: url)
@@ -118,7 +152,7 @@ final class NwcWakeRegistrationService {
             tagged: connection.servicePubkey,
             relay: connection.relay,
             name: connection.name,
-            enabled: true
+            enabled: enabled
         ))
 
         let (_, response) = try await URLSession.shared.data(for: request)

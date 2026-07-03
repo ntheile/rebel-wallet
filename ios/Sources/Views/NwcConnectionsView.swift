@@ -11,7 +11,7 @@ struct NwcConnectionsView: View {
     @State private var permissionPreset: NwcPermissionPreset = .fullAccess
     @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
     @State private var copiedConnectionId: String?
-    @State private var deleteConnectionId: String?
+    @State private var deleteConnection: NwcConnection?
     @State private var pendingCreatedConnectionCopyAfterId: String?
 
     private var connections: [NwcConnection] {
@@ -62,17 +62,18 @@ struct NwcConnectionsView: View {
             copyPendingCreatedConnection(from: newConnections)
         }
         .alert("Delete NWC string?", isPresented: Binding(
-            get: { deleteConnectionId != nil },
-            set: { if !$0 { deleteConnectionId = nil } }
+            get: { deleteConnection != nil },
+            set: { if !$0 { deleteConnection = nil } }
         )) {
             Button("Delete", role: .destructive) {
-                if let deleteConnectionId {
-                    manager.dispatch(.deleteNwcConnection(id: deleteConnectionId))
+                if let deleteConnection {
+                    manager.unregisterNwcWakeConnection(deleteConnection)
+                    manager.dispatch(.deleteNwcConnection(id: deleteConnection.id))
                 }
-                deleteConnectionId = nil
+                deleteConnection = nil
             }
             Button("Cancel", role: .cancel) {
-                deleteConnectionId = nil
+                deleteConnection = nil
             }
         }
     }
@@ -229,7 +230,7 @@ struct NwcConnectionsView: View {
                         uri: nwcUri(connection),
                         copied: copiedConnectionId == connection.id,
                         copy: { copy(connection) },
-                        delete: { deleteConnectionId = connection.id }
+                        delete: { deleteConnection = connection }
                     )
                 }
             }

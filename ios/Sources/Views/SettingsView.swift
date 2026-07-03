@@ -4,15 +4,6 @@ import UIKit
 struct SettingsView: View {
     @Bindable var manager: AppManager
     @Environment(\.walletAccent) private var walletAccent
-    @State private var copiedDeviceToken = false
-
-    private var apnsDeviceToken: String {
-        manager.state.pushNotifications.apnsDeviceToken ?? ""
-    }
-
-    private var pushRegistrationStatus: String {
-        manager.state.pushNotifications.registrationStatus
-    }
 
     var body: some View {
         ScrollView {
@@ -59,42 +50,6 @@ struct SettingsView: View {
                     SettingsRow(title: "Nostr Wallet Connect", caption: nwcConnectionSummary, accent: rebelBlue) {
                         manager.dispatch(.pushScreen(screen: .nwc))
                     }
-                }
-
-                SettingsCard(title: "Push Notifications") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
-                            Text("APNs")
-                                .font(.body)
-                                .foregroundStyle(primaryText)
-                            Spacer()
-                            Text(pushRegistrationStatus)
-                                .font(.caption.bold())
-                                .foregroundStyle(apnsDeviceToken.isEmpty ? mutedText : rebelGreen)
-                        }
-
-                        Text(apnsDeviceToken.isEmpty ? "No device token yet" : apnsDeviceToken)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(apnsDeviceToken.isEmpty ? mutedText : primaryText)
-                            .textSelection(.enabled)
-                            .lineLimit(nil)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Button {
-                            UIPasteboard.general.string = apnsDeviceToken
-                            copiedDeviceToken = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                copiedDeviceToken = false
-                            }
-                        } label: {
-                            Label(copiedDeviceToken ? "Copied" : "Copy token", systemImage: copiedDeviceToken ? "checkmark" : "doc.on.doc")
-                                .font(.caption.bold())
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(apnsDeviceToken.isEmpty)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
                 }
 
                 SettingsCard(title: "Danger Zone") {

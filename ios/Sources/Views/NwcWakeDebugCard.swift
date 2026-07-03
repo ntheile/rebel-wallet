@@ -1,8 +1,18 @@
 import SwiftUI
+import UIKit
 
 struct NwcWakeDebugCard: View {
     @Bindable var manager: AppManager
     @State private var detailsExpanded = false
+    @State private var copiedDeviceToken = false
+
+    private var apnsDeviceToken: String {
+        manager.state.pushNotifications.apnsDeviceToken ?? ""
+    }
+
+    private var pushRegistrationStatus: String {
+        manager.state.pushNotifications.registrationStatus
+    }
 
     var body: some View {
         SettingsCard(title: "NWC Wake Debug") {
@@ -21,6 +31,41 @@ struct NwcWakeDebugCard: View {
                                 NwcDebugValueRow(title: "Last event", value: latest.eventId)
                             }
                         }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Text("APNs")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(mutedText)
+                                Spacer()
+                                Text(pushRegistrationStatus)
+                                    .font(.caption.bold())
+                                    .foregroundStyle(apnsDeviceToken.isEmpty ? mutedText : rebelGreen)
+                            }
+
+                            Text(apnsDeviceToken.isEmpty ? "No device token yet" : apnsDeviceToken)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(apnsDeviceToken.isEmpty ? mutedText : primaryText)
+                                .textSelection(.enabled)
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Button {
+                                UIPasteboard.general.string = apnsDeviceToken
+                                copiedDeviceToken = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                    copiedDeviceToken = false
+                                }
+                            } label: {
+                                Label(copiedDeviceToken ? "Copied" : "Copy token", systemImage: copiedDeviceToken ? "checkmark" : "doc.on.doc")
+                                    .font(.caption.bold())
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(apnsDeviceToken.isEmpty)
+                        }
+                        .padding(12)
+                        .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
 
                         HStack(spacing: 8) {
                             Button {
