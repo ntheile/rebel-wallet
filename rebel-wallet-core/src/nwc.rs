@@ -7,11 +7,14 @@ use anyhow::{anyhow, Context};
 use bark::actions::lightning::pay::LightningSendState;
 use bark::ark::lightning::PaymentHash;
 use bark::lightning_invoice::Bolt11Invoice;
+use bark::movement::{Movement, MovementStatus};
+use bark::persist::models::LightningReceive;
 use bip39::Mnemonic;
 use bitcoin::Amount;
 use nostr::nips::nip47::{
-    ErrorCode, GetBalanceResponse, GetInfoResponse, MakeInvoiceResponse, Method, NIP47Error,
-    PayInvoiceResponse, Request, RequestParams, Response, ResponseResult,
+    ErrorCode, GetBalanceResponse, GetInfoResponse, ListTransactionsRequest, LookupInvoiceRequest,
+    LookupInvoiceResponse, MakeInvoiceResponse, Method, NIP47Error, PayInvoiceResponse, Request,
+    RequestParams, Response, ResponseResult, TransactionState, TransactionType,
 };
 use nostr_sdk::prelude::{
     nip04, Client as NostrClient, ClientNotification, Event, EventBuilder, EventId, Filter,
@@ -154,6 +157,7 @@ async fn process_nwc_event_with_extension_policy(
         | RequestParams::GetBalance
         | RequestParams::MakeInvoice(_)
         | RequestParams::PayInvoice(_)
+        | RequestParams::LookupInvoice(_)
         | RequestParams::ListTransactions(_) => {}
         _ => {
             anyhow::bail!(
@@ -436,17 +440,18 @@ async fn response_for_request(
             0,
             None,
         ),
-        RequestParams::GetBalance => (
-            Response {
-                result_type: Method::GetBalance,
-                error: None,
-                result: Some(ResponseResult::GetBalance(GetBalanceResponse {
-                    balance: context.balance_sat.saturating_mul(1_000),
-                })),
-            },
-            0,
-            None,
-        ),
+        RequestParams::GetBalance => match get_balance_response(context).await {
+            Ok(response) => (response, 0, None),
+            Err(e) => (
+                error_response(
+                    Method::GetBalance,
+                    ErrorCode::Internal,
+                    &format!("Could not read wallet balance: {e:#}"),
+                ),
+                0,
+                None,
+            ),
+        },
         RequestParams::MakeInvoice(params) => match make_invoice_response(params, context).await {
             Ok(response) => (response, 0, None),
             Err(e) => (
@@ -475,15 +480,34 @@ async fn response_for_request(
                 ),
             }
         }
-        RequestParams::ListTransactions(_) => (
-            Response {
-                result_type: Method::ListTransactions,
-                error: None,
-                result: Some(ResponseResult::ListTransactions(vec![])),
-            },
-            0,
-            None,
-        ),
+        RequestParams::LookupInvoice(params) => {
+            match lookup_invoice_response(params, context).await {
+                Ok(response) => (response, 0, None),
+                Err(e) => (
+                    error_response(
+                        Method::LookupInvoice,
+                        ErrorCode::NotFound,
+                        &format!("Could not find invoice: {e:#}"),
+                    ),
+                    0,
+                    None,
+                ),
+            }
+        }
+        RequestParams::ListTransactions(params) => {
+            match list_transactions_response(params, context).await {
+                Ok(response) => (response, 0, None),
+                Err(e) => (
+                    error_response(
+                        Method::ListTransactions,
+                        ErrorCode::Internal,
+                        &format!("Could not list wallet transactions: {e:#}"),
+                    ),
+                    0,
+                    None,
+                ),
+            }
+        }
         _ => (not_implemented_response(request.method.clone()), 0, None),
     };
 
@@ -494,6 +518,148 @@ async fn response_for_request(
     });
 
     (response, amount_sat, updated_snapshot_json)
+}
+
+async fn get_balance_response(context: &NwcServiceContext) -> anyhow::Result<Response> {
+    let wallet = open_wallet_for_extension(context).await?;
+    sync_wallet_for_nwc(&wallet).await;
+    let balance = wallet
+        .balance()
+        .await
+        .context("Bark could not read balance")?;
+
+    Ok(Response {
+        result_type: Method::GetBalance,
+        error: None,
+        result: Some(ResponseResult::GetBalance(GetBalanceResponse {
+            balance: balance.spendable.to_sat().saturating_mul(1_000),
+        })),
+    })
+}
+
+async fn lookup_invoice_response(
+    params: &LookupInvoiceRequest,
+    context: &NwcServiceContext,
+) -> anyhow::Result<Response> {
+    let payment_hash = lookup_payment_hash(params)?;
+    let wallet = open_wallet_for_extension(context).await?;
+    sync_wallet_for_nwc(&wallet).await;
+
+    if let Some(receive) = wallet
+        .lightning_receive_status(payment_hash)
+        .await
+        .context("Bark could not read Lightning receive state")?
+    {
+        return Ok(Response {
+            result_type: Method::LookupInvoice,
+            error: None,
+            result: Some(ResponseResult::LookupInvoice(
+                transaction_from_lightning_receive(&receive),
+            )),
+        });
+    }
+
+    if let Some(transaction) = wallet
+        .history()
+        .await
+        .context("Bark could not read wallet history")?
+        .iter()
+        .find(|movement| movement.lightning_payment_hash() == Some(payment_hash))
+        .and_then(transaction_from_movement)
+    {
+        return Ok(Response {
+            result_type: Method::LookupInvoice,
+            error: None,
+            result: Some(ResponseResult::LookupInvoice(transaction)),
+        });
+    }
+
+    match wallet
+        .lightning_send_state(payment_hash)
+        .await
+        .context("Bark could not read Lightning send state")?
+    {
+        LightningSendState::Paid(paid) => Ok(Response {
+            result_type: Method::LookupInvoice,
+            error: None,
+            result: Some(ResponseResult::LookupInvoice(LookupInvoiceResponse {
+                transaction_type: Some(TransactionType::Outgoing),
+                state: Some(TransactionState::Settled),
+                invoice: params.invoice.clone(),
+                description: None,
+                description_hash: None,
+                preimage: Some(paid.preimage.to_string()),
+                payment_hash: payment_hash.to_string(),
+                amount: params
+                    .invoice
+                    .as_deref()
+                    .and_then(invoice_amount_msat_from_str)
+                    .unwrap_or(0),
+                fees_paid: 0,
+                created_at: Timestamp::from_secs(paid.paid_at.timestamp().max(0) as u64),
+                expires_at: None,
+                settled_at: Some(Timestamp::from_secs(paid.paid_at.timestamp().max(0) as u64)),
+                metadata: None,
+            })),
+        }),
+        LightningSendState::InProgress(send) => Ok(Response {
+            result_type: Method::LookupInvoice,
+            error: None,
+            result: Some(ResponseResult::LookupInvoice(
+                transaction_from_pending_send(&send),
+            )),
+        }),
+        LightningSendState::Unknown => anyhow::bail!("invoice was not found in Bark"),
+    }
+}
+
+async fn list_transactions_response(
+    params: &ListTransactionsRequest,
+    context: &NwcServiceContext,
+) -> anyhow::Result<Response> {
+    let wallet = open_wallet_for_extension(context).await?;
+    sync_wallet_for_nwc(&wallet).await;
+
+    let mut transactions = wallet
+        .history()
+        .await
+        .context("Bark could not read wallet history")?
+        .iter()
+        .filter_map(transaction_from_movement)
+        .collect::<Vec<_>>();
+
+    for receive in wallet
+        .pending_lightning_receives()
+        .await
+        .context("Bark could not read pending Lightning receives")?
+    {
+        transactions.push(transaction_from_lightning_receive(&receive));
+    }
+
+    for send in wallet
+        .pending_lightning_sends()
+        .await
+        .context("Bark could not read pending Lightning sends")?
+    {
+        transactions.push(transaction_from_pending_send(&send));
+    }
+
+    transactions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    transactions.retain(|transaction| transaction_matches_list_request(transaction, params));
+
+    let offset = params.offset.unwrap_or(0) as usize;
+    let limit = params.limit.map(|limit| limit as usize);
+    let transactions = transactions
+        .into_iter()
+        .skip(offset)
+        .take(limit.unwrap_or(usize::MAX))
+        .collect();
+
+    Ok(Response {
+        result_type: Method::ListTransactions,
+        error: None,
+        result: Some(ResponseResult::ListTransactions(transactions)),
+    })
 }
 
 async fn make_invoice_response(
@@ -585,6 +751,200 @@ async fn pay_invoice_response(
         amount_sat,
         updated_connections,
     ))
+}
+
+async fn sync_wallet_for_nwc(wallet: &bark::Wallet) {
+    let _ = tokio::time::timeout(Duration::from_secs(8), wallet.sync()).await;
+}
+
+fn lookup_payment_hash(params: &LookupInvoiceRequest) -> anyhow::Result<PaymentHash> {
+    if let Some(invoice) = params.invoice.as_deref() {
+        let invoice = Bolt11Invoice::from_str(invoice).context("invalid Lightning invoice")?;
+        return Ok((*invoice.payment_hash()).into());
+    }
+
+    let payment_hash = params
+        .payment_hash
+        .as_deref()
+        .ok_or_else(|| anyhow!("lookup_invoice requires invoice or payment_hash"))?;
+    PaymentHash::from_str(payment_hash).context("invalid payment hash")
+}
+
+fn transaction_from_movement(movement: &Movement) -> Option<LookupInvoiceResponse> {
+    let payment_hash = movement.lightning_payment_hash()?;
+    let transaction_type = movement_transaction_type(movement);
+    let amount_sat = movement_amount_sat(movement, transaction_type);
+    let invoice = movement.lightning_invoice().map(ToString::to_string);
+    let preimage = movement_preimage(movement);
+    let created_at = timestamp_from_chrono(movement.time.created_at);
+    let settled_at = match movement.status {
+        MovementStatus::Successful => Some(timestamp_from_chrono(
+            movement
+                .time
+                .completed_at
+                .unwrap_or(movement.time.updated_at),
+        )),
+        _ => None,
+    };
+
+    Some(LookupInvoiceResponse {
+        transaction_type: Some(transaction_type),
+        state: Some(transaction_state_from_movement(movement.status)),
+        invoice,
+        description: None,
+        description_hash: None,
+        preimage,
+        payment_hash: payment_hash.to_string(),
+        amount: amount_sat.saturating_mul(1_000),
+        fees_paid: movement.offchain_fee.to_sat().saturating_mul(1_000),
+        created_at,
+        expires_at: movement
+            .lightning_invoice()
+            .and_then(invoice_expires_at)
+            .map(Timestamp::from_secs),
+        settled_at,
+        metadata: Some(serde_json::Value::Object(movement.metadata.clone())),
+    })
+}
+
+fn transaction_from_lightning_receive(receive: &LightningReceive) -> LookupInvoiceResponse {
+    let created_at = Timestamp::from_secs(receive.invoice.duration_since_epoch().as_secs());
+    let settled_at = receive
+        .finished_at
+        .or(receive.preimage_revealed_at)
+        .map(timestamp_from_chrono);
+
+    LookupInvoiceResponse {
+        transaction_type: Some(TransactionType::Incoming),
+        state: Some(if receive.finished_at.is_some() {
+            TransactionState::Settled
+        } else {
+            TransactionState::Pending
+        }),
+        invoice: Some(receive.invoice.to_string()),
+        description: None,
+        description_hash: None,
+        preimage: receive
+            .preimage_revealed_at
+            .map(|_| receive.payment_preimage.to_string()),
+        payment_hash: receive.payment_hash.to_string(),
+        amount: receive.invoice.amount_milli_satoshis().unwrap_or(0),
+        fees_paid: 0,
+        created_at,
+        expires_at: receive
+            .invoice
+            .expires_at()
+            .map(|expiry| Timestamp::from_secs(expiry.as_secs())),
+        settled_at,
+        metadata: None,
+    }
+}
+
+fn transaction_from_pending_send(
+    send: &bark::actions::lightning::pay::LightningSend,
+) -> LookupInvoiceResponse {
+    LookupInvoiceResponse {
+        transaction_type: Some(TransactionType::Outgoing),
+        state: Some(TransactionState::Pending),
+        invoice: Some(send.invoice.to_string()),
+        description: None,
+        description_hash: None,
+        preimage: None,
+        payment_hash: send.invoice.payment_hash().to_string(),
+        amount: send.payment_amount.to_sat().saturating_mul(1_000),
+        fees_paid: send.fee.to_sat().saturating_mul(1_000),
+        created_at: Timestamp::now(),
+        expires_at: None,
+        settled_at: None,
+        metadata: None,
+    }
+}
+
+fn movement_transaction_type(movement: &Movement) -> TransactionType {
+    if !movement.received_on.is_empty() && movement.sent_to.is_empty() {
+        TransactionType::Incoming
+    } else if movement.effective_balance.to_sat() >= 0 {
+        TransactionType::Incoming
+    } else {
+        TransactionType::Outgoing
+    }
+}
+
+fn movement_amount_sat(movement: &Movement, transaction_type: TransactionType) -> u64 {
+    let destinations = match transaction_type {
+        TransactionType::Incoming => &movement.received_on,
+        TransactionType::Outgoing => &movement.sent_to,
+    };
+    let destination_total = destinations
+        .iter()
+        .map(|destination| destination.amount.to_sat())
+        .sum::<u64>();
+    if destination_total > 0 {
+        return destination_total;
+    }
+
+    movement.effective_balance.to_sat().unsigned_abs()
+}
+
+fn transaction_state_from_movement(status: MovementStatus) -> TransactionState {
+    match status {
+        MovementStatus::Pending => TransactionState::Pending,
+        MovementStatus::Successful => TransactionState::Settled,
+        MovementStatus::Failed | MovementStatus::Canceled => TransactionState::Failed,
+    }
+}
+
+fn movement_preimage(movement: &Movement) -> Option<String> {
+    movement
+        .metadata
+        .get("payment_preimage")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn invoice_expires_at(invoice: &bark::ark::lightning::Invoice) -> Option<u64> {
+    match invoice {
+        bark::ark::lightning::Invoice::Bolt11(invoice) => {
+            invoice.expires_at().map(|expiry| expiry.as_secs())
+        }
+        bark::ark::lightning::Invoice::Bolt12(_) => None,
+    }
+}
+
+fn invoice_amount_msat_from_str(invoice: &str) -> Option<u64> {
+    Bolt11Invoice::from_str(invoice)
+        .ok()
+        .and_then(|invoice| invoice.amount_milli_satoshis())
+}
+
+fn timestamp_from_chrono(timestamp: chrono::DateTime<chrono::Local>) -> Timestamp {
+    Timestamp::from_secs(timestamp.timestamp().max(0) as u64)
+}
+
+fn transaction_matches_list_request(
+    transaction: &LookupInvoiceResponse,
+    params: &ListTransactionsRequest,
+) -> bool {
+    if let Some(from) = params.from {
+        if transaction.created_at < from {
+            return false;
+        }
+    }
+    if let Some(until) = params.until {
+        if transaction.created_at > until {
+            return false;
+        }
+    }
+    if let Some(transaction_type) = params.transaction_type {
+        if transaction.transaction_type != Some(transaction_type) {
+            return false;
+        }
+    }
+    if !params.unpaid.unwrap_or(true) && transaction.state != Some(TransactionState::Settled) {
+        return false;
+    }
+    true
 }
 
 async fn wait_for_paid_invoice(
