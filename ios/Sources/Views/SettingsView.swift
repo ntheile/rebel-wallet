@@ -47,7 +47,12 @@ struct SettingsView: View {
                         manager.dispatch(.pushScreen(screen: .profile))
                     }
                     SettingsDivider()
-                    SettingsRow(title: "Nostr Wallet Connect", caption: nwcConnectionSummary, accent: rebelBlue) {
+                    SettingsRow(
+                        title: "Nostr Wallet Connect",
+                        caption: "Connect Rebel Wallet to an External App",
+                        accent: rebelBlue,
+                        badgeText: nwcConnectionBadge
+                    ) {
                         manager.dispatch(.pushScreen(screen: .nwc))
                     }
                 }
@@ -99,13 +104,11 @@ struct SettingsView: View {
         presenter.present(sheet, animated: true)
     }
 
-    private var nwcConnectionSummary: String {
+    private var nwcConnectionBadge: String? {
         let count = manager.state.nwc.connections.count
-        if count == 1 {
-            return "1 active string"
-        }
-        return "\(count) active strings"
+        return count > 0 ? "\(count)" : nil
     }
+
 }
 
 struct SettingsCard<Content: View>: View {
@@ -132,13 +135,15 @@ struct SettingsRow: View {
     let caption: String?
     var accent: Color?
     var disabled = false
+    var badgeText: String?
     let action: () -> Void
 
-    init(title: String, caption: String? = nil, accent: Color? = nil, disabled: Bool = false, action: @escaping () -> Void) {
+    init(title: String, caption: String? = nil, accent: Color? = nil, disabled: Bool = false, badgeText: String? = nil, action: @escaping () -> Void) {
         self.title = title
         self.caption = caption
         self.accent = accent
         self.disabled = disabled
+        self.badgeText = badgeText
         self.action = action
     }
 
@@ -157,6 +162,14 @@ struct SettingsRow: View {
                     }
                 }
                 Spacer()
+                if let badgeText, !badgeText.isEmpty {
+                    Text(badgeText)
+                        .font(.caption.bold())
+                        .foregroundStyle(accent ?? primaryText)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background((accent ?? primaryText).opacity(0.14), in: Capsule())
+                }
                 Image(systemName: "chevron.right")
                     .foregroundStyle(mutedText)
             }

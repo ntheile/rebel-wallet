@@ -4,49 +4,18 @@ import UIKit
 struct NwcConnectionsView: View {
     @Bindable var manager: AppManager
     @Environment(\.walletAccent) private var walletAccent
-    @State private var name = ""
-    @State private var relay = "wss://relay.getalby.com/v1"
-    @State private var budgetText = "10000"
-    @State private var budgetInterval: NwcBudgetInterval = .daily
-    @State private var permissionPreset: NwcPermissionPreset = .fullAccess
-    @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
     @State private var copiedConnectionId: String?
     @State private var deleteConnection: NwcConnection?
-    @State private var pendingCreatedConnectionCopyAfterId: String?
 
     private var connections: [NwcConnection] {
         manager.state.nwc.connections
     }
 
-    private var parsedBudget: UInt64? {
-        let cleaned = budgetText
-            .replacingOccurrences(of: ",", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.isEmpty {
-            return 0
-        }
-        return UInt64(cleaned)
-    }
-
-    private var canCreate: Bool {
-        parsedBudget != nil
-            && !relay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var permissionsForCreate: [NwcPermission] {
-        switch permissionPreset {
-        case .fullAccess, .readOnly:
-            return permissionPreset.permissions
-        case .custom:
-            return selectedPermissions.sortedForDisplay
-        }
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                createLink
                 connectionsSection
-                createSection
                 websocketSection
                 NwcWakeDebugCard(manager: manager)
             }
@@ -55,12 +24,6 @@ struct NwcConnectionsView: View {
         .navigationTitle("NWC")
         .background(pageBackground)
         .foregroundStyle(primaryText)
-        .onAppear {
-            relay = manager.state.nwc.defaultRelay
-        }
-        .onChange(of: manager.state.nwc.connections) { _, newConnections in
-            copyPendingCreatedConnection(from: newConnections)
-        }
         .alert("Delete NWC string?", isPresented: Binding(
             get: { deleteConnection != nil },
             set: { if !$0 { deleteConnection = nil } }
@@ -76,6 +39,16 @@ struct NwcConnectionsView: View {
                 deleteConnection = nil
             }
         }
+    }
+
+    private var createLink: some View {
+        NavigationLink {
+            NwcCreateConnectionView(manager: manager)
+        } label: {
+            NwcCreateHeroButton(connectionCount: connections.count)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Create NWC")
     }
 
     private var websocketSection: some View {
@@ -129,72 +102,6 @@ struct NwcConnectionsView: View {
         return "Offline"
     }
 
-    private var createSection: some View {
-        SettingsCard(title: "New NWC String") {
-            VStack(alignment: .leading, spacing: 14) {
-                TextField("Name", text: $name)
-                    .textInputAutocapitalization(.words)
-                    .profileField()
-
-                TextField("Relay", text: $relay)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .profileField()
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Budget")
-                        .font(.caption.bold())
-                        .foregroundStyle(mutedText)
-
-                    HStack(spacing: 10) {
-                        TextField("Sats", text: $budgetText)
-                            .keyboardType(.numberPad)
-                            .profileField()
-
-                        ForEach([1_000, 10_000, 50_000], id: \.self) { amount in
-                            Button {
-                                budgetText = "\(amount)"
-                                manager.requestHaptic(.selection)
-                            } label: {
-                                Text(compactSats(amount))
-                                    .font(.caption.bold())
-                                    .frame(minWidth: 44)
-                            }
-                            .buttonStyle(SecondaryButtonStyle())
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Interval")
-                        .font(.caption.bold())
-                        .foregroundStyle(mutedText)
-
-                    Picker("Interval", selection: $budgetInterval) {
-                        ForEach(NwcBudgetInterval.createOptions, id: \.self) { interval in
-                            Text(interval.title)
-                                .tag(interval)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                permissionsSection
-
-                Button {
-                    createConnection()
-                } label: {
-                    Label("Create NWC string", systemImage: "plus.circle.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(PrimaryButtonStyle(color: walletAccent))
-                .disabled(!canCreate)
-            }
-            .padding(14)
-        }
-    }
-
     private var connectionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -215,7 +122,7 @@ struct NwcConnectionsView: View {
                         .foregroundStyle(walletAccent)
                     Text("No NWC strings")
                         .font(.headline)
-                    Text("Create one below to authorize a Nostr Wallet Connect client.")
+                    Text("Create one to authorize a Nostr Wallet Connect client.")
                         .font(.caption)
                         .foregroundStyle(mutedText)
                 }
@@ -237,35 +144,6 @@ struct NwcConnectionsView: View {
         }
     }
 
-    private func createConnection() {
-        guard let parsedBudget else { return }
-        pendingCreatedConnectionCopyAfterId = connections.last?.id ?? ""
-        manager.dispatch(.createNwcConnection(
-            name: name,
-            relay: relay,
-            budgetSat: parsedBudget,
-            budgetInterval: budgetInterval,
-            permissions: permissionsForCreate
-        ))
-        name = ""
-    }
-
-    private func copyPendingCreatedConnection(from updatedConnections: [NwcConnection]) {
-        guard let previousLastId = pendingCreatedConnectionCopyAfterId else { return }
-        guard let newest = updatedConnections.last else { return }
-        guard newest.id != previousLastId else { return }
-
-        pendingCreatedConnectionCopyAfterId = nil
-        UIPasteboard.general.string = nwcUri(newest)
-        copiedConnectionId = newest.id
-        manager.requestHaptic(.impactLight)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            if copiedConnectionId == newest.id {
-                copiedConnectionId = nil
-            }
-        }
-    }
-
     private func copy(_ connection: NwcConnection) {
         UIPasteboard.general.string = nwcUri(connection)
         copiedConnectionId = connection.id
@@ -279,6 +157,130 @@ struct NwcConnectionsView: View {
 
     private func nwcUri(_ connection: NwcConnection) -> String {
         NwcWakeRegistrationService.uriWithWake(connection.uri)
+    }
+}
+
+private struct NwcCreateConnectionView: View {
+    @Bindable var manager: AppManager
+    @Environment(\.walletAccent) private var walletAccent
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var relay = "wss://relay.getalby.com/v1"
+    @State private var budgetText = "10000"
+    @State private var budgetInterval: NwcBudgetInterval = .daily
+    @State private var permissionPreset: NwcPermissionPreset = .fullAccess
+    @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
+    @State private var pendingCreatedConnectionCopyAfterId: String?
+
+    private var connections: [NwcConnection] {
+        manager.state.nwc.connections
+    }
+
+    private var parsedBudget: UInt64? {
+        let cleaned = budgetText
+            .replacingOccurrences(of: ",", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty {
+            return 0
+        }
+        return UInt64(cleaned)
+    }
+
+    private var canCreate: Bool {
+        parsedBudget != nil
+            && !relay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var permissionsForCreate: [NwcPermission] {
+        switch permissionPreset {
+        case .fullAccess, .readOnly:
+            return permissionPreset.permissions
+        case .custom:
+            return selectedPermissions.sortedForDisplay
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                NwcConnectionVisualization()
+                    .frame(maxWidth: .infinity)
+
+                SettingsCard(title: "New NWC String") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        TextField("Name", text: $name)
+                            .textInputAutocapitalization(.words)
+                            .profileField()
+
+                        TextField("Relay", text: $relay)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .profileField()
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Budget")
+                                .font(.caption.bold())
+                                .foregroundStyle(mutedText)
+
+                            HStack(spacing: 10) {
+                                TextField("Sats", text: $budgetText)
+                                    .keyboardType(.numberPad)
+                                    .profileField()
+
+                                ForEach([1_000, 10_000, 50_000], id: \.self) { amount in
+                                    Button {
+                                        budgetText = "\(amount)"
+                                        manager.requestHaptic(.selection)
+                                    } label: {
+                                        Text(compactSats(amount))
+                                            .font(.caption.bold())
+                                            .frame(minWidth: 44)
+                                    }
+                                    .buttonStyle(SecondaryButtonStyle())
+                                }
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Interval")
+                                .font(.caption.bold())
+                                .foregroundStyle(mutedText)
+
+                            Picker("Interval", selection: $budgetInterval) {
+                                ForEach(NwcBudgetInterval.createOptions, id: \.self) { interval in
+                                    Text(interval.title)
+                                        .tag(interval)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+
+                        permissionsSection
+
+                        Button {
+                            createConnection()
+                        } label: {
+                            Label("Create NWC", systemImage: "plus.circle.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(PrimaryButtonStyle(color: walletAccent))
+                        .disabled(!canCreate)
+                    }
+                    .padding(14)
+                }
+            }
+            .padding(16)
+        }
+        .navigationTitle("Create NWC")
+        .background(pageBackground)
+        .foregroundStyle(primaryText)
+        .onAppear {
+            relay = manager.state.nwc.defaultRelay
+        }
+        .onChange(of: manager.state.nwc.connections) { _, newConnections in
+            copyPendingCreatedConnection(from: newConnections)
+        }
     }
 
     private var permissionsSection: some View {
@@ -335,12 +337,113 @@ struct NwcConnectionsView: View {
         }
     }
 
+    private func createConnection() {
+        guard let parsedBudget else { return }
+        pendingCreatedConnectionCopyAfterId = connections.last?.id ?? ""
+        manager.dispatch(.createNwcConnection(
+            name: name,
+            relay: relay,
+            budgetSat: parsedBudget,
+            budgetInterval: budgetInterval,
+            permissions: permissionsForCreate
+        ))
+    }
+
+    private func copyPendingCreatedConnection(from updatedConnections: [NwcConnection]) {
+        guard let previousLastId = pendingCreatedConnectionCopyAfterId else { return }
+        guard let newest = updatedConnections.last else { return }
+        guard newest.id != previousLastId else { return }
+
+        pendingCreatedConnectionCopyAfterId = nil
+        UIPasteboard.general.string = NwcWakeRegistrationService.uriWithWake(newest.uri)
+        manager.requestHaptic(.impactLight)
+        dismiss()
+    }
+
     private func selectPermissionPreset(_ preset: NwcPermissionPreset) {
         permissionPreset = preset
         if preset != .custom {
             selectedPermissions = Set(preset.permissions)
         }
         manager.requestHaptic(.selection)
+    }
+}
+
+private struct NwcCreateHeroButton: View {
+    let connectionCount: Int
+    @Environment(\.walletAccent) private var walletAccent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            NwcConnectionVisualization()
+
+            Label("Create NWC", systemImage: "plus.circle.fill")
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .foregroundStyle(primaryText)
+                .background(walletAccent, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(16)
+        .background(surfaceBackground, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
+    }
+}
+
+private struct NwcConnectionVisualization: View {
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: 10) {
+                RebelMark(size: 68)
+                Text("Rebel Wallet")
+                    .font(.caption.bold())
+                    .foregroundStyle(primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+
+            ZStack {
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [.clear, mutedText.opacity(0.65), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(height: 4)
+
+                Image(systemName: "cable.connector.horizontal")
+                    .font(.system(size: 34, weight: .medium))
+                    .foregroundStyle(mutedText)
+                    .padding(.horizontal, 8)
+                    .background(Color.black, in: Capsule())
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.white.opacity(0.92))
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 38, weight: .semibold))
+                        .foregroundStyle(Color.black.opacity(0.55))
+                }
+                .frame(width: 68, height: 68)
+
+                Text("External App")
+                    .font(.caption.bold())
+                    .foregroundStyle(primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 18)
+        .frame(minHeight: 138)
+        .background(Color.black, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
