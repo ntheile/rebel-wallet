@@ -207,6 +207,7 @@ struct NwcConnectionsView: View {
                 ForEach(connections, id: \.id) { connection in
                     NwcConnectionCard(
                         connection: connection,
+                        uri: nwcUri(connection),
                         copied: copiedConnectionId == connection.id,
                         copy: { copy(connection) },
                         delete: { deleteConnectionId = connection.id }
@@ -229,7 +230,7 @@ struct NwcConnectionsView: View {
     }
 
     private func copy(_ connection: NwcConnection) {
-        UIPasteboard.general.string = connection.uri
+        UIPasteboard.general.string = nwcUri(connection)
         copiedConnectionId = connection.id
         manager.requestHaptic(.impactLight)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
@@ -237,6 +238,10 @@ struct NwcConnectionsView: View {
                 copiedConnectionId = nil
             }
         }
+    }
+
+    private func nwcUri(_ connection: NwcConnection) -> String {
+        NwcWakeRegistrationService.uriWithWake(connection.uri)
     }
 
     private var permissionsSection: some View {
@@ -352,6 +357,7 @@ private struct NwcPermissionToggleRow: View {
 
 private struct NwcConnectionCard: View {
     let connection: NwcConnection
+    let uri: String
     let copied: Bool
     let copy: () -> Void
     let delete: () -> Void
@@ -398,7 +404,7 @@ private struct NwcConnectionCard: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(truncateMiddle(connection.uri, maxLength: 80, prefixCount: 28))
+                Text(truncateMiddle(uri, maxLength: 80, prefixCount: 28))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(primaryText)
                     .textSelection(.enabled)
@@ -428,7 +434,7 @@ private struct NwcConnectionCard: View {
                 }
                 .buttonStyle(SecondaryButtonStyle())
 
-                ShareLink(item: connection.uri) {
+                ShareLink(item: uri) {
                     Label("Share", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
                 }

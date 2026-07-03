@@ -564,6 +564,8 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
     
     func normalizeProfileImageToJpeg(imageBytes: Data)  -> Data?
     
+    func nwcWakeSnapshotJson()  -> String?
+    
     func state()  -> AppState
     
 }
@@ -651,6 +653,14 @@ open func normalizeProfileImageToJpeg(imageBytes: Data) -> Data?  {
     uniffi_rebel_wallet_core_fn_method_ffiapp_normalize_profile_image_to_jpeg(
             self.uniffiCloneHandle(),
         FfiConverterData.lower(imageBytes),$0
+    )
+})
+}
+    
+open func nwcWakeSnapshotJson() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_rebel_wallet_core_fn_method_ffiapp_nwc_wake_snapshot_json(
+            self.uniffiCloneHandle(),$0
     )
 })
 }
@@ -1713,23 +1723,83 @@ public func FfiConverterTypeNwcConnection_lower(_ value: NwcConnection) -> RustB
 }
 
 
+public struct NwcExtensionWakeResult: Equatable, Hashable {
+    public var success: Bool
+    public var message: String
+    public var updatedSnapshotJson: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(success: Bool, message: String, updatedSnapshotJson: String?) {
+        self.success = success
+        self.message = message
+        self.updatedSnapshotJson = updatedSnapshotJson
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NwcExtensionWakeResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNwcExtensionWakeResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcExtensionWakeResult {
+        return
+            try NwcExtensionWakeResult(
+                success: FfiConverterBool.read(from: &buf), 
+                message: FfiConverterString.read(from: &buf), 
+                updatedSnapshotJson: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NwcExtensionWakeResult, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.success, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+        FfiConverterOptionString.write(value.updatedSnapshotJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionWakeResult_lift(_ buf: RustBuffer) throws -> NwcExtensionWakeResult {
+    return try FfiConverterTypeNwcExtensionWakeResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionWakeResult_lower(_ value: NwcExtensionWakeResult) -> RustBuffer {
+    return FfiConverterTypeNwcExtensionWakeResult.lower(value)
+}
+
+
 public struct NwcProcessedWakeRequest: Equatable, Hashable {
     public var relay: String
     public var eventId: String
     public var clientPubkey: String
     public var method: String
     public var status: String
+    public var amountSat: UInt64
     public var receivedAt: UInt64
     public var processedAt: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(relay: String, eventId: String, clientPubkey: String, method: String, status: String, receivedAt: UInt64, processedAt: UInt64) {
+    public init(relay: String, eventId: String, clientPubkey: String, method: String, status: String, amountSat: UInt64, receivedAt: UInt64, processedAt: UInt64) {
         self.relay = relay
         self.eventId = eventId
         self.clientPubkey = clientPubkey
         self.method = method
         self.status = status
+        self.amountSat = amountSat
         self.receivedAt = receivedAt
         self.processedAt = processedAt
     }
@@ -1755,6 +1825,7 @@ public struct FfiConverterTypeNwcProcessedWakeRequest: FfiConverterRustBuffer {
                 clientPubkey: FfiConverterString.read(from: &buf), 
                 method: FfiConverterString.read(from: &buf), 
                 status: FfiConverterString.read(from: &buf), 
+                amountSat: FfiConverterUInt64.read(from: &buf), 
                 receivedAt: FfiConverterUInt64.read(from: &buf), 
                 processedAt: FfiConverterUInt64.read(from: &buf)
         )
@@ -1766,6 +1837,7 @@ public struct FfiConverterTypeNwcProcessedWakeRequest: FfiConverterRustBuffer {
         FfiConverterString.write(value.clientPubkey, into: &buf)
         FfiConverterString.write(value.method, into: &buf)
         FfiConverterString.write(value.status, into: &buf)
+        FfiConverterUInt64.write(value.amountSat, into: &buf)
         FfiConverterUInt64.write(value.receivedAt, into: &buf)
         FfiConverterUInt64.write(value.processedAt, into: &buf)
     }
@@ -5245,6 +5317,27 @@ fileprivate struct FfiConverterSequenceTypeScreen: FfiConverterRustBuffer {
         return seq
     }
 }
+public func processNwcEventFromSnapshot(snapshotJson: String, relay: String, eventId: String, walletServicePubkey: String, eventJson: String) -> NwcExtensionWakeResult  {
+    return try!  FfiConverterTypeNwcExtensionWakeResult_lift(try! rustCall() {
+    uniffi_rebel_wallet_core_fn_func_process_nwc_event_from_snapshot(
+        FfiConverterString.lower(snapshotJson),
+        FfiConverterString.lower(relay),
+        FfiConverterString.lower(eventId),
+        FfiConverterString.lower(walletServicePubkey),
+        FfiConverterString.lower(eventJson),$0
+    )
+})
+}
+public func processNwcWakeFromSnapshot(snapshotJson: String, relay: String, eventId: String, walletServicePubkey: String) -> NwcExtensionWakeResult  {
+    return try!  FfiConverterTypeNwcExtensionWakeResult_lift(try! rustCall() {
+    uniffi_rebel_wallet_core_fn_func_process_nwc_wake_from_snapshot(
+        FfiConverterString.lower(snapshotJson),
+        FfiConverterString.lower(relay),
+        FfiConverterString.lower(eventId),
+        FfiConverterString.lower(walletServicePubkey),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -5261,6 +5354,12 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_rebel_wallet_core_checksum_func_process_nwc_event_from_snapshot() != 901) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_rebel_wallet_core_checksum_func_process_nwc_wake_from_snapshot() != 2246) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_dispatch() != 784) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5268,6 +5367,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_normalize_profile_image_to_jpeg() != 8272) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_rebel_wallet_core_checksum_method_ffiapp_nwc_wake_snapshot_json() != 47111) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_state() != 28404) {

@@ -159,6 +159,7 @@ pub struct NwcProcessedWakeRequest {
     pub client_pubkey: String,
     pub method: String,
     pub status: String,
+    pub amount_sat: u64,
     pub received_at: u64,
     pub processed_at: u64,
 }

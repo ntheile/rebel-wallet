@@ -11,6 +11,7 @@
 		09A525B52C7C1F5F8D67B32A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936FB1B08FF781A9F9997609 /* SettingsView.swift */; };
 		10D82D8BEDF6F8B87C9D3393 /* RebelWalletCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 91954F33C35E52090B74C11A /* RebelWalletCore.xcframework */; };
 		11A29977382725FC272B253A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08790D56E6532CF87DC5EAF5 /* ContentView.swift */; };
+		18DC007A5A51D30A57687770 /* rebel_wallet_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = B95DB396C0ACC1FB08D6D500 /* rebel_wallet_core.swift */; };
 		19450B4EB3A474AF0761CD2E /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0C4E8C892F802690C2E03D /* NotificationService.swift */; };
 		2491CE80085619618553486A /* QRScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8285F313C1C4D80E03963B /* QRScanner.swift */; };
 		24F0E2EC7D4661D438CDB1C6 /* NwcWakeInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B331642D861D9C2C3E7455E /* NwcWakeInbox.swift */; };
@@ -21,6 +22,7 @@
 		326333CB48C83D5B4722E8C9 /* ButtonStyles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D45F236CEBCEB5E130D6D65 /* ButtonStyles.swift */; };
 		430B05A25E1EBA780E5F7A16 /* ContactDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82FC9EE794A5E7927FEE7DF8 /* ContactDetailView.swift */; };
 		5BD7FDC594AE8C2772C8DE0B /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 084A69637C40DAFB20690CE9 /* App.swift */; };
+		5F0CDE902BA5F4FF700244BA /* RebelWalletCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 91954F33C35E52090B74C11A /* RebelWalletCore.xcframework */; };
 		67A132F02B1DCFCF92F79629 /* ProfileImageLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA0C4BD0B40C39BFEC75E99F /* ProfileImageLoader.swift */; };
 		67FF93F9D8D2C554E9276533 /* AppManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 182BE8950E50F58DF4E9DFDB /* AppManager.swift */; };
 		70D30BA2F59014C6B5E1242B /* NwcWakeDebugCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CCE970C3B6681B7BC12B085 /* NwcWakeDebugCard.swift */; };
@@ -34,6 +36,7 @@
 		AC5F9605CCFD3CE1158502B0 /* LaunchSplashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16D83FFD70D94BAE3A8ACC73 /* LaunchSplashView.swift */; };
 		B5AAD623F82BE3B1BDB58880 /* DisplayText.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0724D7DE35C122B119C79 /* DisplayText.swift */; };
 		B757D13B7C830FB1E21C287A /* SendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC5043C96A336BFDB3828A80 /* SendView.swift */; };
+		C1A583700E1AC609ADFA9491 /* NwcWakeRegistrationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23A4B13A1BA1D7519753B272 /* NwcWakeRegistrationService.swift */; };
 		CE9095245DC4CDF7215A797E /* UIKitPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9755A3599BFF7CE9D4C2B1BA /* UIKitPresentation.swift */; };
 		D096C657DFB51D8FC3F689AE /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6865C8CFB78CE40B67FA1DB2 /* ProfileView.swift */; };
 		D4D47575C3B6FFA1C555EF10 /* CommonComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 747F6D6E419A7475169ACED6 /* CommonComponents.swift */; };
@@ -78,6 +81,7 @@
 		182BE8950E50F58DF4E9DFDB /* AppManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppManager.swift; sourceTree = "<group>"; };
 		1CCE970C3B6681B7BC12B085 /* NwcWakeDebugCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwcWakeDebugCard.swift; sourceTree = "<group>"; };
 		1D45F236CEBCEB5E130D6D65 /* ButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ButtonStyles.swift; sourceTree = "<group>"; };
+		23A4B13A1BA1D7519753B272 /* NwcWakeRegistrationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwcWakeRegistrationService.swift; sourceTree = "<group>"; };
 		49D88A349FD70A9153DD2C03 /* App.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		503FC468B99283614CA26E34 /* LightningAddressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightningAddressView.swift; sourceTree = "<group>"; };
 		509EAF54E660C3D06373EA44 /* NotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotificationService.entitlements; sourceTree = "<group>"; };
@@ -109,6 +113,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		6DD9DFEAC2CD82FDC7E81AB0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5F0CDE902BA5F4FF700244BA /* RebelWalletCore.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BC0DC3536DED64E0E8C9923E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -182,6 +194,7 @@
 		8EB165A1A41A6C1DBA2779EF /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				23A4B13A1BA1D7519753B272 /* NwcWakeRegistrationService.swift */,
 				EA0C4BD0B40C39BFEC75E99F /* ProfileImageLoader.swift */,
 			);
 			path = Services;
@@ -280,6 +293,7 @@
 			buildConfigurationList = 6707CD602AF3D8B3AE7A959D /* Build configuration list for PBXNativeTarget "NotificationService" */;
 			buildPhases = (
 				665BFF2C96462D4FFC391BD5 /* Sources */,
+				6DD9DFEAC2CD82FDC7E81AB0 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -349,6 +363,7 @@
 			files = (
 				19450B4EB3A474AF0761CD2E /* NotificationService.swift in Sources */,
 				A254CD83F0CFB086C4E1E988 /* NwcWakeInbox.swift in Sources */,
+				18DC007A5A51D30A57687770 /* rebel_wallet_core.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -373,6 +388,7 @@
 				F7C403482C2E733CD64D4EF0 /* NwcConnectionsView.swift in Sources */,
 				70D30BA2F59014C6B5E1242B /* NwcWakeDebugCard.swift in Sources */,
 				24F0E2EC7D4661D438CDB1C6 /* NwcWakeInbox.swift in Sources */,
+				C1A583700E1AC609ADFA9491 /* NwcWakeRegistrationService.swift in Sources */,
 				67A132F02B1DCFCF92F79629 /* ProfileImageLoader.swift in Sources */,
 				D096C657DFB51D8FC3F689AE /* ProfileView.swift in Sources */,
 				EA14FDB5261179B6A75334DD /* PushNotifications.swift in Sources */,
@@ -476,6 +492,7 @@
 				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				NWC_WAKE_SERVER_URL = "https://wake.bolt12.rocks";
 				PRODUCT_BUNDLE_IDENTIFIER = com.nicktee.rebelwallet;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -489,6 +506,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Frameworks\"",
+				);
 				INFOPLIST_FILE = NotificationService/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -505,6 +526,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Frameworks\"",
+				);
 				INFOPLIST_FILE = NotificationService/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -597,6 +622,7 @@
 				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
+				NWC_WAKE_SERVER_URL = "https://wake.bolt12.rocks";
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nicktee.rebelwallet;
 				PRODUCT_NAME = "$(TARGET_NAME)";

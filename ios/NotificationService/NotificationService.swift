@@ -19,9 +19,14 @@ final class NotificationService: UNNotificationServiceExtension {
                 source: "NSE",
                 message: "Parsed nwc_wake event_id=\(wake.eventId) relay=\(wake.relay)"
             )
-            NwcWakeInbox.enqueue(wake)
-            content.title = content.title.isEmpty ? "Payment request pending" : content.title
-            content.body = content.body.isEmpty ? "Open Rebel Wallet to continue." : content.body
+            if respondToWakeIfPossible(wake) {
+                content.title = content.title.isEmpty ? "Payment request handled" : content.title
+                content.body = content.body.isEmpty ? "Rebel Wallet responded to a wallet request." : content.body
+            } else {
+                NwcWakeInbox.enqueue(wake)
+                content.title = content.title.isEmpty ? "Payment request pending" : content.title
+                content.body = content.body.isEmpty ? "Open Rebel Wallet to continue." : content.body
+            }
             content.userInfo = wake.normalizedUserInfo
         } else {
             let message = StoredNwcWakeRequest.parseFailureMessage(userInfo: request.content.userInfo)
@@ -45,5 +50,36 @@ final class NotificationService: UNNotificationServiceExtension {
             payload.relay,
             payload.walletServicePubkey
         )
+    }
+
+    private func respondToWakeIfPossible(_ wake: StoredNwcWakeRequest) -> Bool {
+        guard let snapshot = NwcWakeInbox.snapshot() else {
+            NwcWakeInbox.appendDebug(source: "NSE", message: "No local NWC wake snapshot; queued for app")
+            return false
+        }
+
+        let result: NwcExtensionWakeResult
+        if let eventJson = wake.eventJson {
+            result = processNwcEventFromSnapshot(
+                snapshotJson: snapshot,
+                relay: wake.relay,
+                eventId: wake.eventId,
+                walletServicePubkey: wake.walletServicePubkey,
+                eventJson: eventJson
+            )
+        } else {
+            result = processNwcWakeFromSnapshot(
+                snapshotJson: snapshot,
+                relay: wake.relay,
+                eventId: wake.eventId,
+                walletServicePubkey: wake.walletServicePubkey
+            )
+        }
+        NwcWakeInbox.appendDebug(source: "NSE", message: result.message)
+        if let updatedSnapshot = result.updatedSnapshotJson {
+            NwcWakeInbox.saveSnapshot(updatedSnapshot)
+        }
+        NSLog("RebelWallet NSE wake response result: %@", result.message)
+        return result.success
     }
 }

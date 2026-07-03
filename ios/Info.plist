@@ -30,6 +30,10 @@
 	<string>Rebel Wallet uses the camera to scan payment QR codes.</string>
 	<key>RebelWalletAppGroupIdentifier</key>
 	<string>$(IOS_APP_GROUP_ID)</string>
+	<key>RebelWalletApnsEnvironment</key>
+	<string>$(IOS_APS_ENVIRONMENT)</string>
+	<key>RebelWalletNwcWakeServerURL</key>
+	<string>$(NWC_WAKE_SERVER_URL)</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

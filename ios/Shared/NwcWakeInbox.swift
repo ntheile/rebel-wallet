@@ -26,12 +26,20 @@ struct StoredNwcWakeRequest: Codable, Hashable {
     let relay: String
     let eventId: String
     let walletServicePubkey: String
+    let eventJson: String?
     let receivedAt: UInt64
 
-    init(relay: String, eventId: String, walletServicePubkey: String, receivedAt: UInt64 = UInt64(Date().timeIntervalSince1970)) {
+    init(
+        relay: String,
+        eventId: String,
+        walletServicePubkey: String,
+        eventJson: String? = nil,
+        receivedAt: UInt64 = UInt64(Date().timeIntervalSince1970)
+    ) {
         self.relay = relay
         self.eventId = eventId
         self.walletServicePubkey = walletServicePubkey
+        self.eventJson = eventJson
         self.receivedAt = receivedAt
     }
 
@@ -45,7 +53,12 @@ struct StoredNwcWakeRequest: Codable, Hashable {
             return nil
         }
 
-        self.init(relay: relay, eventId: eventId, walletServicePubkey: walletServicePubkey)
+        self.init(
+            relay: relay,
+            eventId: eventId,
+            walletServicePubkey: walletServicePubkey,
+            eventJson: userInfo["nwc_event"] as? String
+        )
     }
 
     static func parseFailureMessage(userInfo: [AnyHashable: Any]) -> String {
@@ -66,19 +79,24 @@ struct StoredNwcWakeRequest: Codable, Hashable {
     }
 
     var normalizedUserInfo: [AnyHashable: Any] {
-        [
+        var info: [AnyHashable: Any] = [
             "protocol": "nwc_wake",
             "version": "v1",
             "relay": relay,
             "event_id": eventId,
             "wallet_service_pubkey": walletServicePubkey
         ]
+        if let eventJson {
+            info["nwc_event"] = eventJson
+        }
+        return info
     }
 }
 
 enum NwcWakeInbox {
     private static let queueKey = "nwcWakeQueue"
     private static let debugKey = "nwcWakeDebugLog"
+    private static let snapshotKey = "nwcWakeSnapshot"
     private static let maxDebugEntries = 30
 
     static func enqueue(_ request: StoredNwcWakeRequest) {
@@ -132,6 +150,26 @@ enum NwcWakeInbox {
         }
         defaults.removeObject(forKey: debugKey)
         NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+    }
+
+    static func saveSnapshot(_ snapshotJson: String?) {
+        guard let defaults = appGroupDefaults() else {
+            NSLog("RebelWallet could not open app group defaults for nwc_wake snapshot")
+            return
+        }
+
+        if let snapshotJson, !snapshotJson.isEmpty {
+            defaults.set(snapshotJson, forKey: snapshotKey)
+        } else {
+            defaults.removeObject(forKey: snapshotKey)
+        }
+    }
+
+    static func snapshot() -> String? {
+        guard let defaults = appGroupDefaults() else {
+            return nil
+        }
+        return defaults.string(forKey: snapshotKey)
     }
 
     private static func load(from defaults: UserDefaults) -> [StoredNwcWakeRequest] {

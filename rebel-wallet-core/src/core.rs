@@ -66,8 +66,8 @@ mod profile_prefetch;
 mod send_flow;
 mod wallet_lifecycle;
 
-const WALLET_SEED_KEY: &str = "wallet_seed";
-const NOSTR_SECRET_KEY: &str = "nostr_secret";
+pub(crate) const WALLET_SEED_KEY: &str = "wallet_seed";
+pub(crate) const NOSTR_SECRET_KEY: &str = "nostr_secret";
 const NOSTR_DERIVATION_PATH: &str = "m/44'/1237'/0'/0/0";
 
 fn profile_picture_download_key(pubkey: &str, remote_url: &str) -> String {
@@ -79,7 +79,7 @@ fn send_screen_removed(previous: &[Screen], next: &[Screen]) -> bool {
         && !next.iter().any(|screen| matches!(screen, Screen::Send))
 }
 
-fn derive_nostr_keys_from_mnemonic(mnemonic: &str) -> anyhow::Result<Keys> {
+pub(crate) fn derive_nostr_keys_from_mnemonic(mnemonic: &str) -> anyhow::Result<Keys> {
     let mnemonic = Mnemonic::from_str(mnemonic).context("invalid recovery phrase")?;
     let seed = mnemonic.to_seed("");
     let root = Xpriv::new_master(bitcoin::Network::Bitcoin, &seed)
@@ -875,6 +875,8 @@ impl AppCore {
         };
         Ok(NwcServiceContext {
             keys,
+            wallet_seed: None,
+            wallet_data_dir: None,
             balance_sat: self.state.wallet.balance_sat,
             network: self.state.wallet.network.clone(),
             connections: self.state.nwc.connections.clone(),
@@ -898,6 +900,7 @@ impl AppCore {
                     client_pubkey: processed.client_pubkey,
                     method: processed.method,
                     status: processed.status,
+                    amount_sat: processed.amount_sat,
                     received_at: processed.wake.received_at,
                     processed_at: processed.processed_at,
                 }),
@@ -949,6 +952,7 @@ impl AppCore {
                     client_pubkey: processed.client_pubkey,
                     method: processed.method,
                     status: processed.status,
+                    amount_sat: processed.amount_sat,
                     received_at: processed.wake.received_at,
                     processed_at: processed.processed_at,
                 }),
@@ -1398,6 +1402,10 @@ impl AppCore {
                     .find(|connection| connection.client_pubkey == processed.client_pubkey)
                 {
                     connection.last_used_at = Some(processed.processed_at);
+                    if processed.amount_sat > 0 {
+                        connection.spent_sat =
+                            connection.spent_sat.saturating_add(processed.amount_sat);
+                    }
                     self.save_app_data();
                 }
                 self.state
