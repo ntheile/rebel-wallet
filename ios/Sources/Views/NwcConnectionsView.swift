@@ -8,9 +8,11 @@ struct NwcConnectionsView: View {
     @State private var relay = "wss://relay.getalby.com/v1"
     @State private var budgetText = "10000"
     @State private var budgetInterval: NwcBudgetInterval = .daily
-    @State private var selectedPermissions = Set<NwcPermission>([.getInfo, .getBalance])
+    @State private var permissionPreset: NwcPermissionPreset = .fullAccess
+    @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
     @State private var copiedConnectionId: String?
     @State private var deleteConnectionId: String?
+    @State private var pendingCreatedConnectionCopyAfterId: String?
 
     private var connections: [NwcConnection] {
         manager.state.nwc.connections
@@ -31,12 +33,21 @@ struct NwcConnectionsView: View {
             && !relay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var permissionsForCreate: [NwcPermission] {
+        switch permissionPreset {
+        case .fullAccess, .readOnly:
+            return permissionPreset.permissions
+        case .custom:
+            return selectedPermissions.sortedForDisplay
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                websocketSection
-                createSection
                 connectionsSection
+                createSection
+                websocketSection
                 NwcWakeDebugCard(manager: manager)
             }
             .padding(16)
@@ -46,6 +57,9 @@ struct NwcConnectionsView: View {
         .foregroundStyle(primaryText)
         .onAppear {
             relay = manager.state.nwc.defaultRelay
+        }
+        .onChange(of: manager.state.nwc.connections) { _, newConnections in
+            copyPendingCreatedConnection(from: newConnections)
         }
         .alert("Delete NWC string?", isPresented: Binding(
             get: { deleteConnectionId != nil },
@@ -94,6 +108,11 @@ struct NwcConnectionsView: View {
                 .padding(14)
                 .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
+
+                Text("Optional. NWC Wake handles background delivery; keeping the websocket on can respond faster while Rebel Wallet is open and foregrounded.")
+                    .font(.caption)
+                    .foregroundStyle(mutedText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
         }
@@ -195,7 +214,7 @@ struct NwcConnectionsView: View {
                         .foregroundStyle(walletAccent)
                     Text("No NWC strings")
                         .font(.headline)
-                    Text("Create one above to authorize a Nostr Wallet Connect client.")
+                    Text("Create one below to authorize a Nostr Wallet Connect client.")
                         .font(.caption)
                         .foregroundStyle(mutedText)
                 }
@@ -219,14 +238,31 @@ struct NwcConnectionsView: View {
 
     private func createConnection() {
         guard let parsedBudget else { return }
+        pendingCreatedConnectionCopyAfterId = connections.last?.id ?? ""
         manager.dispatch(.createNwcConnection(
             name: name,
             relay: relay,
             budgetSat: parsedBudget,
             budgetInterval: budgetInterval,
-            permissions: selectedPermissions.sortedForDisplay
+            permissions: permissionsForCreate
         ))
         name = ""
+    }
+
+    private func copyPendingCreatedConnection(from updatedConnections: [NwcConnection]) {
+        guard let previousLastId = pendingCreatedConnectionCopyAfterId else { return }
+        guard let newest = updatedConnections.last else { return }
+        guard newest.id != previousLastId else { return }
+
+        pendingCreatedConnectionCopyAfterId = nil
+        UIPasteboard.general.string = nwcUri(newest)
+        copiedConnectionId = newest.id
+        manager.requestHaptic(.impactLight)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            if copiedConnectionId == newest.id {
+                copiedConnectionId = nil
+            }
+        }
     }
 
     private func copy(_ connection: NwcConnection) {
@@ -246,49 +282,177 @@ struct NwcConnectionsView: View {
 
     private var permissionsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Permissions")
-                    .font(.caption.bold())
-                    .foregroundStyle(mutedText)
-
-                Spacer()
-
-                Button("All") {
-                    selectedPermissions = Set(NwcPermission.createOptions)
-                    manager.requestHaptic(.selection)
-                }
-                .font(.caption.bold())
-                .foregroundStyle(rebelGreen)
-
-                Button("None") {
-                    selectedPermissions.removeAll()
-                    manager.requestHaptic(.selection)
-                }
+            Text("Permissions")
                 .font(.caption.bold())
                 .foregroundStyle(mutedText)
-            }
 
-            VStack(spacing: 10) {
-                ForEach(NwcPermission.createOptions, id: \.self) { permission in
-                    NwcPermissionToggleRow(
-                        icon: permission.icon,
-                        title: permission.title,
-                        caption: permission.methodName,
-                        color: permission.color(walletAccent: walletAccent),
-                        isOn: Binding(
-                            get: { selectedPermissions.contains(permission) },
-                            set: { enabled in
-                                if enabled {
-                                    selectedPermissions.insert(permission)
-                                } else {
-                                    selectedPermissions.remove(permission)
+            NwcPermissionPresetMenu(
+                selection: permissionPreset,
+                select: selectPermissionPreset
+            )
+
+            if permissionPreset == .custom {
+                HStack {
+                    Spacer()
+
+                    Button("All") {
+                        selectedPermissions = Set(NwcPermission.createOptions)
+                        manager.requestHaptic(.selection)
+                    }
+                    .font(.caption.bold())
+                    .foregroundStyle(rebelGreen)
+
+                    Button("None") {
+                        selectedPermissions.removeAll()
+                        manager.requestHaptic(.selection)
+                    }
+                    .font(.caption.bold())
+                    .foregroundStyle(mutedText)
+                }
+
+                VStack(spacing: 10) {
+                    ForEach(NwcPermission.createOptions, id: \.self) { permission in
+                        NwcPermissionToggleRow(
+                            icon: permission.icon,
+                            title: permission.title,
+                            caption: permission.methodName,
+                            color: permission.color(walletAccent: walletAccent),
+                            isOn: Binding(
+                                get: { selectedPermissions.contains(permission) },
+                                set: { enabled in
+                                    if enabled {
+                                        selectedPermissions.insert(permission)
+                                    } else {
+                                        selectedPermissions.remove(permission)
+                                    }
                                 }
-                            }
+                            )
                         )
-                    )
+                    }
                 }
             }
         }
+    }
+
+    private func selectPermissionPreset(_ preset: NwcPermissionPreset) {
+        permissionPreset = preset
+        if preset != .custom {
+            selectedPermissions = Set(preset.permissions)
+        }
+        manager.requestHaptic(.selection)
+    }
+}
+
+private enum NwcPermissionPreset: String, CaseIterable, Identifiable {
+    case fullAccess
+    case readOnly
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fullAccess: return "Full Access"
+        case .readOnly: return "Read Only"
+        case .custom: return "Custom"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .fullAccess: return "Send and receive payments"
+        case .readOnly: return "Receive payments and view history"
+        case .custom: return "Define specific permissions"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .fullAccess: return "arrow.up.arrow.down"
+        case .readOnly: return "arrow.down"
+        case .custom: return "square.and.pencil"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .fullAccess: return rebelGreen
+        case .readOnly: return rebelBlue
+        case .custom: return mutedText
+        }
+    }
+
+    var permissions: [NwcPermission] {
+        switch self {
+        case .fullAccess:
+            return NwcPermission.createOptions
+        case .readOnly:
+            return [
+                .getInfo,
+                .getBalance,
+                .makeInvoice,
+                .lookupInvoice,
+                .listTransactions
+            ]
+        case .custom:
+            return []
+        }
+    }
+}
+
+private struct NwcPermissionPresetMenu: View {
+    let selection: NwcPermissionPreset
+    let select: (NwcPermissionPreset) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(NwcPermissionPreset.allCases) { preset in
+                Button {
+                    select(preset)
+                } label: {
+                    Label(preset.title, systemImage: preset.icon)
+                }
+            }
+        } label: {
+            NwcPermissionPresetLabel(preset: selection)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("NWC permission preset")
+    }
+}
+
+private struct NwcPermissionPresetLabel: View {
+    let preset: NwcPermissionPreset
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: preset.icon)
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(mutedText)
+                .frame(width: 28, height: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(preset.title)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(primaryText)
+
+                Text(preset.caption)
+                    .font(.caption)
+                    .foregroundStyle(mutedText)
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(mutedText)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -403,6 +567,22 @@ private struct NwcConnectionCard: View {
                 .accessibilityLabel("Delete NWC string")
             }
 
+            HStack(spacing: 8) {
+                NwcPolicyPill(text: connection.budgetDisplay, color: primaryText)
+                NwcPolicyPill(text: connection.budgetIntervalDisplay, color: primaryText)
+                if let permissionPreset = connection.permissionPresetForDisplay {
+                    NwcPolicyPill(text: permissionPreset.title, color: permissionPreset.color)
+                }
+            }
+
+            if connection.permissionPresetForDisplay == nil {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), spacing: 8)], alignment: .leading, spacing: 8) {
+                    ForEach(connection.enabledPermissionsForDisplay, id: \.self) { permission in
+                        NwcPolicyPill(text: permission.shortTitle, color: permission.color(walletAccent: rebelBlue))
+                    }
+                }
+            }
+
             VStack(alignment: .leading, spacing: 6) {
                 Text(truncateMiddle(uri, maxLength: 80, prefixCount: 28))
                     .font(.system(.caption, design: .monospaced))
@@ -415,17 +595,6 @@ private struct NwcConnectionCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
-
-            HStack(spacing: 8) {
-                NwcPolicyPill(text: connection.budgetDisplay, color: primaryText)
-                NwcPolicyPill(text: connection.budgetIntervalDisplay, color: primaryText)
-            }
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), spacing: 8)], alignment: .leading, spacing: 8) {
-                ForEach(connection.enabledPermissionsForDisplay, id: \.self) { permission in
-                    NwcPolicyPill(text: permission.shortTitle, color: permission.color(walletAccent: rebelBlue))
-                }
-            }
 
             HStack(spacing: 10) {
                 Button(action: copy) {
@@ -471,6 +640,17 @@ private struct NwcPolicyPill: View {
 }
 
 private extension NwcConnection {
+    var permissionPresetForDisplay: NwcPermissionPreset? {
+        let enabled = Set(enabledPermissionsForDisplay)
+        if enabled == Set(NwcPermissionPreset.fullAccess.permissions) {
+            return .fullAccess
+        }
+        if enabled == Set(NwcPermissionPreset.readOnly.permissions) {
+            return .readOnly
+        }
+        return nil
+    }
+
     var enabledPermissionsForDisplay: [NwcPermission] {
         if permissionsConfigured {
             return permissions.sortedForDisplay
