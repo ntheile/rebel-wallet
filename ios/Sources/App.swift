@@ -3,16 +3,25 @@ import SwiftUI
 @main
 struct RebelWalletApp: App {
     @UIApplicationDelegateAdaptor(RebelWalletAppDelegate.self) private var appDelegate
-    @State private var manager = AppManager()
+    @State private var manager: AppManager?
     @State private var easterEgg = WalletEasterEgg()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
-            ContentView(manager: manager)
+            Group {
+                if let manager {
+                    ContentView(manager: manager)
+                } else {
+                    LaunchSplashView()
+                }
+            }
                 .environment(\.walletAccent, easterEgg.accentColor)
                 .environment(\.walletUsesDellLogo, easterEgg.isDellMode)
                 .preferredColorScheme(.dark)
+                .task {
+                    await loadManagerIfNeeded()
+                }
                 .onAppear {
                     easterEgg.start()
                 }
@@ -20,6 +29,7 @@ struct RebelWalletApp: App {
                     easterEgg.stop()
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    guard let manager else { return }
                     switch phase {
                     case .active:
                         manager.drainQueuedNwcWakeRequests()
@@ -41,5 +51,12 @@ struct RebelWalletApp: App {
                     }
                 }
         }
+    }
+
+    @MainActor
+    private func loadManagerIfNeeded() async {
+        guard manager == nil else { return }
+        let storagePaths = await AppManager.prepareStorage()
+        manager = AppManager(storagePaths: storagePaths)
     }
 }

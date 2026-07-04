@@ -16,24 +16,9 @@ final class AppManager: AppReconciler {
     private var notificationObservers: [NSObjectProtocol] = []
     private let nwcWakeRegistration = NwcWakeRegistrationService()
 
-    init() {
-        let fm = FileManager.default
-        let legacyDataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let legacyCacheDirUrl = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("RebelWallet")
-        let appGroupId = Bundle.main.object(forInfoDictionaryKey: "RebelWalletAppGroupIdentifier") as? String
-        let appGroupRootUrl = appGroupId.flatMap { fm.containerURL(forSecurityApplicationGroupIdentifier: $0) }
-        let sharedRootUrl = appGroupRootUrl?.appendingPathComponent("RustCore", isDirectory: true)
-        let dataDirUrl = sharedRootUrl?.appendingPathComponent("ApplicationSupport", isDirectory: true) ?? legacyDataDirUrl
-        let cacheDirUrl = sharedRootUrl?.appendingPathComponent("Caches", isDirectory: true) ?? legacyCacheDirUrl
-        let dataDir = dataDirUrl.path
-        let cacheDir = cacheDirUrl.path
-        try? fm.createDirectory(at: dataDirUrl, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: cacheDirUrl, withIntermediateDirectories: true)
-        if dataDirUrl != legacyDataDirUrl {
-            Self.migrateLegacyData(from: legacyDataDirUrl, to: dataDirUrl)
-        }
-        Self.removeLegacyProfileCache(from: dataDirUrl)
-
+    init(storagePaths: AppStoragePaths) {
+        let dataDir = storagePaths.dataDir
+        let cacheDir = storagePaths.cacheDir
         let rust = FfiApp(dataDir: dataDir, cacheDir: cacheDir, secretStore: KeychainSecretStore())
         self.rust = rust
 
@@ -50,6 +35,18 @@ final class AppManager: AppReconciler {
         rust.dispatch(action: .bootstrap)
         syncNwcWakeSnapshot()
         drainQueuedNwcWakeRequests()
+    }
+
+    convenience init() {
+        self.init(storagePaths: AppStoragePreparer.prepareSynchronously())
+    }
+
+    nonisolated static func prepareStorage() async -> AppStoragePaths {
+        await AppStoragePreparer.prepare()
+    }
+
+    nonisolated static func prepareStorageSynchronously() -> AppStoragePaths {
+        AppStoragePreparer.prepareSynchronously()
     }
 
     nonisolated func reconcile(update: AppUpdate) {
@@ -201,31 +198,6 @@ final class AppManager: AppReconciler {
         NwcWakeInbox.saveSnapshot(snapshot)
     }
 
-    private static func removeLegacyProfileCache(from dataDirUrl: URL) {
-        let fm = FileManager.default
-        for fileName in ["profiles.sqlite3", "profiles.sqlite3-wal", "profiles.sqlite3-shm"] {
-            try? fm.removeItem(at: dataDirUrl.appendingPathComponent(fileName))
-        }
-        try? fm.removeItem(at: dataDirUrl.appendingPathComponent("profile_pictures"))
-    }
-
-    private static func migrateLegacyData(from legacyDataDirUrl: URL, to dataDirUrl: URL) {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(
-            at: legacyDataDirUrl,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return
-        }
-
-        for sourceUrl in items {
-            let destinationUrl = dataDirUrl.appendingPathComponent(sourceUrl.lastPathComponent)
-            guard !fm.fileExists(atPath: destinationUrl.path) else { continue }
-            try? fm.copyItem(at: sourceUrl, to: destinationUrl)
-        }
-    }
-
     func syncWalletForRefresh() async {
         if state.busy.syncingWallet {
             await waitForWalletSync()
@@ -253,6 +225,66 @@ final class AppManager: AppReconciler {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
     }
+}
+
+struct AppStoragePaths: Sendable {
+    let dataDir: String
+    let cacheDir: String
+}
+
+private enum AppStoragePreparer {
+    static func prepare() async -> AppStoragePaths {
+        await Task.detached(priority: .userInitiated) {
+            prepareSynchronously()
+        }.value
+    }
+
+    static func prepareSynchronously() -> AppStoragePaths {
+        let fm = FileManager.default
+        let legacyDataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let legacyCacheDirUrl = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("RebelWallet")
+        let appGroupId = Bundle.main.object(forInfoDictionaryKey: "RebelWalletAppGroupIdentifier") as? String
+        let appGroupRootUrl = appGroupId.flatMap { fm.containerURL(forSecurityApplicationGroupIdentifier: $0) }
+        let sharedRootUrl = appGroupRootUrl?.appendingPathComponent("RustCore", isDirectory: true)
+        let dataDirUrl = sharedRootUrl?.appendingPathComponent("ApplicationSupport", isDirectory: true) ?? legacyDataDirUrl
+        let cacheDirUrl = sharedRootUrl?.appendingPathComponent("Caches", isDirectory: true) ?? legacyCacheDirUrl
+        let dataDir = dataDirUrl.path
+        let cacheDir = cacheDirUrl.path
+        try? fm.createDirectory(at: dataDirUrl, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: cacheDirUrl, withIntermediateDirectories: true)
+        if dataDirUrl != legacyDataDirUrl {
+            Self.migrateLegacyData(from: legacyDataDirUrl, to: dataDirUrl)
+        }
+        Self.removeLegacyProfileCache(from: dataDirUrl)
+
+        return AppStoragePaths(dataDir: dataDir, cacheDir: cacheDir)
+    }
+
+    private static func removeLegacyProfileCache(from dataDirUrl: URL) {
+        let fm = FileManager.default
+        for fileName in ["profiles.sqlite3", "profiles.sqlite3-wal", "profiles.sqlite3-shm"] {
+            try? fm.removeItem(at: dataDirUrl.appendingPathComponent(fileName))
+        }
+        try? fm.removeItem(at: dataDirUrl.appendingPathComponent("profile_pictures"))
+    }
+
+    private static func migrateLegacyData(from legacyDataDirUrl: URL, to dataDirUrl: URL) {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: legacyDataDirUrl,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for sourceUrl in items {
+            let destinationUrl = dataDirUrl.appendingPathComponent(sourceUrl.lastPathComponent)
+            guard !fm.fileExists(atPath: destinationUrl.path) else { continue }
+            try? fm.copyItem(at: sourceUrl, to: destinationUrl)
+        }
+    }
+
 }
 
 final class KeychainSecretStore: SecretStore {

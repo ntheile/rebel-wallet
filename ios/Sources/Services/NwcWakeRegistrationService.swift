@@ -19,7 +19,7 @@ final class NwcWakeRegistrationService {
 
         inFlightFingerprint = fingerprint
         let installId = installId()
-        let bundleId = Bundle.main.bundleIdentifier ?? "com.nicktee.rebelwallet"
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.rebelwallet.app"
         let environment = Self.apnsEnvironment
         let connections = state.nwc.connections
 
@@ -57,7 +57,7 @@ final class NwcWakeRegistrationService {
         guard let deviceToken = state.pushNotifications.apnsDeviceToken, !deviceToken.isEmpty else { return }
 
         let installId = installId()
-        let bundleId = Bundle.main.bundleIdentifier ?? "com.nicktee.rebelwallet"
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.rebelwallet.app"
         let environment = Self.apnsEnvironment
 
         Task {
