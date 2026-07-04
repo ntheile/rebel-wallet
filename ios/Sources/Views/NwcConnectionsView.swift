@@ -112,9 +112,10 @@ private struct NwcCreateConnectionView: View {
     @Bindable var manager: AppManager
     @Environment(\.walletAccent) private var walletAccent
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var focusedField: NwcCreateField?
     @State private var name = ""
     @State private var relay = "wss://relay.getalby.com/v1"
-    @State private var budgetText = "10000"
+    @State private var budgetText = "10,000"
     @State private var budgetInterval: NwcBudgetInterval = .daily
     @State private var permissionPreset: NwcPermissionPreset = .fullAccess
     @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
@@ -125,9 +126,7 @@ private struct NwcCreateConnectionView: View {
     }
 
     private var parsedBudget: UInt64? {
-        let cleaned = budgetText
-            .replacingOccurrences(of: ",", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = budgetText.filter(\.isNumber)
         if cleaned.isEmpty {
             return 0
         }
@@ -158,12 +157,14 @@ private struct NwcCreateConnectionView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         TextField("Name", text: $name)
                             .textInputAutocapitalization(.words)
+                            .focused($focusedField, equals: .name)
                             .profileField()
 
                         TextField("Relay", text: $relay)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
+                            .focused($focusedField, equals: .relay)
                             .profileField()
 
                         VStack(alignment: .leading, spacing: 10) {
@@ -171,19 +172,40 @@ private struct NwcCreateConnectionView: View {
                                 .font(.caption.bold())
                                 .foregroundStyle(mutedText)
 
-                            HStack(spacing: 10) {
-                                TextField("Sats", text: $budgetText)
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                TextField("", text: $budgetText)
                                     .keyboardType(.numberPad)
-                                    .profileField()
+                                    .focused($focusedField, equals: .budget)
+                                    .multilineTextAlignment(.center)
+                                    .font(.system(size: 34, weight: .light))
+                                    .foregroundStyle(primaryText)
+                                    .frame(minWidth: 90)
+                                    .onChange(of: budgetText) { _, newValue in
+                                        let formatted = formatBudgetInput(newValue)
+                                        if formatted != newValue {
+                                            budgetText = formatted
+                                        }
+                                    }
 
-                                ForEach([1_000, 10_000, 50_000], id: \.self) { amount in
+                                Text("sats")
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(mutedText)
+                                    .frame(width: 42, alignment: .leading)
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .background(Color.black, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.18)))
+
+                            HStack(spacing: 10) {
+                                ForEach([5_000, 10_000, 500_000], id: \.self) { amount in
                                     Button {
-                                        budgetText = "\(amount)"
+                                        budgetText = formatBudgetInput("\(amount)")
                                         manager.requestHaptic(.selection)
                                     } label: {
                                         Text(compactSats(amount))
                                             .font(.caption.bold())
-                                            .frame(minWidth: 44)
+                                            .frame(maxWidth: .infinity)
                                     }
                                     .buttonStyle(SecondaryButtonStyle())
                                 }
@@ -220,6 +242,11 @@ private struct NwcCreateConnectionView: View {
             }
             .padding(16)
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            focusedField = nil
+        }
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Create NWC")
         .background(pageBackground)
         .foregroundStyle(primaryText)
@@ -315,6 +342,29 @@ private struct NwcCreateConnectionView: View {
         }
         manager.requestHaptic(.selection)
     }
+
+    private func formatBudgetInput(_ value: String) -> String {
+        let digits = value.filter(\.isNumber)
+        guard !digits.isEmpty else {
+            return ""
+        }
+
+        var output = ""
+        let reversedDigits = Array(digits.reversed())
+        for (index, character) in reversedDigits.enumerated() {
+            if index > 0 && index.isMultiple(of: 3) {
+                output.append(",")
+            }
+            output.append(character)
+        }
+        return String(output.reversed())
+    }
+}
+
+private enum NwcCreateField: Hashable {
+    case name
+    case relay
+    case budget
 }
 
 private struct NwcCreateHeroButton: View {

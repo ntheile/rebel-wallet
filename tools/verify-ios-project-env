@@ -107,11 +107,16 @@ require_project_value() {
 
 regenerate_project_from_env() {
   echo "verify-ios-project-env: regenerating ios/App.xcodeproj from .env defaults" >&2
-  set -a
-  # shellcheck source=/dev/null
-  source <(printf '%s\n' "$env_contents")
-  set +a
-  (cd ios && xcodegen generate)
+  (
+    cd ios
+    IOS_BUNDLE_ID="$ios_bundle_id" \
+      IOS_DEVELOPMENT_TEAM="$ios_development_team" \
+      IOS_CODE_SIGN_STYLE="$ios_code_sign_style" \
+      IOS_APS_ENVIRONMENT="$ios_aps_environment" \
+      IOS_APP_GROUP_ID="$ios_app_group_id" \
+      NWC_WAKE_SERVER_URL="$nwc_wake_server_url" \
+      xcodegen generate
+  )
 
   if [ "$staged" = true ]; then
     git add ios/App.xcodeproj/project.pbxproj
@@ -136,6 +141,8 @@ validate_project() {
 
 ios_bundle_id="$(require_env_value IOS_BUNDLE_ID)"
 ios_development_team="$(require_env_value IOS_DEVELOPMENT_TEAM)"
+ios_code_sign_style="$(require_env_value IOS_CODE_SIGN_STYLE)"
+ios_aps_environment="$(require_env_value IOS_APS_ENVIRONMENT)"
 ios_app_group_id="$(require_env_value IOS_APP_GROUP_ID)"
 nwc_wake_server_url="$(require_env_value NWC_WAKE_SERVER_URL)"
 
