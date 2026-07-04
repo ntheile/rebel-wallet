@@ -2,10 +2,13 @@ import Foundation
 
 @MainActor
 final class NwcWakeRegistrationService {
+    private static let registrationRetryDelay: TimeInterval = 30
+
     private let installIdKey = "RebelWalletNwcWakeInstallId"
     private var inFlightFingerprint: String?
     private var registeredFingerprint: String?
     private var failedFingerprint: String?
+    private var failedRetryAfter: Date?
 
     func sync(state: AppState) {
         guard let serverURL = Self.serverURL else { return }
@@ -13,7 +16,12 @@ final class NwcWakeRegistrationService {
         guard !state.nwc.connections.isEmpty else { return }
 
         let fingerprint = Self.fingerprint(deviceToken: deviceToken, connections: state.nwc.connections)
-        guard fingerprint != registeredFingerprint, fingerprint != inFlightFingerprint, fingerprint != failedFingerprint else {
+        if fingerprint == failedFingerprint,
+           let failedRetryAfter,
+           Date() < failedRetryAfter {
+            return
+        }
+        guard fingerprint != registeredFingerprint, fingerprint != inFlightFingerprint else {
             return
         }
 
@@ -42,12 +50,14 @@ final class NwcWakeRegistrationService {
                 await MainActor.run {
                     self.registeredFingerprint = fingerprint
                     self.failedFingerprint = nil
+                    self.failedRetryAfter = nil
                     self.inFlightFingerprint = nil
                     NwcWakeInbox.appendDebug(source: "App", message: "Registered \(connections.count) NWC wake connection\(connections.count == 1 ? "" : "s")")
                 }
             } catch {
                 await MainActor.run {
                     self.failedFingerprint = fingerprint
+                    self.failedRetryAfter = Date().addingTimeInterval(Self.registrationRetryDelay)
                     self.inFlightFingerprint = nil
                     NwcWakeInbox.appendDebug(source: "App", message: "NWC wake registration failed: \(error.localizedDescription)")
                 }
@@ -80,6 +90,7 @@ final class NwcWakeRegistrationService {
                 await MainActor.run {
                     self.registeredFingerprint = nil
                     self.failedFingerprint = nil
+                    self.failedRetryAfter = nil
                     NwcWakeInbox.appendDebug(source: "App", message: "Unregistered NWC wake connection \(connection.name)")
                 }
             } catch {

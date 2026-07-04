@@ -3,8 +3,8 @@ use bark::Wallet;
 use crate::nostr_support::FetchedProfileContact;
 use crate::persistence::ZapReceiptRecord;
 use crate::{
-    ActivityItem, AppAction, AppState, NostrMessage, NostrState, NwcProcessedWakeRequest,
-    PriceCurrency, SendDestinationKind,
+    ActivityItem, AppAction, AppState, NostrMessage, NostrState, NwcConnection,
+    NwcProcessedWakeRequest, PriceCurrency, SendDestinationKind,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -145,7 +145,10 @@ pub(crate) enum AsyncMsg {
     NostrPublished(String),
     DirectMessagesLoaded(Vec<NostrMessage>),
     DirectMessageSent(NostrMessage),
-    NwcWakeRequestProcessed(NwcProcessedWakeRequest),
+    NwcWakeRequestProcessed {
+        processed: NwcProcessedWakeRequest,
+        updated_connections: Option<Vec<NwcConnection>>,
+    },
     NwcWakeRequestFailed {
         event_id: String,
         error: String,

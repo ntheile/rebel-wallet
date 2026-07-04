@@ -122,7 +122,7 @@ private struct NwcCreateConnectionView: View {
     @State private var budgetInterval: NwcBudgetInterval = .daily
     @State private var permissionPreset: NwcPermissionPreset = .fullAccess
     @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
-    @State private var pendingCreatedConnectionCopyAfterId: String?
+    @State private var pendingCreatedConnectionExistingIds: Set<String>?
     @State private var customRelayDraft: NwcCustomRelayDraft?
 
     private var connections: [NwcConnection] {
@@ -328,7 +328,8 @@ private struct NwcCreateConnectionView: View {
 
     private func createConnection() {
         guard let parsedBudget else { return }
-        pendingCreatedConnectionCopyAfterId = connections.last?.id ?? ""
+        let existingIds = Set(connections.map(\.id))
+        pendingCreatedConnectionExistingIds = existingIds
         manager.dispatch(.createNwcConnection(
             name: name,
             relay: relay,
@@ -336,14 +337,23 @@ private struct NwcCreateConnectionView: View {
             budgetInterval: budgetInterval,
             permissions: permissionsForCreate
         ))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            if pendingCreatedConnectionExistingIds == existingIds {
+                pendingCreatedConnectionExistingIds = nil
+            }
+        }
     }
 
     private func copyPendingCreatedConnection(from updatedConnections: [NwcConnection]) {
-        guard let previousLastId = pendingCreatedConnectionCopyAfterId else { return }
-        guard let newest = updatedConnections.last else { return }
-        guard newest.id != previousLastId else { return }
+        guard let existingIds = pendingCreatedConnectionExistingIds else { return }
+        guard let newest = updatedConnections.last(where: { !existingIds.contains($0.id) }) else {
+            if updatedConnections.count <= existingIds.count {
+                pendingCreatedConnectionExistingIds = nil
+            }
+            return
+        }
 
-        pendingCreatedConnectionCopyAfterId = nil
+        pendingCreatedConnectionExistingIds = nil
         UIPasteboard.general.string = NwcWakeRegistrationService.uriWithWake(
             newest.uri,
             lud16: manager.state.lightningAddress.address

@@ -325,6 +325,7 @@ struct AppCore {
     profile_info_requests: HashSet<String>,
     payment_annotations: Vec<PaymentAnnotation>,
     zap_receipts: Vec<ZapReceiptRecord>,
+    nwc_in_flight_wake_requests: HashSet<String>,
     rev: u64,
     next_capability_id: u64,
     send_fee_estimate_request_id: u64,
@@ -355,6 +356,7 @@ impl AppCore {
             profile_info_requests: HashSet::new(),
             payment_annotations: Vec::new(),
             zap_receipts: Vec::new(),
+            nwc_in_flight_wake_requests: HashSet::new(),
             rev: 0,
             next_capability_id: 0,
             send_fee_estimate_request_id: 0,
@@ -781,7 +783,7 @@ impl AppCore {
         self.state.nwc.connections.push(NwcConnection {
             id: format!("nwc-{client_pubkey}"),
             name: display_name,
-            relay: relay_storage,
+            relay: relay_storage.clone(),
             uri,
             service_pubkey: service_keys.public_key().to_hex(),
             client_pubkey,
@@ -798,9 +800,7 @@ impl AppCore {
             created_at,
             last_used_at: None,
         });
-        if let Some(primary_relay) = relay_urls.first() {
-            self.state.nwc.default_relay = primary_relay.to_string();
-        }
+        self.state.nwc.default_relay = relay_storage;
         self.state.toast = Some("NWC string created.".to_string());
         self.request_haptic(HapticFeedback::NotificationSuccess);
         self.save_app_data();
@@ -901,12 +901,20 @@ impl AppCore {
                 .processed_wake_requests
                 .iter()
                 .any(|request| request.event_id == event_id)
+            || self.nwc_in_flight_wake_requests.contains(event_id)
     }
 
     fn process_pending_nwc_wake_requests(&mut self) {
-        if self.state.nwc.pending_wake_requests.is_empty() {
+        let Some(request) = self
+            .state
+            .nwc
+            .pending_wake_requests
+            .iter()
+            .find(|request| !self.nwc_in_flight_wake_requests.contains(&request.event_id))
+            .cloned()
+        else {
             return;
-        }
+        };
 
         let context = match self.nwc_service_context() {
             Ok(context) => context,
@@ -916,9 +924,9 @@ impl AppCore {
             }
         };
 
-        for request in self.state.nwc.pending_wake_requests.clone() {
-            self.process_nwc_wake_request(request, context.clone());
-        }
+        self.nwc_in_flight_wake_requests
+            .insert(request.event_id.clone());
+        self.process_nwc_wake_request(request, context);
     }
 
     fn nwc_service_context(&mut self) -> Result<NwcServiceContext, String> {
@@ -955,16 +963,19 @@ impl AppCore {
             .await;
 
             let msg = match result {
-                Ok(processed) => AsyncMsg::NwcWakeRequestProcessed(NwcProcessedWakeRequest {
-                    relay: processed.wake.relay,
-                    event_id: processed.wake.event_id,
-                    client_pubkey: processed.client_pubkey,
-                    method: processed.method,
-                    status: processed.status,
-                    amount_sat: processed.amount_sat,
-                    received_at: processed.wake.received_at,
-                    processed_at: processed.processed_at,
-                }),
+                Ok(processed) => AsyncMsg::NwcWakeRequestProcessed {
+                    updated_connections: processed.updated_connections,
+                    processed: NwcProcessedWakeRequest {
+                        relay: processed.wake.relay,
+                        event_id: processed.wake.event_id,
+                        client_pubkey: processed.client_pubkey,
+                        method: processed.method,
+                        status: processed.status,
+                        amount_sat: processed.amount_sat,
+                        received_at: processed.wake.received_at,
+                        processed_at: processed.processed_at,
+                    },
+                },
                 Err(e) => AsyncMsg::NwcWakeRequestFailed {
                     event_id,
                     error: format!("{e:#}"),
@@ -1318,8 +1329,15 @@ impl AppCore {
                 self.state.toast = Some("Message sent.".to_string());
                 self.request_haptic(HapticFeedback::NotificationSuccess);
             }
-            AsyncMsg::NwcWakeRequestProcessed(processed) => {
-                if let Some(connection) = self
+            AsyncMsg::NwcWakeRequestProcessed {
+                processed,
+                updated_connections,
+            } => {
+                self.nwc_in_flight_wake_requests.remove(&processed.event_id);
+                if let Some(updated_connections) = updated_connections {
+                    self.state.nwc.connections = updated_connections;
+                    self.save_app_data();
+                } else if let Some(connection) = self
                     .state
                     .nwc
                     .connections
@@ -1327,10 +1345,6 @@ impl AppCore {
                     .find(|connection| connection.client_pubkey == processed.client_pubkey)
                 {
                     connection.last_used_at = Some(processed.processed_at);
-                    if processed.amount_sat > 0 {
-                        connection.spent_sat =
-                            connection.spent_sat.saturating_add(processed.amount_sat);
-                    }
                     self.save_app_data();
                 }
                 self.state
@@ -1342,14 +1356,17 @@ impl AppCore {
                 self.state.nwc.processed_wake_requests.push(processed);
                 self.cap_processed_nwc_wake_requests();
                 self.request_haptic(HapticFeedback::NotificationSuccess);
+                self.process_pending_nwc_wake_requests();
             }
             AsyncMsg::NwcWakeRequestFailed { event_id, error } => {
+                self.nwc_in_flight_wake_requests.remove(&event_id);
                 self.state.nwc.last_wake_status = format!("NWC wake failed: {error}");
                 self.state
                     .nwc
                     .pending_wake_requests
                     .retain(|request| request.event_id != event_id);
                 self.request_haptic(HapticFeedback::NotificationWarning);
+                self.process_pending_nwc_wake_requests();
             }
             AsyncMsg::NwcInfoEventPublished { relay } => {
                 self.state.nwc.last_wake_status = format!("NWC info event published to {relay}");
@@ -1454,7 +1471,7 @@ impl AppCore {
             | AsyncMsg::Seed(_)
             | AsyncMsg::DirectMessagesLoaded(_)
             | AsyncMsg::DirectMessageSent(_)
-            | AsyncMsg::NwcWakeRequestProcessed(_)
+            | AsyncMsg::NwcWakeRequestProcessed { .. }
             | AsyncMsg::NwcWakeRequestFailed { .. }
             | AsyncMsg::NwcInfoEventPublished { .. }
             | AsyncMsg::NwcInfoEventFailed { .. }

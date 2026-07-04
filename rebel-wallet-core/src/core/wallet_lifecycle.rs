@@ -58,9 +58,12 @@ impl AppCore {
         }
         let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
         for connection in &self.state.nwc.connections {
-            let _ = self
+            if !self
                 .secrets
-                .delete_secret(nwc_client_secret_key(&connection.client_pubkey));
+                .delete_secret(nwc_client_secret_key(&connection.client_pubkey))
+            {
+                errors.push(format!("NWC secret for {}", connection.name));
+            }
         }
 
         for network in [WalletNetwork::Mainnet, WalletNetwork::Signet] {
@@ -83,6 +86,7 @@ impl AppCore {
         self.zap_receipts.clear();
         self.profile_picture_downloads.clear();
         self.profile_info_requests.clear();
+        self.nwc_in_flight_wake_requests.clear();
 
         let mut state = AppState::initial();
         state.show_launch_splash = false;

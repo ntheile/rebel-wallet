@@ -62,6 +62,7 @@ pub(crate) struct NwcProcessedWake {
     pub(crate) status: String,
     pub(crate) amount_sat: u64,
     pub(crate) processed_at: u64,
+    pub(crate) updated_connections: Option<Vec<NwcConnection>>,
     pub(crate) updated_snapshot_json: Option<String>,
 }
 
@@ -194,16 +195,22 @@ async fn process_nwc_request_event_inner(
 ) -> anyhow::Result<NwcProcessedWake> {
     let relay = wake.relay.clone();
     let client = client_for_relay(&relay).await?;
-    let mut processed =
-        process_nwc_request_event_with_client(&client, wake, event, &context).await?;
 
-    if let Some(deadline) = extension_deadline {
-        linger_for_followup_nwc_requests(&client, &relay, &context, &mut processed, deadline).await;
+    let result = async {
+        let mut processed =
+            process_nwc_request_event_with_client(&client, wake, event, &context).await?;
+
+        if let Some(deadline) = extension_deadline {
+            linger_for_followup_nwc_requests(&client, &relay, context, &mut processed, deadline)
+                .await;
+        }
+
+        Ok(processed)
     }
+    .await;
 
     client.shutdown().await;
-
-    Ok(processed)
+    result
 }
 
 async fn process_nwc_request_event_with_client(
@@ -215,8 +222,13 @@ async fn process_nwc_request_event_with_client(
     let connection = authorized_connection(&event, &context)?;
     let request = decrypt_nwc_request(&event, &context.keys)?;
     let method = request.method.as_str().to_string();
-    let (response, amount_sat, updated_snapshot_json) =
+    let (response, amount_sat, updated_connections) =
         response_for_request(&request, &context, connection).await;
+    let updated_snapshot_json = updated_connections.clone().and_then(|connections| {
+        snapshot_json_from_context(context, connections)
+            .map_err(|e| eprintln!("failed to encode updated NWC snapshot: {e:#}"))
+            .ok()
+    });
     let response_event = build_nwc_response_event(&event, response, &context.keys)?;
 
     client
@@ -232,6 +244,7 @@ async fn process_nwc_request_event_with_client(
         status: "Responded".to_string(),
         amount_sat,
         processed_at: crate::time::now_unix(),
+        updated_connections,
         updated_snapshot_json,
     })
 }
@@ -239,7 +252,7 @@ async fn process_nwc_request_event_with_client(
 async fn linger_for_followup_nwc_requests(
     client: &NostrClient,
     relay: &str,
-    context: &NwcServiceContext,
+    mut context: NwcServiceContext,
     processed: &mut NwcProcessedWake,
     deadline: Instant,
 ) {
@@ -248,7 +261,7 @@ async fn linger_for_followup_nwc_requests(
         return;
     }
 
-    let authors = authorized_client_pubkeys(context);
+    let authors = authorized_client_pubkeys(&context);
     if authors.is_empty() {
         return;
     }
@@ -301,7 +314,7 @@ async fn linger_for_followup_nwc_requests(
             continue;
         }
 
-        if event.verify().is_err() || authorized_connection(&event, context).is_err() {
+        if event.verify().is_err() || authorized_connection(&event, &context).is_err() {
             continue;
         }
 
@@ -313,8 +326,12 @@ async fn linger_for_followup_nwc_requests(
         };
 
         if let Ok(followup) =
-            process_nwc_request_event_with_client(client, wake, *event, context).await
+            process_nwc_request_event_with_client(client, wake, *event, &context).await
         {
+            if let Some(updated_connections) = followup.updated_connections.clone() {
+                context.connections = updated_connections.clone();
+                processed.updated_connections = Some(updated_connections);
+            }
             if followup.updated_snapshot_json.is_some() {
                 processed.updated_snapshot_json = followup.updated_snapshot_json;
             }
@@ -407,7 +424,7 @@ async fn response_for_request(
     request: &Request,
     context: &NwcServiceContext,
     connection: &NwcConnection,
-) -> (Response, u64, Option<String>) {
+) -> (Response, u64, Option<Vec<NwcConnection>>) {
     let permission = permission_for_request(&request.params);
     if !connection.allows_permission(permission) {
         return (
@@ -511,13 +528,7 @@ async fn response_for_request(
         _ => (not_implemented_response(request.method.clone()), 0, None),
     };
 
-    let updated_snapshot_json = updated_connections.and_then(|connections| {
-        snapshot_json_from_context(context, connections)
-            .map_err(|e| eprintln!("failed to encode updated NWC snapshot: {e:#}"))
-            .ok()
-    });
-
-    (response, amount_sat, updated_snapshot_json)
+    (response, amount_sat, updated_connections)
 }
 
 async fn get_balance_response(context: &NwcServiceContext) -> anyhow::Result<Response> {
