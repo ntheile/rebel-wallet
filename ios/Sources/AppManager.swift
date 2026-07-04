@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import Security
 import UIKit
+import UserNotifications
 
 @MainActor
 @Observable
@@ -12,6 +13,7 @@ final class AppManager: AppReconciler {
     private var lastRevApplied: UInt64
     private var lastNwcWakeStatusLogged: String
     private var lastNwcWakeSnapshot: String?
+    private var lastReceiveNotificationKey: String?
     private var receiveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var notificationObservers: [NSObjectProtocol] = []
     private let nwcWakeRegistration = NwcWakeRegistrationService()
@@ -28,6 +30,7 @@ final class AppManager: AppReconciler {
         self.lastRevApplied = initial.rev
         self.lastNwcWakeStatusLogged = initial.nwc.lastWakeStatus
         self.lastNwcWakeSnapshot = nil
+        self.lastReceiveNotificationKey = Self.receiveNotificationKey(initial.receive)
 
         rust.listenForUpdates(reconciler: self)
         observePushNotificationRegistration()
@@ -60,6 +63,7 @@ final class AppManager: AppReconciler {
         case .fullState(let s):
             if s.rev <= lastRevApplied { return }
             recordNwcWakeDebugChanges(nextState: s)
+            notifyIfReceiveCompleted(nextState: s)
             lastRevApplied = s.rev
             state = s
             nwcWakeRegistration.sync(state: s)
@@ -89,6 +93,53 @@ final class AppManager: AppReconciler {
         }
 
         refreshNwcWakeDebugEntries()
+    }
+
+    private func notifyIfReceiveCompleted(nextState: AppState) {
+        guard let key = Self.receiveNotificationKey(nextState.receive) else { return }
+        guard key != lastReceiveNotificationKey else { return }
+
+        lastReceiveNotificationKey = key
+        schedulePaymentReceivedNotification(receive: nextState.receive)
+    }
+
+    private static func receiveNotificationKey(_ receive: ReceiveState) -> String? {
+        guard receive.phase == .success else { return nil }
+
+        if let paymentHash = receive.lightningPaymentHash, receive.lightningPaid {
+            return "lightning:\(paymentHash)"
+        }
+        if let arkAddress = receive.arkAddress {
+            return "ark:\(arkAddress):\(receive.amountSat)"
+        }
+        return nil
+    }
+
+    private func schedulePaymentReceivedNotification(receive: ReceiveState) {
+        let content = UNMutableNotificationContent()
+        content.title = "Payment received"
+        if receive.amountSat > 0 {
+            content.body = "Received \(receive.amountSat.formatted()) sats"
+        } else {
+            content.body = "Received payment"
+        }
+        content.sound = .default
+        content.threadIdentifier = "wallet-receive"
+        content.userInfo = [
+            "type": "payment_received"
+        ]
+
+        let request = UNNotificationRequest(
+            identifier: "payment-received-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                NSLog("RebelWallet failed to schedule receive notification: %@", String(describing: error))
+            }
+        }
     }
 
     /// True while we are showing a receive request and still waiting for the
