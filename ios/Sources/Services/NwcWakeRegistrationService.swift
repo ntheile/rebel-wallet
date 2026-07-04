@@ -26,15 +26,18 @@ final class NwcWakeRegistrationService {
         Task {
             do {
                 for connection in connections {
-                    try await Self.register(
-                        serverURL: serverURL,
-                        installId: installId,
-                        deviceToken: deviceToken,
-                        bundleId: bundleId,
-                        environment: environment,
-                        connection: connection,
-                        enabled: true
-                    )
+                    for relay in Self.relays(for: connection) {
+                        try await Self.register(
+                            serverURL: serverURL,
+                            installId: installId,
+                            deviceToken: deviceToken,
+                            bundleId: bundleId,
+                            environment: environment,
+                            connection: connection,
+                            relay: relay,
+                            enabled: true
+                        )
+                    }
                 }
                 await MainActor.run {
                     self.registeredFingerprint = fingerprint
@@ -62,15 +65,18 @@ final class NwcWakeRegistrationService {
 
         Task {
             do {
-                try await Self.register(
-                    serverURL: serverURL,
-                    installId: installId,
-                    deviceToken: deviceToken,
-                    bundleId: bundleId,
-                    environment: environment,
-                    connection: connection,
-                    enabled: false
-                )
+                for relay in Self.relays(for: connection) {
+                    try await Self.register(
+                        serverURL: serverURL,
+                        installId: installId,
+                        deviceToken: deviceToken,
+                        bundleId: bundleId,
+                        environment: environment,
+                        connection: connection,
+                        relay: relay,
+                        enabled: false
+                    )
+                }
                 await MainActor.run {
                     self.registeredFingerprint = nil
                     self.failedFingerprint = nil
@@ -137,6 +143,7 @@ final class NwcWakeRegistrationService {
         bundleId: String,
         environment: String,
         connection: NwcConnection,
+        relay: String,
         enabled: Bool
     ) async throws {
         let url = serverURL.appendingPathComponent("register-nwc-push")
@@ -151,7 +158,7 @@ final class NwcWakeRegistrationService {
             environment: environment,
             clientPubkey: connection.clientPubkey,
             walletServicePubkey: connection.servicePubkey,
-            relay: connection.relay,
+            relay: relay,
             name: connection.name,
             enabled: enabled
         ))
@@ -168,6 +175,24 @@ final class NwcWakeRegistrationService {
             .sorted()
             .joined(separator: "\n")
         return "\(deviceToken)\n\(connectionFingerprint)"
+    }
+
+    private static func relays(for connection: NwcConnection) -> [String] {
+        var seen = Set<String>()
+        return connection.relay
+            .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",")))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
+            .filter { relay in
+                if seen.contains(relay) {
+                    return false
+                }
+                seen.insert(relay)
+                return true
+            }
+            .prefix(2)
+            .map { String($0) }
     }
 }
 

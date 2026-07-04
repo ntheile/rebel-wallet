@@ -68,6 +68,8 @@ pub(crate) const WALLET_SEED_KEY: &str = "wallet_seed";
 pub(crate) const NOSTR_SECRET_KEY: &str = "nostr_secret";
 const NWC_CLIENT_SECRET_KEY_PREFIX: &str = "nwc_client_secret:";
 const MAX_NWC_WAKE_HISTORY: usize = 30;
+const MAX_NWC_RELAYS_PER_CONNECTION: usize = 2;
+const NWC_RELAY_STORAGE_SEPARATOR: &str = "\n";
 const NOSTR_DERIVATION_PATH: &str = "m/44'/1237'/0'/0/0";
 
 fn profile_picture_download_key(pubkey: &str, remote_url: &str) -> String {
@@ -104,10 +106,65 @@ fn build_nwc_connection_uri(
     connection: &NwcConnection,
 ) -> Option<String> {
     let service_pubkey = public_key_from_npub_or_hex(&connection.service_pubkey).ok()?;
-    let relay = RelayUrl::parse(&connection.relay).ok()?;
+    let relays = connection_nwc_relay_urls(connection);
+    if relays.is_empty() {
+        return None;
+    }
     let client_secret = secrets.get_secret(nwc_client_secret_key(&connection.client_pubkey))?;
     let client_secret = NostrSecretKey::parse(&client_secret).ok()?;
-    Some(NostrWalletConnectUri::new(service_pubkey, vec![relay], client_secret, lud16).to_string())
+    Some(NostrWalletConnectUri::new(service_pubkey, relays, client_secret, lud16).to_string())
+}
+
+fn nwc_relay_values(value: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    value
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .map(str::trim)
+        .filter(|relay| !relay.is_empty())
+        .filter_map(|relay| {
+            let normalized = relay.trim_end_matches('/').to_string();
+            if seen.insert(normalized.clone()) {
+                Some(normalized)
+            } else {
+                None
+            }
+        })
+        .take(MAX_NWC_RELAYS_PER_CONNECTION)
+        .collect()
+}
+
+fn parse_nwc_relay_urls(value: &str, fallback: &str) -> anyhow::Result<Vec<RelayUrl>> {
+    let relay_values = if value.trim().is_empty() {
+        nwc_relay_values(fallback)
+    } else {
+        nwc_relay_values(value)
+    };
+
+    let mut relays = Vec::new();
+    for relay in relay_values {
+        relays.push(RelayUrl::parse(&relay).with_context(|| format!("invalid NWC relay {relay}"))?);
+    }
+
+    if relays.is_empty() {
+        anyhow::bail!("at least one NWC relay is required");
+    }
+
+    Ok(relays)
+}
+
+fn connection_nwc_relay_urls(connection: &NwcConnection) -> Vec<RelayUrl> {
+    nwc_relay_values(&connection.relay)
+        .into_iter()
+        .filter_map(|relay| RelayUrl::parse(&relay).ok())
+        .collect()
+}
+
+fn encode_nwc_relay_urls(relays: &[RelayUrl]) -> String {
+    relays
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(NWC_RELAY_STORAGE_SEPARATOR)
 }
 
 async fn wallet_synced_msg(
@@ -674,16 +731,10 @@ impl AppCore {
             return;
         }
 
-        let relay = relay.trim();
-        let relay = if relay.is_empty() {
-            self.state.nwc.default_relay.as_str()
-        } else {
-            relay
-        };
-        let relay_url = match RelayUrl::parse(relay) {
-            Ok(relay_url) => relay_url,
+        let relay_urls = match parse_nwc_relay_urls(&relay, &self.state.nwc.default_relay) {
+            Ok(relay_urls) => relay_urls,
             Err(_) => {
-                self.state.toast = Some("Enter a valid Nostr relay URL.".to_string());
+                self.state.toast = Some("Enter up to two valid Nostr relay URLs.".to_string());
                 self.request_haptic(HapticFeedback::NotificationError);
                 return;
             }
@@ -710,11 +761,12 @@ impl AppCore {
         }
         let uri = NostrWalletConnectUri::new(
             service_keys.public_key(),
-            vec![relay_url.clone()],
+            relay_urls.clone(),
             client_keys.secret_key().clone(),
             self.state.lightning_address.address.clone(),
         )
         .to_string();
+        let relay_storage = encode_nwc_relay_urls(&relay_urls);
         let created_at = now_unix();
         let trimmed_name = name.trim();
         let display_name = if trimmed_name.is_empty() {
@@ -729,7 +781,7 @@ impl AppCore {
         self.state.nwc.connections.push(NwcConnection {
             id: format!("nwc-{client_pubkey}"),
             name: display_name,
-            relay: relay_url.to_string(),
+            relay: relay_storage,
             uri,
             service_pubkey: service_keys.public_key().to_hex(),
             client_pubkey,
@@ -746,21 +798,28 @@ impl AppCore {
             created_at,
             last_used_at: None,
         });
-        self.state.nwc.default_relay = relay_url.to_string();
+        if let Some(primary_relay) = relay_urls.first() {
+            self.state.nwc.default_relay = primary_relay.to_string();
+        }
         self.state.toast = Some("NWC string created.".to_string());
         self.request_haptic(HapticFeedback::NotificationSuccess);
         self.save_app_data();
         let tx = self.tx.clone();
-        let relay = relay_url.to_string();
+        let relays = relay_urls
+            .into_iter()
+            .map(|relay| relay.to_string())
+            .collect::<Vec<_>>();
         self.rt.spawn(async move {
-            let msg = match publish_nwc_info_event(relay.clone(), service_keys).await {
-                Ok(()) => AsyncMsg::NwcInfoEventPublished { relay },
-                Err(e) => AsyncMsg::NwcInfoEventFailed {
-                    relay,
-                    error: format!("{e:#}"),
-                },
-            };
-            let _ = tx.send(CoreMsg::Async(msg));
+            for relay in relays {
+                let msg = match publish_nwc_info_event(relay.clone(), service_keys.clone()).await {
+                    Ok(()) => AsyncMsg::NwcInfoEventPublished { relay },
+                    Err(e) => AsyncMsg::NwcInfoEventFailed {
+                        relay,
+                        error: format!("{e:#}"),
+                    },
+                };
+                let _ = tx.send(CoreMsg::Async(msg));
+            }
         });
     }
 

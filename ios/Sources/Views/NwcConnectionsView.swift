@@ -114,7 +114,7 @@ private struct NwcCreateConnectionView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedField: NwcCreateField?
     @State private var name = ""
-    @State private var relay = "wss://relay.getalby.com/v1"
+    @State private var relay = "wss://relay.getalby.com\nwss://relay2.getalby.com"
     @State private var budgetText = "10,000"
     @State private var budgetInterval: NwcBudgetInterval = .daily
     @State private var permissionPreset: NwcPermissionPreset = .fullAccess
@@ -136,7 +136,7 @@ private struct NwcCreateConnectionView: View {
 
     private var canCreate: Bool {
         parsedBudget != nil
-            && !relay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !nwcRelayURLs(relay).isEmpty
     }
 
     private var permissionsForCreate: [NwcPermission] {
@@ -356,7 +356,7 @@ private struct NwcCreateConnectionView: View {
 
     private func selectRelayPreset(_ preset: NwcRelayPreset?) {
         if let preset {
-            relay = preset.url
+            relay = encodeNwcRelayURLs(preset.urls)
         }
         focusedField = nil
         manager.requestHaptic(.selection)
@@ -400,43 +400,46 @@ private struct NwcRelayPreset: Identifiable, Hashable {
     let id: String
     let title: String
     let caption: String
-    let url: String
+    let urls: [String]
     let icon: String
 
     static let all: [NwcRelayPreset] = [
         NwcRelayPreset(
             id: "alby",
             title: "Alby NWC",
-            caption: "Dedicated NWC relay",
-            url: "wss://relay.getalby.com/v1",
+            caption: "Dedicated NWC relay with fallback",
+            urls: [
+                "wss://relay.getalby.com",
+                "wss://relay2.getalby.com",
+            ],
             icon: "bolt.fill"
         ),
         NwcRelayPreset(
             id: "primal",
             title: "Primal",
             caption: "Public Nostr relay",
-            url: "wss://relay.primal.net",
+            urls: ["wss://relay.primal.net"],
             icon: "antenna.radiowaves.left.and.right"
         ),
         NwcRelayPreset(
             id: "noslol",
             title: "nos.lol",
             caption: "Public Nostr relay",
-            url: "wss://nos.lol",
+            urls: ["wss://nos.lol"],
             icon: "antenna.radiowaves.left.and.right"
         ),
         NwcRelayPreset(
             id: "nostrband",
             title: "Nostr.band",
             caption: "Public Nostr relay",
-            url: "wss://relay.nostr.band",
+            urls: ["wss://relay.nostr.band"],
             icon: "antenna.radiowaves.left.and.right"
         ),
     ]
 
     static func matching(_ url: String) -> NwcRelayPreset? {
-        let normalized = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        return all.first { $0.url == normalized }
+        let normalized = nwcRelayURLs(url)
+        return all.first { $0.urls == normalized }
     }
 }
 
@@ -473,19 +476,22 @@ private struct NwcCustomRelaySheet: View {
     @Binding var relay: String
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
-    @State private var draftRelay: String
+    @State private var primaryRelay: String
+    @State private var fallbackRelay: String
 
-    private var cleanedRelay: String {
-        draftRelay.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var cleanedRelays: [String] {
+        nwcRelayURLs([primaryRelay, fallbackRelay].joined(separator: "\n"))
     }
 
     private var canSave: Bool {
-        !cleanedRelay.isEmpty
+        !cleanedRelays.isEmpty
     }
 
     init(relay: Binding<String>, initialRelay: String) {
         _relay = relay
-        _draftRelay = State(initialValue: initialRelay)
+        let relays = nwcRelayURLs(initialRelay)
+        _primaryRelay = State(initialValue: relays.first ?? "")
+        _fallbackRelay = State(initialValue: relays.dropFirst().first ?? "")
     }
 
     var body: some View {
@@ -495,14 +501,20 @@ private struct NwcCustomRelaySheet: View {
                     .font(.headline)
                     .foregroundStyle(primaryText)
 
-                TextField("wss://relay.example.com", text: $draftRelay)
+                TextField("wss://relay.example.com", text: $primaryRelay)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
                     .focused($focused)
                     .profileField()
 
-                Text("Use a websocket relay URL that supports NWC events.")
+                TextField("Optional fallback relay", text: $fallbackRelay)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .profileField()
+
+                Text("Use websocket relay URLs that support NWC events.")
                     .font(.caption)
                     .foregroundStyle(mutedText)
 
@@ -522,7 +534,7 @@ private struct NwcCustomRelaySheet: View {
 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        relay = cleanedRelay
+                        relay = encodeNwcRelayURLs(cleanedRelays)
                         dismiss()
                     }
                     .disabled(!canSave)
@@ -545,11 +557,11 @@ private struct NwcRelayPresetLabel: View {
 
     private var caption: String {
         if let selection {
-            return selection.url
+            return selection.urls.joined(separator: " + ")
         }
 
-        let trimmed = relay.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "Enter relay URL below" : trimmed
+        let relays = nwcRelayURLs(relay)
+        return relays.isEmpty ? "Enter relay URL" : relays.joined(separator: " + ")
     }
 
     private var icon: String {
@@ -845,7 +857,7 @@ private struct NwcConnectionCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(connection.name)
                         .font(.headline)
-                    Text(connection.relay)
+                    Text(nwcRelayURLs(connection.relay).joined(separator: " + "))
                         .font(.caption)
                         .foregroundStyle(mutedText)
                         .lineLimit(1)
@@ -1088,6 +1100,28 @@ private func compactSats(_ amount: Int) -> String {
         return "\(amount / 1_000)k"
     }
     return "\(amount)"
+}
+
+private func nwcRelayURLs(_ value: String) -> [String] {
+    var seen = Set<String>()
+    return value
+        .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",")))
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
+        .filter { relay in
+            if seen.contains(relay) {
+                return false
+            }
+            seen.insert(relay)
+            return true
+        }
+        .prefix(2)
+        .map { String($0) }
+}
+
+private func encodeNwcRelayURLs(_ relays: [String]) -> String {
+    nwcRelayURLs(relays.joined(separator: "\n")).joined(separator: "\n")
 }
 
 private func shortDate(_ unix: UInt64) -> String {

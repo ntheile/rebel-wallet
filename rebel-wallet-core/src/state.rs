@@ -681,7 +681,7 @@ impl AppState {
             },
             nwc: NwcState {
                 connections: vec![],
-                default_relay: "wss://relay.getalby.com/v1".to_string(),
+                default_relay: "wss://relay.getalby.com\nwss://relay2.getalby.com".to_string(),
                 pending_wake_requests: vec![],
                 processed_wake_requests: vec![],
                 last_wake_status: "No wake requests".to_string(),
