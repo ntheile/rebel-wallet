@@ -90,19 +90,23 @@ final class NwcWakeRegistrationService {
         }
     }
 
-    static func uriWithWake(_ uri: String) -> String {
-        guard
-            let wakeURL = serverURL?.appendingPathComponent(".well-known/nostr/nwc-wake").absoluteString,
-            var components = URLComponents(string: uri)
-        else {
+    static func uriWithWake(_ uri: String, lud16: String? = nil) -> String {
+        guard var components = URLComponents(string: uri) else {
             return uri
         }
 
         var queryItems = components.queryItems ?? []
-        if queryItems.contains(where: { $0.name == "wake" }) {
-            return uri
+        let trimmedLud16 = lud16?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedLud16, !trimmedLud16.isEmpty, !queryItems.contains(where: { $0.name == "lud16" }) {
+            queryItems.append(URLQueryItem(name: "lud16", value: trimmedLud16))
         }
-        queryItems.append(URLQueryItem(name: "wake", value: wakeURL))
+
+        if
+            let wakeURL = serverURL?.appendingPathComponent(".well-known/nostr/nwc-wake").absoluteString,
+            !queryItems.contains(where: { $0.name == "wake" })
+        {
+            queryItems.append(URLQueryItem(name: "wake", value: wakeURL))
+        }
         components.queryItems = queryItems
 
         return components.string ?? uri

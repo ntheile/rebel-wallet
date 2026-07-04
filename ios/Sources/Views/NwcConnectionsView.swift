@@ -104,7 +104,10 @@ struct NwcConnectionsView: View {
     }
 
     private func nwcUri(_ connection: NwcConnection) -> String {
-        NwcWakeRegistrationService.uriWithWake(connection.uri)
+        NwcWakeRegistrationService.uriWithWake(
+            connection.uri,
+            lud16: manager.state.lightningAddress.address
+        )
     }
 }
 
@@ -341,7 +344,10 @@ private struct NwcCreateConnectionView: View {
         guard newest.id != previousLastId else { return }
 
         pendingCreatedConnectionCopyAfterId = nil
-        UIPasteboard.general.string = NwcWakeRegistrationService.uriWithWake(newest.uri)
+        UIPasteboard.general.string = NwcWakeRegistrationService.uriWithWake(
+            newest.uri,
+            lud16: manager.state.lightningAddress.address
+        )
         manager.requestHaptic(.impactLight)
         dismiss()
     }

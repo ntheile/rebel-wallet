@@ -864,6 +864,11 @@ impl AppCore {
         }
     }
 
+    pub(super) fn refresh_nwc_connection_uris_for_lud16(&mut self) {
+        self.state.refresh_derived();
+        self.hydrate_nwc_connection_uris();
+    }
+
     fn cap_pending_nwc_wake_requests(&mut self) {
         let len = self.state.nwc.pending_wake_requests.len();
         if len > MAX_NWC_WAKE_HISTORY {
@@ -1092,6 +1097,7 @@ impl AppCore {
             }
             AsyncMsg::LightningAddressReady(ark_address) => {
                 self.state.lightning_address.backing_ark_address = Some(ark_address.clone());
+                self.refresh_nwc_connection_uris_for_lud16();
                 self.save_lightning_address_ark_address(&ark_address);
                 self.save_app_data();
             }
