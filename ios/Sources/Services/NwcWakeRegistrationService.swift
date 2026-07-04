@@ -10,7 +10,7 @@ final class NwcWakeRegistrationService {
     private var failedFingerprint: String?
     private var failedRetryAfter: Date?
 
-    func sync(state: AppState) {
+    func sync(state: AppState, signer: FfiApp) {
         guard let serverURL = Self.serverURL else { return }
         guard let deviceToken = state.pushNotifications.apnsDeviceToken, !deviceToken.isEmpty else { return }
         guard !state.nwc.connections.isEmpty else { return }
@@ -37,6 +37,7 @@ final class NwcWakeRegistrationService {
                     for relay in Self.relays(for: connection) {
                         try await Self.register(
                             serverURL: serverURL,
+                            signer: signer,
                             installId: installId,
                             deviceToken: deviceToken,
                             bundleId: bundleId,
@@ -65,7 +66,7 @@ final class NwcWakeRegistrationService {
         }
     }
 
-    func unregister(state: AppState, connection: NwcConnection) {
+    func unregister(state: AppState, connection: NwcConnection, signer: FfiApp) {
         guard let serverURL = Self.serverURL else { return }
         guard let deviceToken = state.pushNotifications.apnsDeviceToken, !deviceToken.isEmpty else { return }
 
@@ -78,6 +79,7 @@ final class NwcWakeRegistrationService {
                 for relay in Self.relays(for: connection) {
                     try await Self.register(
                         serverURL: serverURL,
+                        signer: signer,
                         installId: installId,
                         deviceToken: deviceToken,
                         bundleId: bundleId,
@@ -153,6 +155,7 @@ final class NwcWakeRegistrationService {
 
     private static func register(
         serverURL: URL,
+        signer: FfiApp,
         installId: String,
         deviceToken: String,
         bundleId: String,
@@ -165,7 +168,7 @@ final class NwcWakeRegistrationService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(RegisterNwcPushPayload(
+        let body = try JSONEncoder().encode(RegisterNwcPushPayload(
             id: installId,
             pushService: "apns",
             pushToken: deviceToken,
@@ -177,6 +180,18 @@ final class NwcWakeRegistrationService {
             name: connection.name,
             enabled: enabled
         ))
+        request.httpBody = body
+        guard
+            let bodyJson = String(data: body, encoding: .utf8),
+            let authHeader = signer.nwcPushRegistrationAuthHeader(
+                url: url.absoluteString,
+                bodyJson: bodyJson,
+                walletServicePubkey: connection.servicePubkey
+            )
+        else {
+            throw NwcWakeRegistrationError.authSigningFailed
+        }
+        request.setValue(authHeader, forHTTPHeaderField: "Authorization")
 
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, 200 ..< 300 ~= http.statusCode else {
@@ -238,9 +253,15 @@ private struct RegisterNwcPushPayload: Encodable {
 }
 
 private enum NwcWakeRegistrationError: LocalizedError {
+    case authSigningFailed
     case serverRejected
 
     var errorDescription: String? {
-        "wake server rejected registration"
+        switch self {
+        case .authSigningFailed:
+            "could not sign NWC wake registration"
+        case .serverRejected:
+            "wake server rejected registration"
+        }
     }
 }

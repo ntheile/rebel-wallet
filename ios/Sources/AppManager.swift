@@ -66,7 +66,7 @@ final class AppManager: AppReconciler {
             notifyIfReceiveCompleted(nextState: s)
             lastRevApplied = s.rev
             state = s
-            nwcWakeRegistration.sync(state: s)
+            nwcWakeRegistration.sync(state: s, signer: rust)
             syncNwcWakeSnapshot()
             // If a Lightning receive completed (e.g. while backgrounded), release the
             // background-execution assertion now that the core no longer needs to run.
@@ -178,7 +178,7 @@ final class AppManager: AppReconciler {
     }
 
     func unregisterNwcWakeConnection(_ connection: NwcConnection) {
-        nwcWakeRegistration.unregister(state: state, connection: connection)
+        nwcWakeRegistration.unregister(state: state, connection: connection, signer: rust)
     }
 
     private func observePushNotificationRegistration() {

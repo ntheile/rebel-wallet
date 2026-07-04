@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use flume::{Receiver, Sender};
-use nostr_sdk::prelude::ToBech32;
+use nostr_sdk::prelude::{Keys, ToBech32};
 
 mod actions;
 mod activity;
@@ -176,6 +176,31 @@ impl FfiApp {
             state.nwc.connections,
         )
         .ok()
+    }
+
+    pub fn nwc_push_registration_auth_header(
+        &self,
+        url: String,
+        body_json: String,
+        wallet_service_pubkey: String,
+    ) -> Option<String> {
+        let secret = self
+            .secrets
+            .get_secret(core::NOSTR_SECRET_KEY.to_string())
+            .or_else(|| {
+                let mnemonic = self.secrets.get_secret(core::WALLET_SEED_KEY.to_string())?;
+                let keys = core::derive_nostr_keys_from_mnemonic(&mnemonic).ok()?;
+                let nsec = keys.secret_key().to_bech32().ok()?;
+                let _ = self
+                    .secrets
+                    .set_secret(core::NOSTR_SECRET_KEY.to_string(), nsec.clone());
+                Some(nsec)
+            })?;
+        let keys = Keys::parse(&secret).ok()?;
+        if keys.public_key().to_hex() != wallet_service_pubkey {
+            return None;
+        }
+        nostr_support::nostr_http_auth_header(&keys, &url, "POST", body_json.as_bytes()).ok()
     }
 }
 

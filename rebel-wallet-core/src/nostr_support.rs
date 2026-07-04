@@ -441,6 +441,26 @@ pub(crate) async fn upload_profile_picture(
         .context("nostr.build response did not include an image URL")
 }
 
+pub(crate) fn nostr_http_auth_header(
+    keys: &Keys,
+    url: &str,
+    method: &str,
+    payload: &[u8],
+) -> anyhow::Result<String> {
+    let payload_hash = Sha256::digest(payload);
+    let payload_hash = payload_hash
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let auth_event = EventBuilder::new(Kind::Custom(27235), "")
+        .tag(Tag::parse(["u".to_string(), url.to_string()])?)
+        .tag(Tag::parse(["method".to_string(), method.to_string()])?)
+        .tag(Tag::parse(["payload".to_string(), payload_hash])?)
+        .finalize(keys)?;
+    let auth = BASE64.encode(auth_event.as_json());
+    Ok(format!("Nostr {auth}"))
+}
+
 #[derive(Debug, Deserialize)]
 struct NostrBuildUploadResponse {
     status: Option<String>,
