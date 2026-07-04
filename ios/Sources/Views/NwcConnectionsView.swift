@@ -120,6 +120,7 @@ private struct NwcCreateConnectionView: View {
     @State private var permissionPreset: NwcPermissionPreset = .fullAccess
     @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
     @State private var pendingCreatedConnectionCopyAfterId: String?
+    @State private var customRelayDraft: NwcCustomRelayDraft?
 
     private var connections: [NwcConnection] {
         manager.state.nwc.connections
@@ -160,12 +161,18 @@ private struct NwcCreateConnectionView: View {
                             .focused($focusedField, equals: .name)
                             .profileField()
 
-                        TextField("Relay", text: $relay)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .focused($focusedField, equals: .relay)
-                            .profileField()
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Relay")
+                                .font(.caption.bold())
+                                .foregroundStyle(mutedText)
+
+                            NwcRelayPresetMenu(
+                                selection: NwcRelayPreset.matching(relay),
+                                relay: relay,
+                                select: selectRelayPreset,
+                                editCustom: editCustomRelay
+                            )
+                        }
 
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Budget")
@@ -256,6 +263,10 @@ private struct NwcCreateConnectionView: View {
         .onChange(of: manager.state.nwc.connections) { _, newConnections in
             copyPendingCreatedConnection(from: newConnections)
         }
+        .sheet(item: $customRelayDraft) { draft in
+            NwcCustomRelaySheet(relay: $relay, initialRelay: draft.url)
+                .presentationDetents([.height(260), .medium])
+        }
     }
 
     private var permissionsSection: some View {
@@ -343,6 +354,20 @@ private struct NwcCreateConnectionView: View {
         manager.requestHaptic(.selection)
     }
 
+    private func selectRelayPreset(_ preset: NwcRelayPreset?) {
+        if let preset {
+            relay = preset.url
+        }
+        focusedField = nil
+        manager.requestHaptic(.selection)
+    }
+
+    private func editCustomRelay() {
+        focusedField = nil
+        customRelayDraft = NwcCustomRelayDraft(url: relay)
+        manager.requestHaptic(.selection)
+    }
+
     private func formatBudgetInput(_ value: String) -> String {
         let digits = value.filter(\.isNumber)
         guard !digits.isEmpty else {
@@ -363,8 +388,206 @@ private struct NwcCreateConnectionView: View {
 
 private enum NwcCreateField: Hashable {
     case name
-    case relay
     case budget
+}
+
+private struct NwcCustomRelayDraft: Identifiable {
+    let id = UUID()
+    let url: String
+}
+
+private struct NwcRelayPreset: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let caption: String
+    let url: String
+    let icon: String
+
+    static let all: [NwcRelayPreset] = [
+        NwcRelayPreset(
+            id: "alby",
+            title: "Alby NWC",
+            caption: "Dedicated NWC relay",
+            url: "wss://relay.getalby.com/v1",
+            icon: "bolt.fill"
+        ),
+        NwcRelayPreset(
+            id: "primal",
+            title: "Primal",
+            caption: "Public Nostr relay",
+            url: "wss://relay.primal.net",
+            icon: "antenna.radiowaves.left.and.right"
+        ),
+        NwcRelayPreset(
+            id: "noslol",
+            title: "nos.lol",
+            caption: "Public Nostr relay",
+            url: "wss://nos.lol",
+            icon: "antenna.radiowaves.left.and.right"
+        ),
+        NwcRelayPreset(
+            id: "nostrband",
+            title: "Nostr.band",
+            caption: "Public Nostr relay",
+            url: "wss://relay.nostr.band",
+            icon: "antenna.radiowaves.left.and.right"
+        ),
+    ]
+
+    static func matching(_ url: String) -> NwcRelayPreset? {
+        let normalized = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        return all.first { $0.url == normalized }
+    }
+}
+
+private struct NwcRelayPresetMenu: View {
+    let selection: NwcRelayPreset?
+    let relay: String
+    let select: (NwcRelayPreset?) -> Void
+    let editCustom: () -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(NwcRelayPreset.all) { preset in
+                Button {
+                    select(preset)
+                } label: {
+                    Label(preset.title, systemImage: preset.icon)
+                }
+            }
+
+            Button {
+                editCustom()
+            } label: {
+                Label("Custom", systemImage: "link")
+            }
+        } label: {
+            NwcRelayPresetLabel(selection: selection, relay: relay)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("NWC relay preset")
+    }
+}
+
+private struct NwcCustomRelaySheet: View {
+    @Binding var relay: String
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+    @State private var draftRelay: String
+
+    private var cleanedRelay: String {
+        draftRelay.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSave: Bool {
+        !cleanedRelay.isEmpty
+    }
+
+    init(relay: Binding<String>, initialRelay: String) {
+        _relay = relay
+        _draftRelay = State(initialValue: initialRelay)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Custom Relay")
+                    .font(.headline)
+                    .foregroundStyle(primaryText)
+
+                TextField("wss://relay.example.com", text: $draftRelay)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .focused($focused)
+                    .profileField()
+
+                Text("Use a websocket relay URL that supports NWC events.")
+                    .font(.caption)
+                    .foregroundStyle(mutedText)
+
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .background(pageBackground)
+            .foregroundStyle(primaryText)
+            .navigationTitle("Relay")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        relay = cleanedRelay
+                        dismiss()
+                    }
+                    .disabled(!canSave)
+                }
+            }
+            .onAppear {
+                focused = true
+            }
+        }
+    }
+}
+
+private struct NwcRelayPresetLabel: View {
+    let selection: NwcRelayPreset?
+    let relay: String
+
+    private var title: String {
+        selection?.title ?? "Custom"
+    }
+
+    private var caption: String {
+        if let selection {
+            return selection.url
+        }
+
+        let trimmed = relay.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Enter relay URL below" : trimmed
+    }
+
+    private var icon: String {
+        selection?.icon ?? "link"
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(mutedText)
+                .frame(width: 28, height: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(primaryText)
+
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(mutedText)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+    }
 }
 
 private struct NwcCreateHeroButton: View {
