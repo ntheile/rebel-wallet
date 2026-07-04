@@ -31,7 +31,7 @@ const NWC_EXTENSION_PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750)
 const NWC_EXTENSION_TOTAL_BUDGET: Duration = Duration::from_secs(26);
 const NWC_EXTENSION_RELAY_LINGER: Duration = Duration::from_secs(4);
 const NWC_EXTENSION_MIN_LINGER_BUDGET: Duration = Duration::from_millis(750);
-const NWC_EXTENSION_MAX_LINGER_EVENTS: usize = 3;
+const NWC_EXTENSION_MAX_LINGER_EVENTS: usize = 12;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NwcWakeSnapshot {
@@ -521,18 +521,11 @@ async fn response_for_request(
 }
 
 async fn get_balance_response(context: &NwcServiceContext) -> anyhow::Result<Response> {
-    let wallet = open_wallet_for_extension(context).await?;
-    sync_wallet_for_nwc(&wallet).await;
-    let balance = wallet
-        .balance()
-        .await
-        .context("Bark could not read balance")?;
-
     Ok(Response {
         result_type: Method::GetBalance,
         error: None,
         result: Some(ResponseResult::GetBalance(GetBalanceResponse {
-            balance: balance.spendable.to_sat().saturating_mul(1_000),
+            balance: context.balance_sat.saturating_mul(1_000),
         })),
     })
 }

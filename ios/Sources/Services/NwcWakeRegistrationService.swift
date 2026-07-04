@@ -139,24 +139,25 @@ final class NwcWakeRegistrationService {
         connection: NwcConnection,
         enabled: Bool
     ) async throws {
-        let url = serverURL.appendingPathComponent("register-apns-nwc")
+        let url = serverURL.appendingPathComponent("register-nwc-push")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(RegisterApnsNwcPayload(
+        request.httpBody = try JSONEncoder().encode(RegisterNwcPushPayload(
             id: installId,
-            deviceToken: deviceToken,
-            bundleId: bundleId,
+            pushService: "apns",
+            pushToken: deviceToken,
+            appId: bundleId,
             environment: environment,
-            author: connection.clientPubkey,
-            tagged: connection.servicePubkey,
+            clientPubkey: connection.clientPubkey,
+            walletServicePubkey: connection.servicePubkey,
             relay: connection.relay,
             name: connection.name,
             enabled: enabled
         ))
 
         let (_, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
+        guard let http = response as? HTTPURLResponse, 200 ..< 300 ~= http.statusCode else {
             throw NwcWakeRegistrationError.serverRejected
         }
     }
@@ -170,24 +171,26 @@ final class NwcWakeRegistrationService {
     }
 }
 
-private struct RegisterApnsNwcPayload: Encodable {
+private struct RegisterNwcPushPayload: Encodable {
     let id: String
-    let deviceToken: String
-    let bundleId: String
+    let pushService: String
+    let pushToken: String
+    let appId: String
     let environment: String
-    let author: String
-    let tagged: String
+    let clientPubkey: String
+    let walletServicePubkey: String
     let relay: String
     let name: String
     let enabled: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
-        case deviceToken = "device_token"
-        case bundleId = "bundle_id"
+        case pushService = "push_service"
+        case pushToken = "push_token"
+        case appId = "app_id"
         case environment
-        case author
-        case tagged
+        case clientPubkey = "client_pubkey"
+        case walletServicePubkey = "wallet_service_pubkey"
         case relay
         case name
         case enabled
