@@ -104,7 +104,7 @@ struct NwcConnectionsView: View {
     }
 
     private func nwcUri(_ connection: NwcConnection) -> String {
-        NwcWakeRegistrationService.uriWithWake(
+        NwcWakeRegistrationService.uriWithConnectionMetadata(
             connection.uri,
             lud16: manager.state.lightningAddress.address
         )
@@ -354,7 +354,7 @@ private struct NwcCreateConnectionView: View {
         }
 
         pendingCreatedConnectionExistingIds = nil
-        UIPasteboard.general.string = NwcWakeRegistrationService.uriWithWake(
+        UIPasteboard.general.string = NwcWakeRegistrationService.uriWithConnectionMetadata(
             newest.uri,
             lud16: manager.state.lightningAddress.address
         )
