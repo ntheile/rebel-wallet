@@ -4,6 +4,7 @@ import SwiftUI
 struct RebelWalletApp: App {
     @UIApplicationDelegateAdaptor(RebelWalletAppDelegate.self) private var appDelegate
     @State private var manager: AppManager?
+    @State private var pendingOpenURL: URL?
     @State private var easterEgg = WalletEasterEgg()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -21,6 +22,13 @@ struct RebelWalletApp: App {
                 .preferredColorScheme(.dark)
                 .task {
                     await loadManagerIfNeeded()
+                }
+                .onOpenURL { url in
+                    if let manager {
+                        manager.handleOpenURL(url)
+                    } else {
+                        pendingOpenURL = url
+                    }
                 }
                 .onAppear {
                     easterEgg.start()
@@ -57,6 +65,11 @@ struct RebelWalletApp: App {
     private func loadManagerIfNeeded() async {
         guard manager == nil else { return }
         let storagePaths = await AppManager.prepareStorage()
-        manager = AppManager(storagePaths: storagePaths)
+        let loadedManager = AppManager(storagePaths: storagePaths)
+        manager = loadedManager
+        if let pendingOpenURL {
+            loadedManager.handleOpenURL(pendingOpenURL)
+            self.pendingOpenURL = nil
+        }
     }
 }

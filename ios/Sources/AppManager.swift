@@ -10,6 +10,7 @@ final class AppManager: AppReconciler {
     let rust: FfiApp
     var state: AppState
     var nwcWakeDebugEntries: [NwcWakeDebugEntry]
+    var pendingNwaWalletRequest: NwaWalletCreatedRequest?
     private var lastRevApplied: UInt64
     private var lastNwcWakeStatusLogged: String
     private var lastNwcWakeSnapshot: String?
@@ -181,6 +182,30 @@ final class AppManager: AppReconciler {
         nwcWakeRegistration.unregister(state: state, connection: connection, signer: rust)
     }
 
+    func registerNwcWakeConnectionForNwa(_ connection: NwcConnection) async throws {
+        try await nwcWakeRegistration.registerNow(state: state, signer: rust, connection: connection)
+    }
+
+    func handleOpenURL(_ url: URL) {
+        switch NwaWalletCreatedRequest.parse(url) {
+        case .success(let request):
+            pendingNwaWalletRequest = request
+            if state.setup == .ready {
+                dispatch(.pushScreen(screen: .nwc))
+            }
+        case .failure(.notNwa):
+            return
+        case .failure(let error):
+            NwcWakeInbox.appendDebug(source: "App", message: "NWA request ignored: \(error.localizedDescription)")
+            refreshNwcWakeDebugEntries()
+        }
+    }
+
+    func dismissNwaWalletRequest(_ request: NwaWalletCreatedRequest) {
+        guard pendingNwaWalletRequest?.id == request.id else { return }
+        pendingNwaWalletRequest = nil
+    }
+
     private func observePushNotificationRegistration() {
         let observer = NotificationCenter.default.addObserver(
             forName: PushNotificationEvents.registrationDidChange,
@@ -275,6 +300,245 @@ final class AppManager: AppReconciler {
 
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+    }
+}
+
+struct NwaWalletCreatedRequest: Identifiable, Equatable {
+    let id = UUID()
+    let sourceURL: URL
+    let name: String
+    let appId: String
+    let returnTo: URL
+    let state: String
+    let relay: String
+    let budgetSat: UInt64
+    let budgetInterval: NwcBudgetInterval
+    let permissions: [NwcPermission]
+    let createdAt = Date()
+
+    var displayName: String {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            return trimmedName
+        }
+        let trimmedAppId = appId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedAppId.isEmpty ? "External App" : trimmedAppId
+    }
+
+    static func parse(_ url: URL) -> Result<NwaWalletCreatedRequest, NwaWalletAuthError> {
+        guard
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let scheme = components.scheme?.lowercased()
+        else {
+            return .failure(.notNwa)
+        }
+
+        let isWalletAuthScheme = scheme == "nostr+walletauth" || scheme == "nostr+walletauth+rebelwallet"
+        let isPrivateWalletScheme = scheme == "rebelwallet"
+            && components.host?.lowercased() == "nwa"
+            && components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased() == "connect"
+        guard isWalletAuthScheme || isPrivateWalletScheme else {
+            return .failure(.notNwa)
+        }
+
+        let query = NwaQuery(components.queryItems ?? [])
+        guard query.value("version") ?? "1" == "1" else {
+            return .failure(.unsupportedVersion)
+        }
+
+        let hasClientPubkey = !(query.value("pubkey") ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let secretMode = (query.value("secret_mode") ?? (hasClientPubkey ? "client" : "wallet")).lowercased()
+        guard secretMode == "wallet", !hasClientPubkey else {
+            return .failure(.unsupportedSecretMode)
+        }
+
+        guard let returnToRaw = query.value("return_to"), let returnTo = URL(string: returnToRaw) else {
+            return .failure(.missingReturnTo)
+        }
+        guard URLComponents(url: returnTo, resolvingAgainstBaseURL: false)?.fragment == nil else {
+            return .failure(.invalidReturnTo)
+        }
+        guard let state = query.value("state")?.trimmingCharacters(in: .whitespacesAndNewlines), !state.isEmpty else {
+            return .failure(.missingState)
+        }
+
+        let relays = query.values("relay")
+        let relay = relays.joined(separator: "\n")
+        let budgetSat = query.budgetSat() ?? 10_000
+        let budgetInterval = NwcBudgetInterval.nwaValue(query.value("budget_renewal"))
+        let permissions = NwcPermission.nwaPermissions(from: query.value("request_methods"))
+
+        return .success(NwaWalletCreatedRequest(
+            sourceURL: url,
+            name: query.value("name") ?? query.value("appname") ?? "",
+            appId: query.value("app_id") ?? "",
+            returnTo: returnTo,
+            state: state,
+            relay: relay,
+            budgetSat: budgetSat,
+            budgetInterval: budgetInterval,
+            permissions: permissions
+        ))
+    }
+
+    func approvedCallback(nwcUri: String) -> URL? {
+        callbackURL(items: [
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "status", value: "approved"),
+            URLQueryItem(name: "nwc_uri", value: nwcUri),
+            URLQueryItem(name: "value", value: nwcUri)
+        ])
+    }
+
+    func cancelledCallback() -> URL? {
+        callbackURL(items: [
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "status", value: "cancelled")
+        ])
+    }
+
+    private func callbackURL(items: [URLQueryItem]) -> URL? {
+        guard var callbackComponents = URLComponents(url: returnTo, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        var fragmentComponents = URLComponents()
+        fragmentComponents.queryItems = items
+        callbackComponents.percentEncodedFragment = fragmentComponents.percentEncodedQuery
+        return callbackComponents.url
+    }
+}
+
+enum NwaWalletAuthError: LocalizedError {
+    case notNwa
+    case unsupportedVersion
+    case unsupportedSecretMode
+    case missingReturnTo
+    case invalidReturnTo
+    case missingState
+
+    var errorDescription: String? {
+        switch self {
+        case .notNwa:
+            return "not an NWA URL"
+        case .unsupportedVersion:
+            return "unsupported NWA version"
+        case .unsupportedSecretMode:
+            return "only wallet-created secret mode is supported"
+        case .missingReturnTo:
+            return "missing return_to callback"
+        case .invalidReturnTo:
+            return "return_to must not include a fragment"
+        case .missingState:
+            return "missing state"
+        }
+    }
+}
+
+private struct NwaQuery {
+    private let items: [URLQueryItem]
+
+    init(_ items: [URLQueryItem]) {
+        self.items = items
+    }
+
+    func value(_ name: String) -> String? {
+        values(name).first
+    }
+
+    func values(_ name: String) -> [String] {
+        items.compactMap { item in
+            item.name == name ? item.value : nil
+        }
+    }
+
+    func budgetSat() -> UInt64? {
+        guard let rawMsat = value("max_amount"), let amountMsat = UInt64(rawMsat) else {
+            return nil
+        }
+        return amountMsat.satsRoundedUpFromMsats()
+    }
+}
+
+private extension UInt64 {
+    func satsRoundedUpFromMsats() -> UInt64 {
+        let sats = self / 1_000
+        if self % 1_000 == 0 {
+            return sats
+        }
+        return sats + 1
+    }
+}
+
+private extension NwcBudgetInterval {
+    static func nwaValue(_ value: String?) -> NwcBudgetInterval {
+        switch value?.lowercased() {
+        case "hourly":
+            return .hourly
+        case "weekly":
+            return .weekly
+        case "monthly":
+            return .monthly
+        default:
+            return .daily
+        }
+    }
+}
+
+private extension NwcPermission {
+    static func nwaPermissions(from value: String?) -> [NwcPermission] {
+        let methods = Set((value ?? "")
+            .split { character in
+                character.isWhitespace || character == ","
+            }
+            .map { String($0).lowercased() })
+
+        guard !methods.isEmpty else {
+            return [
+                .getInfo,
+                .getBalance,
+                .payInvoice,
+                .payKeysend,
+                .makeInvoice,
+                .lookupInvoice,
+                .listTransactions,
+                .makeHoldInvoice,
+                .cancelHoldInvoice,
+                .settleHoldInvoice
+            ]
+        }
+
+        var permissions: [NwcPermission] = []
+        for method in methods {
+            switch method {
+            case "get_info":
+                permissions.append(.getInfo)
+            case "get_balance":
+                permissions.append(.getBalance)
+            case "pay_invoice":
+                permissions.append(.payInvoice)
+            case "pay_keysend":
+                permissions.append(.payKeysend)
+            case "make_invoice":
+                permissions.append(.makeInvoice)
+            case "lookup_invoice":
+                permissions.append(.lookupInvoice)
+            case "list_transactions":
+                permissions.append(.listTransactions)
+            case "make_hold_invoice":
+                permissions.append(.makeHoldInvoice)
+            case "cancel_hold_invoice":
+                permissions.append(.cancelHoldInvoice)
+            case "settle_hold_invoice":
+                permissions.append(.settleHoldInvoice)
+            default:
+                continue
+            }
+        }
+
+        if !permissions.contains(.getInfo) {
+            permissions.append(.getInfo)
+        }
+        return permissions
     }
 }
 

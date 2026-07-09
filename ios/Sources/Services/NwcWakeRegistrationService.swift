@@ -103,6 +103,37 @@ final class NwcWakeRegistrationService {
         }
     }
 
+    func registerNow(state: AppState, signer: FfiApp, connection: NwcConnection) async throws {
+        guard let serverURL = Self.serverURL else {
+            throw NwcWakeRegistrationError.serverUnavailable
+        }
+        guard let deviceToken = state.pushNotifications.apnsDeviceToken, !deviceToken.isEmpty else {
+            throw NwcWakeRegistrationError.apnsTokenUnavailable
+        }
+
+        let installId = installId()
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.rebelwallet.app"
+        let environment = Self.apnsEnvironment
+        for relay in Self.relays(for: connection) {
+            try await Self.register(
+                serverURL: serverURL,
+                signer: signer,
+                installId: installId,
+                deviceToken: deviceToken,
+                bundleId: bundleId,
+                environment: environment,
+                connection: connection,
+                relay: relay,
+                enabled: true
+            )
+        }
+
+        registeredFingerprint = nil
+        failedFingerprint = nil
+        failedRetryAfter = nil
+        NwcWakeInbox.appendDebug(source: "App", message: "Registered NWC wake connection \(connection.name)")
+    }
+
     static func uriWithConnectionMetadata(_ uri: String, lud16: String? = nil) -> String {
         guard var components = URLComponents(string: uri) else {
             return uri
@@ -246,11 +277,17 @@ private struct RegisterNwcPushPayload: Encodable {
 }
 
 private enum NwcWakeRegistrationError: LocalizedError {
+    case serverUnavailable
+    case apnsTokenUnavailable
     case authSigningFailed
     case serverRejected
 
     var errorDescription: String? {
         switch self {
+        case .serverUnavailable:
+            "wake server is not configured"
+        case .apnsTokenUnavailable:
+            "APNs device token is not available"
         case .authSigningFailed:
             "could not sign NWC wake registration"
         case .serverRejected:

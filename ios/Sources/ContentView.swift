@@ -40,6 +40,13 @@ struct ContentView: View {
                 manager.dispatch(.completeQrScan(value: value))
             }
         }
+        .sheet(item: Binding(
+            get: { manager.pendingNwaWalletRequest },
+            set: { if $0 == nil, let request = manager.pendingNwaWalletRequest { manager.dismissNwaWalletRequest(request) } }
+        )) { request in
+            NwaWalletAuthApprovalView(manager: manager, request: request)
+                .interactiveDismissDisabled()
+        }
         .photosPicker(isPresented: Binding(
             get: { manager.state.capabilityRequest?.kind == .photoPick },
             set: { if !$0 { manager.dispatch(.cancelCapabilityRequest) } }
