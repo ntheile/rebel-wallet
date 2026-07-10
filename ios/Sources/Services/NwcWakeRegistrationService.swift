@@ -5,12 +5,16 @@ final class NwcWakeRegistrationService {
     private static let registrationRetryDelay: TimeInterval = 30
 
     private let installIdKey = "RebelWalletNwcWakeInstallId"
+    private let pendingUnregistrationsKey = "RebelWalletPendingNwcWakeUnregistrations"
     private var inFlightFingerprint: String?
     private var registeredFingerprint: String?
     private var failedFingerprint: String?
     private var failedRetryAfter: Date?
+    private var retryingPendingUnregistrations = false
 
     func sync(state: AppState, signer: FfiApp) {
+        retryPendingUnregistrations(state: state, signer: signer)
+
         guard let serverURL = Self.serverURL else { return }
         guard let deviceToken = state.pushNotifications.apnsDeviceToken, !deviceToken.isEmpty else { return }
         guard !state.nwc.connections.isEmpty else { return }
@@ -42,8 +46,7 @@ final class NwcWakeRegistrationService {
                             deviceToken: deviceToken,
                             bundleId: bundleId,
                             environment: environment,
-                            connection: connection,
-                            relay: relay,
+                            registration: Self.registration(for: connection, relay: relay),
                             enabled: true
                         )
                     }
@@ -67,28 +70,16 @@ final class NwcWakeRegistrationService {
     }
 
     func unregister(state: AppState, connection: NwcConnection, signer: FfiApp) {
-        guard let serverURL = Self.serverURL else { return }
-        guard let deviceToken = state.pushNotifications.apnsDeviceToken, !deviceToken.isEmpty else { return }
-
-        let installId = installId()
-        let bundleId = Bundle.main.bundleIdentifier ?? "com.rebelwallet.app"
-        let environment = Self.apnsEnvironment
+        let registrations = Self.registrations(for: connection)
+        enqueuePendingUnregistrations(registrations)
 
         Task {
             do {
-                for relay in Self.relays(for: connection) {
-                    try await Self.register(
-                        serverURL: serverURL,
-                        signer: signer,
-                        installId: installId,
-                        deviceToken: deviceToken,
-                        bundleId: bundleId,
-                        environment: environment,
-                        connection: connection,
-                        relay: relay,
-                        enabled: false
-                    )
-                }
+                try await unregisterPending(
+                    registrations,
+                    state: state,
+                    signer: signer
+                )
                 await MainActor.run {
                     self.registeredFingerprint = nil
                     self.failedFingerprint = nil
@@ -103,6 +94,16 @@ final class NwcWakeRegistrationService {
         }
     }
 
+    func unregisterNow(state: AppState, connection: NwcConnection, signer: FfiApp) async throws {
+        let registrations = Self.registrations(for: connection)
+        enqueuePendingUnregistrations(registrations)
+        try await unregisterPending(registrations, state: state, signer: signer)
+        registeredFingerprint = nil
+        failedFingerprint = nil
+        failedRetryAfter = nil
+        NwcWakeInbox.appendDebug(source: "App", message: "Unregistered NWC wake connection \(connection.name)")
+    }
+
     func registerNow(state: AppState, signer: FfiApp, connection: NwcConnection) async throws {
         guard let serverURL = Self.serverURL else {
             throw NwcWakeRegistrationError.serverUnavailable
@@ -110,7 +111,6 @@ final class NwcWakeRegistrationService {
         guard let deviceToken = state.pushNotifications.apnsDeviceToken, !deviceToken.isEmpty else {
             throw NwcWakeRegistrationError.apnsTokenUnavailable
         }
-
         let installId = installId()
         let bundleId = Bundle.main.bundleIdentifier ?? "com.rebelwallet.app"
         let environment = Self.apnsEnvironment
@@ -122,8 +122,7 @@ final class NwcWakeRegistrationService {
                 deviceToken: deviceToken,
                 bundleId: bundleId,
                 environment: environment,
-                connection: connection,
-                relay: relay,
+                registration: Self.registration(for: connection, relay: relay),
                 enabled: true
             )
         }
@@ -184,8 +183,7 @@ final class NwcWakeRegistrationService {
         deviceToken: String,
         bundleId: String,
         environment: String,
-        connection: NwcConnection,
-        relay: String,
+        registration: StoredNwcWakeRegistration,
         enabled: Bool
     ) async throws {
         let url = serverURL.appendingPathComponent("register-nwc-push")
@@ -198,10 +196,10 @@ final class NwcWakeRegistrationService {
             pushToken: deviceToken,
             appId: bundleId,
             environment: environment,
-            clientPubkey: connection.clientPubkey,
-            walletServicePubkey: connection.servicePubkey,
-            relay: relay,
-            name: connection.name,
+            clientPubkey: registration.clientPubkey,
+            walletServicePubkey: registration.walletServicePubkey,
+            relay: registration.relay,
+            name: registration.name,
             enabled: enabled
         ))
         request.httpBody = body
@@ -210,7 +208,7 @@ final class NwcWakeRegistrationService {
             let authHeader = signer.nwcPushRegistrationAuthHeader(
                 url: url.absoluteString,
                 bodyJson: bodyJson,
-                walletServicePubkey: connection.servicePubkey
+                walletServicePubkey: registration.walletServicePubkey
             )
         else {
             throw NwcWakeRegistrationError.authSigningFailed
@@ -248,6 +246,110 @@ final class NwcWakeRegistrationService {
             .prefix(2)
             .map { String($0) }
     }
+
+    private static func registration(
+        for connection: NwcConnection,
+        relay: String
+    ) -> StoredNwcWakeRegistration {
+        StoredNwcWakeRegistration(
+            clientPubkey: connection.clientPubkey,
+            walletServicePubkey: connection.servicePubkey,
+            relay: relay,
+            name: connection.name
+        )
+    }
+
+    private static func registrations(for connection: NwcConnection) -> [StoredNwcWakeRegistration] {
+        relays(for: connection).map { registration(for: connection, relay: $0) }
+    }
+
+    private func unregisterPending(
+        _ registrations: [StoredNwcWakeRegistration],
+        state: AppState,
+        signer: FfiApp
+    ) async throws {
+        guard let serverURL = Self.serverURL else {
+            throw NwcWakeRegistrationError.serverUnavailable
+        }
+        let installId = installId()
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.rebelwallet.app"
+        let environment = Self.apnsEnvironment
+        let deviceToken = state.pushNotifications.apnsDeviceToken ?? ""
+        for registration in registrations {
+            try await Self.register(
+                serverURL: serverURL,
+                signer: signer,
+                installId: installId,
+                deviceToken: deviceToken,
+                bundleId: bundleId,
+                environment: environment,
+                registration: registration,
+                enabled: false
+            )
+            removePendingUnregistration(registration)
+        }
+    }
+
+    private func retryPendingUnregistrations(state: AppState, signer: FfiApp) {
+        guard !retryingPendingUnregistrations else { return }
+        let pending = pendingUnregistrations()
+        guard !pending.isEmpty else { return }
+
+        retryingPendingUnregistrations = true
+        Task {
+            defer { retryingPendingUnregistrations = false }
+            do {
+                try await unregisterPending(pending, state: state, signer: signer)
+                NwcWakeInbox.appendDebug(
+                    source: "App",
+                    message: "Retried \(pending.count) pending NWC wake unregistration\(pending.count == 1 ? "" : "s")"
+                )
+            } catch {
+                NwcWakeInbox.appendDebug(
+                    source: "App",
+                    message: "Pending NWC wake unregister retry failed: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private func pendingUnregistrations() -> [StoredNwcWakeRegistration] {
+        guard
+            let data = UserDefaults.standard.data(forKey: pendingUnregistrationsKey),
+            let registrations = try? JSONDecoder().decode([StoredNwcWakeRegistration].self, from: data)
+        else {
+            return []
+        }
+        return registrations
+    }
+
+    private func enqueuePendingUnregistrations(_ registrations: [StoredNwcWakeRegistration]) {
+        var pending = pendingUnregistrations()
+        for registration in registrations where !pending.contains(registration) {
+            pending.append(registration)
+        }
+        savePendingUnregistrations(pending)
+    }
+
+    private func removePendingUnregistration(_ registration: StoredNwcWakeRegistration) {
+        savePendingUnregistrations(pendingUnregistrations().filter { $0 != registration })
+    }
+
+    private func savePendingUnregistrations(_ registrations: [StoredNwcWakeRegistration]) {
+        if registrations.isEmpty {
+            UserDefaults.standard.removeObject(forKey: pendingUnregistrationsKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(registrations) else { return }
+        UserDefaults.standard.set(data, forKey: pendingUnregistrationsKey)
+    }
+}
+
+private struct StoredNwcWakeRegistration: Codable, Equatable {
+    let clientPubkey: String
+    let walletServicePubkey: String
+    let relay: String
+    let name: String
 }
 
 private struct RegisterNwcPushPayload: Encodable {

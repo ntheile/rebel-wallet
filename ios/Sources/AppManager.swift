@@ -186,9 +186,51 @@ final class AppManager: AppReconciler {
         try await nwcWakeRegistration.registerNow(state: state, signer: rust, connection: connection)
     }
 
+    func rollbackNwaConnection(_ connection: NwcConnection) async {
+        do {
+            try await nwcWakeRegistration.unregisterNow(state: state, connection: connection, signer: rust)
+        } catch {
+            NwcWakeInbox.appendDebug(
+                source: "App",
+                message: "NWA rollback queued wake unregister retry: \(error.localizedDescription)"
+            )
+        }
+        dispatch(.deleteNwcConnection(id: connection.id))
+    }
+
+    func openVerifiedNwaCallback(_ callback: URL) async -> Bool {
+        let callbackTarget = Self.nwaCallbackTargetDescription(callback)
+        let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
+        NwcWakeInbox.appendDebug(
+            source: "App",
+            message: "NWA callback open requested wallet_bundle=\(bundleId) target=\(callbackTarget) universal_links_only=true"
+        )
+
+        let opened = await withCheckedContinuation { continuation in
+            UIApplication.shared.open(
+                callback,
+                options: [.universalLinksOnly: true]
+            ) { opened in
+                continuation.resume(returning: opened)
+            }
+        }
+
+        NwcWakeInbox.appendDebug(
+            source: "App",
+            message: "NWA callback open result opened=\(opened) target=\(callbackTarget)"
+        )
+        return opened
+    }
+
     func handleOpenURL(_ url: URL) {
         switch NwaWalletCreatedRequest.parse(url) {
         case .success(let request):
+            let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
+            let relayCount = request.relay.split(whereSeparator: { $0.isNewline }).count
+            NwcWakeInbox.appendDebug(
+                source: "App",
+                message: "NWA request accepted wallet_bundle=\(bundleId) app_id=\(request.appId) callback=\(request.callbackTargetDescription) budget_sat=\(request.budgetSat) interval=\(String(describing: request.budgetInterval)) relays=\(relayCount) permissions=\(request.permissions.count)"
+            )
             pendingNwaWalletRequest = request
             if state.setup == .ready {
                 dispatch(.pushScreen(screen: .nwc))
@@ -199,6 +241,19 @@ final class AppManager: AppReconciler {
             NwcWakeInbox.appendDebug(source: "App", message: "NWA request ignored: \(error.localizedDescription)")
             refreshNwcWakeDebugEntries()
         }
+    }
+
+    private static func nwaCallbackTargetDescription(_ callback: URL) -> String {
+        guard
+            let components = URLComponents(url: callback, resolvingAgainstBaseURL: false),
+            let scheme = components.scheme?.lowercased(),
+            let host = components.host?.lowercased()
+        else {
+            return "invalid"
+        }
+
+        let port = components.port.map { ":\($0)" } ?? ""
+        return "\(scheme)://\(host)\(port)\(components.path)"
     }
 
     func dismissNwaWalletRequest(_ request: NwaWalletCreatedRequest) {
@@ -304,6 +359,11 @@ final class AppManager: AppReconciler {
 }
 
 struct NwaWalletCreatedRequest: Identifiable, Equatable {
+    private static let maximumRequestLength = 8_192
+    private static let maximumCallbackLength = 2_048
+    private static let minimumStateLength = 32
+    private static let maximumStateLength = 256
+
     let id = UUID()
     let sourceURL: URL
     let name: String
@@ -325,7 +385,23 @@ struct NwaWalletCreatedRequest: Identifiable, Equatable {
         return trimmedAppId.isEmpty ? "External App" : trimmedAppId
     }
 
+    var callbackTargetDescription: String {
+        guard
+            let components = URLComponents(url: returnTo, resolvingAgainstBaseURL: false),
+            let scheme = components.scheme?.lowercased(),
+            let host = components.host?.lowercased()
+        else {
+            return "invalid"
+        }
+
+        let port = components.port.map { ":\($0)" } ?? ""
+        return "\(scheme)://\(host)\(port)\(components.path)"
+    }
+
     static func parse(_ url: URL) -> Result<NwaWalletCreatedRequest, NwaWalletAuthError> {
+        guard url.absoluteString.utf8.count <= maximumRequestLength else {
+            return .failure(.requestTooLarge)
+        }
         guard
             let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
             let scheme = components.scheme?.lowercased()
@@ -342,7 +418,10 @@ struct NwaWalletCreatedRequest: Identifiable, Equatable {
         }
 
         let query = NwaQuery(components.queryItems ?? [])
-        guard query.value("version") ?? "1" == "1" else {
+        guard !query.hasDuplicateSingleValueParameters(repeatable: ["relay"]) else {
+            return .failure(.duplicateParameter)
+        }
+        guard (query.value("version") ?? "1") == "1" else {
             return .failure(.unsupportedVersion)
         }
 
@@ -352,14 +431,36 @@ struct NwaWalletCreatedRequest: Identifiable, Equatable {
             return .failure(.unsupportedSecretMode)
         }
 
-        guard let returnToRaw = query.value("return_to"), let returnTo = URL(string: returnToRaw) else {
+        guard (query.value("response_mode") ?? "callback").lowercased() == "callback" else {
+            return .failure(.unsupportedResponseMode)
+        }
+
+        guard
+            let returnToRaw = query.value("return_to"),
+            returnToRaw.utf8.count <= maximumCallbackLength,
+            let returnTo = URL(string: returnToRaw)
+        else {
             return .failure(.missingReturnTo)
         }
-        guard URLComponents(url: returnTo, resolvingAgainstBaseURL: false)?.fragment == nil else {
+        let appId = query.value("app_id")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard isVerifiedHTTPSCallback(returnTo, appId: appId) else {
             return .failure(.invalidReturnTo)
         }
-        guard let state = query.value("state")?.trimmingCharacters(in: .whitespacesAndNewlines), !state.isEmpty else {
+        guard
+            let state = query.value("state")?.trimmingCharacters(in: .whitespacesAndNewlines),
+            state.utf8.count >= minimumStateLength,
+            state.utf8.count <= maximumStateLength
+        else {
             return .failure(.missingState)
+        }
+
+        if let expiresAtRaw = query.value("expires_at") {
+            guard
+                let expiresAt = TimeInterval(expiresAtRaw),
+                expiresAt >= Date().timeIntervalSince1970
+            else {
+                return .failure(.expiredRequest)
+            }
         }
 
         let relays = query.values("relay")
@@ -371,7 +472,7 @@ struct NwaWalletCreatedRequest: Identifiable, Equatable {
         return .success(NwaWalletCreatedRequest(
             sourceURL: url,
             name: query.value("name") ?? query.value("appname") ?? "",
-            appId: query.value("app_id") ?? "",
+            appId: appId,
             returnTo: returnTo,
             state: state,
             relay: relay,
@@ -385,8 +486,7 @@ struct NwaWalletCreatedRequest: Identifiable, Equatable {
         callbackURL(items: [
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "status", value: "approved"),
-            URLQueryItem(name: "nwc_uri", value: nwcUri),
-            URLQueryItem(name: "value", value: nwcUri)
+            URLQueryItem(name: "nwc_uri", value: nwcUri)
         ])
     }
 
@@ -406,15 +506,56 @@ struct NwaWalletCreatedRequest: Identifiable, Equatable {
         callbackComponents.percentEncodedFragment = fragmentComponents.percentEncodedQuery
         return callbackComponents.url
     }
+
+    private static func isVerifiedHTTPSCallback(_ callback: URL, appId: String) -> Bool {
+        guard
+            let callbackComponents = URLComponents(url: callback, resolvingAgainstBaseURL: false),
+            let callbackScheme = callbackComponents.scheme?.lowercased(),
+            callbackScheme == "https",
+            let callbackHost = callbackComponents.host?.lowercased(),
+            isPublicDomain(callbackHost),
+            callbackComponents.user == nil,
+            callbackComponents.password == nil,
+            callbackComponents.fragment == nil,
+            callbackComponents.port == nil || callbackComponents.port == 443,
+            !callbackComponents.path.isEmpty,
+            let appURL = URL(string: appId),
+            let appComponents = URLComponents(url: appURL, resolvingAgainstBaseURL: false),
+            appComponents.scheme?.lowercased() == callbackScheme,
+            appComponents.host?.lowercased() == callbackHost,
+            appComponents.user == nil,
+            appComponents.password == nil,
+            (appComponents.port ?? 443) == (callbackComponents.port ?? 443),
+            appComponents.query == nil,
+            appComponents.fragment == nil,
+            appComponents.path.isEmpty || appComponents.path == "/"
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func isPublicDomain(_ host: String) -> Bool {
+        guard host.contains("."), !host.hasSuffix(".local"), host != "localhost", !host.contains(":") else {
+            return false
+        }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        let isIPv4Address = parts.count == 4 && parts.allSatisfy { UInt8($0) != nil }
+        return !isIPv4Address
+    }
 }
 
 enum NwaWalletAuthError: LocalizedError {
     case notNwa
     case unsupportedVersion
     case unsupportedSecretMode
+    case unsupportedResponseMode
+    case duplicateParameter
+    case requestTooLarge
     case missingReturnTo
     case invalidReturnTo
     case missingState
+    case expiredRequest
 
     var errorDescription: String? {
         switch self {
@@ -424,12 +565,20 @@ enum NwaWalletAuthError: LocalizedError {
             return "unsupported NWA version"
         case .unsupportedSecretMode:
             return "only wallet-created secret mode is supported"
+        case .unsupportedResponseMode:
+            return "only callback response mode is supported"
+        case .duplicateParameter:
+            return "duplicate NWA parameter"
+        case .requestTooLarge:
+            return "NWA request is too large"
         case .missingReturnTo:
             return "missing return_to callback"
         case .invalidReturnTo:
-            return "return_to must not include a fragment"
+            return "wallet-created mode requires an HTTPS callback whose origin matches app_id"
         case .missingState:
-            return "missing state"
+            return "state must contain at least 128 bits"
+        case .expiredRequest:
+            return "NWA request has expired"
         }
     }
 }
@@ -449,6 +598,16 @@ private struct NwaQuery {
         items.compactMap { item in
             item.name == name ? item.value : nil
         }
+    }
+
+    func hasDuplicateSingleValueParameters(repeatable: Set<String>) -> Bool {
+        var seen = Set<String>()
+        for item in items where !repeatable.contains(item.name) {
+            if !seen.insert(item.name).inserted {
+                return true
+            }
+        }
+        return false
     }
 
     func budgetSat() -> UInt64? {

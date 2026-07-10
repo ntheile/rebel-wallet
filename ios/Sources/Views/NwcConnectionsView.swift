@@ -724,16 +724,23 @@ struct NwaWalletAuthApprovalView: View {
         approving = true
         errorMessage = nil
         let existingIds = Set(manager.state.nwc.connections.map(\.id))
+        var createdConnection: NwcConnection?
+        let effectivePermissions = permissionsForCreate
+        NwcWakeInbox.appendDebug(
+            source: "App",
+            message: "NWA approval settings callback=\(request.callbackTargetDescription) budget_sat=\(parsedBudget) interval=\(budgetInterval.title.lowercased()) relays=\(relays.joined(separator: ",")) permissions=\(effectivePermissions.map(\.methodName).joined(separator: ","))"
+        )
         manager.dispatch(.createNwcConnection(
             name: request.displayName,
             relay: relayStorage,
             budgetSat: parsedBudget,
             budgetInterval: budgetInterval,
-            permissions: permissionsForCreate
+            permissions: effectivePermissions
         ))
 
         do {
             let connection = try await waitForCreatedConnection(existingIds: existingIds)
+            createdConnection = connection
             try await manager.registerNwcWakeConnectionForNwa(connection)
             let nwcUri = NwcWakeRegistrationService.uriWithConnectionMetadata(
                 connection.uri,
@@ -742,12 +749,17 @@ struct NwaWalletAuthApprovalView: View {
             guard let callback = request.approvedCallback(nwcUri: nwcUri) else {
                 throw NwaApprovalError.invalidCallback
             }
+            guard await manager.openVerifiedNwaCallback(callback) else {
+                throw NwaApprovalError.callbackDeliveryFailed
+            }
             await MainActor.run {
                 manager.dismissNwaWalletRequest(request)
                 dismiss()
-                UIApplication.shared.open(callback)
             }
         } catch {
+            if let createdConnection {
+                await manager.rollbackNwaConnection(createdConnection)
+            }
             await MainActor.run {
                 approving = false
                 errorMessage = error.localizedDescription
@@ -808,11 +820,15 @@ struct NwaWalletAuthApprovalView: View {
     }
 
     private func cancel() {
-        if let callback = request.cancelledCallback() {
-            UIApplication.shared.open(callback)
+        Task {
+            if let callback = request.cancelledCallback() {
+                _ = await manager.openVerifiedNwaCallback(callback)
+            }
+            await MainActor.run {
+                manager.dismissNwaWalletRequest(request)
+                dismiss()
+            }
         }
-        manager.dismissNwaWalletRequest(request)
-        dismiss()
     }
 
     private func waitForCreatedConnection(existingIds: Set<String>) async throws -> NwcConnection {
@@ -854,6 +870,7 @@ private struct NwaPolicyRow: View {
 private enum NwaApprovalError: LocalizedError {
     case connectionTimedOut
     case invalidCallback
+    case callbackDeliveryFailed
 
     var errorDescription: String? {
         switch self {
@@ -861,6 +878,8 @@ private enum NwaApprovalError: LocalizedError {
             return "Timed out while creating the NWC connection."
         case .invalidCallback:
             return "The requesting app callback URL is invalid."
+        case .callbackDeliveryFailed:
+            return "The verified requesting app could not open the callback. The NWC connection was revoked."
         }
     }
 }
