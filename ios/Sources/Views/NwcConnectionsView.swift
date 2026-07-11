@@ -6,6 +6,7 @@ struct NwcConnectionsView: View {
     @Environment(\.walletAccent) private var walletAccent
     @State private var copiedConnectionId: String?
     @State private var deleteConnection: NwcConnection?
+    @State private var presentedConnection: NwcConnectionExport?
 
     private var connections: [NwcConnection] {
         manager.state.nwc.connections
@@ -37,6 +38,11 @@ struct NwcConnectionsView: View {
             Button("Cancel", role: .cancel) {
                 deleteConnection = nil
             }
+        }
+        .sheet(item: $presentedConnection) { connection in
+            NwcConnectionQRCodeSheet(connection: connection)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -84,6 +90,13 @@ struct NwcConnectionsView: View {
                         connection: connection,
                         uri: nwcUri(connection),
                         copied: copiedConnectionId == connection.id,
+                        showQRCode: {
+                            presentedConnection = NwcConnectionExport(
+                                id: connection.id,
+                                name: connection.name,
+                                uri: nwcUri(connection)
+                            )
+                        },
                         copy: { copy(connection) },
                         delete: { deleteConnection = connection }
                     )
@@ -124,6 +137,7 @@ private struct NwcCreateConnectionView: View {
     @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
     @State private var pendingCreatedConnectionExistingIds: Set<String>?
     @State private var customRelayDraft: NwcCustomRelayDraft?
+    @State private var createdConnection: NwcConnectionExport?
 
     private var connections: [NwcConnection] {
         manager.state.nwc.connections
@@ -241,7 +255,7 @@ private struct NwcCreateConnectionView: View {
                         Button {
                             createConnection()
                         } label: {
-                            Label("Create NWC", systemImage: "plus.circle.fill")
+                            Label("Connect", systemImage: "link.badge.plus")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(PrimaryButtonStyle(color: walletAccent))
@@ -269,6 +283,13 @@ private struct NwcCreateConnectionView: View {
         .sheet(item: $customRelayDraft) { draft in
             NwcCustomRelaySheet(relay: $relay, initialRelay: draft.url)
                 .presentationDetents([.height(260), .medium])
+        }
+        .sheet(item: $createdConnection, onDismiss: {
+            dismiss()
+        }) { connection in
+            NwcConnectionQRCodeSheet(connection: connection, initiallyCopied: true)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -354,12 +375,17 @@ private struct NwcCreateConnectionView: View {
         }
 
         pendingCreatedConnectionExistingIds = nil
-        UIPasteboard.general.string = NwcWakeRegistrationService.uriWithConnectionMetadata(
+        let uri = NwcWakeRegistrationService.uriWithConnectionMetadata(
             newest.uri,
             lud16: manager.state.lightningAddress.address
         )
+        UIPasteboard.general.string = uri
         manager.requestHaptic(.impactLight)
-        dismiss()
+        createdConnection = NwcConnectionExport(
+            id: newest.id,
+            name: newest.name,
+            uri: uri
+        )
     }
 
     private func selectPermissionPreset(_ preset: NwcPermissionPreset) {
@@ -1341,6 +1367,7 @@ private struct NwcConnectionCard: View {
     let connection: NwcConnection
     let uri: String
     let copied: Bool
+    let showQRCode: () -> Void
     let copy: () -> Void
     let delete: () -> Void
 
@@ -1415,9 +1442,17 @@ private struct NwcConnectionCard: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
 
             HStack(spacing: 10) {
+                Button(action: showQRCode) {
+                    Image(systemName: "qrcode")
+                        .frame(width: 44)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .accessibilityLabel("Show NWC QR code")
+
                 Button(action: copy) {
                     Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
                         .frame(maxWidth: .infinity)
+                        .lineLimit(1)
                 }
                 .buttonStyle(SecondaryButtonStyle())
 
@@ -1438,6 +1473,107 @@ private struct NwcConnectionCard: View {
         .padding(16)
         .background(surfaceBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
+    }
+}
+
+private struct NwcConnectionExport: Identifiable {
+    let id: String
+    let name: String
+    let uri: String
+}
+
+private struct NwcConnectionQRCodeSheet: View {
+    let connection: NwcConnectionExport
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.walletAccent) private var walletAccent
+    @State private var copied: Bool
+
+    init(connection: NwcConnectionExport, initiallyCopied: Bool = false) {
+        self.connection = connection
+        _copied = State(initialValue: initiallyCopied)
+    }
+
+    private var displayName: String {
+        let trimmed = connection.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "NWC Connection" : trimmed
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    VStack(spacing: 6) {
+                        Text(displayName)
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+                        Text("Scan this code from the app you want to connect.")
+                            .font(.subheadline)
+                            .foregroundStyle(mutedText)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    QRCodeView(text: connection.uri)
+                        .frame(maxWidth: .infinity)
+
+                    Text(truncateMiddle(connection.uri, maxLength: 120, prefixCount: 42))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(primaryText)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
+
+                    HStack(spacing: 10) {
+                        Button(action: copyConnection) {
+                            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(PrimaryButtonStyle(color: walletAccent))
+
+                        ShareLink(item: connection.uri) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                    }
+
+                    Label(
+                        "This QR code contains wallet access. Only share it with an app you trust.",
+                        systemImage: "lock.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(mutedText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(20)
+            }
+            .background(pageBackground)
+            .foregroundStyle(primaryText)
+            .navigationTitle("NWC Connection")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .task {
+                guard copied else { return }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                copied = false
+            }
+        }
+    }
+
+    private func copyConnection() {
+        UIPasteboard.general.string = connection.uri
+        copied = true
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            copied = false
+        }
     }
 }
 
