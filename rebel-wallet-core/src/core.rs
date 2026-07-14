@@ -39,7 +39,7 @@ use crate::nostr_support::{
 };
 use crate::nwc::{
     process_nwc_wake_request as process_nwc_wake_request_event, publish_nwc_info_event,
-    validate_wallet_service_pubkey, NwcServiceContext,
+    publish_targeted_nwc_info_event, validate_wallet_service_pubkey, NwcServiceContext,
 };
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
 use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
@@ -582,6 +582,21 @@ impl AppCore {
                 budget_interval,
                 permissions,
             } => self.create_nwc_connection(name, relay, budget_sat, budget_interval, permissions),
+            AppAction::AuthorizeNwcConnection {
+                name,
+                relay,
+                client_pubkey,
+                budget_sat,
+                budget_interval,
+                permissions,
+            } => self.authorize_nwc_connection(
+                name,
+                relay,
+                client_pubkey,
+                budget_sat,
+                budget_interval,
+                permissions,
+            ),
             AppAction::DeleteNwcConnection { id } => self.delete_nwc_connection(id),
             AppAction::GenerateNostrKey => self.generate_nostr_key(),
             AppAction::ImportNostrSecret { nsec_or_hex } => self.import_nostr_secret(nsec_or_hex),
@@ -812,6 +827,119 @@ impl AppCore {
         self.rt.spawn(async move {
             for relay in relays {
                 let msg = match publish_nwc_info_event(relay.clone(), service_keys.clone()).await {
+                    Ok(()) => AsyncMsg::NwcInfoEventPublished { relay },
+                    Err(e) => AsyncMsg::NwcInfoEventFailed {
+                        relay,
+                        error: format!("{e:#}"),
+                    },
+                };
+                let _ = tx.send(CoreMsg::Async(msg));
+            }
+        });
+    }
+
+    fn authorize_nwc_connection(
+        &mut self,
+        name: String,
+        relay: String,
+        client_pubkey: String,
+        budget_sat: u64,
+        budget_interval: NwcBudgetInterval,
+        permissions: Vec<NwcPermission>,
+    ) {
+        if !self.ensure_wallet_derived_nostr_key() {
+            self.state.toast = Some("Create or open the wallet before adding NWC.".to_string());
+            self.request_haptic(HapticFeedback::NotificationWarning);
+            return;
+        }
+
+        let relay_urls = match parse_nwc_relay_urls(&relay, &self.state.nwc.default_relay) {
+            Ok(relay_urls) => relay_urls,
+            Err(_) => {
+                self.state.toast = Some("Enter up to two valid Nostr relay URLs.".to_string());
+                self.request_haptic(HapticFeedback::NotificationError);
+                return;
+            }
+        };
+        let client_pubkey = match public_key_from_npub_or_hex(client_pubkey.trim()) {
+            Ok(pubkey) => pubkey,
+            Err(_) => {
+                self.state.toast = Some("The NWC client public key is invalid.".to_string());
+                self.request_haptic(HapticFeedback::NotificationError);
+                return;
+            }
+        };
+        let client_pubkey_hex = client_pubkey.to_hex();
+        if self
+            .state
+            .nwc
+            .connections
+            .iter()
+            .any(|connection| connection.client_pubkey == client_pubkey_hex)
+        {
+            self.state.toast = Some("This NWC client is already authorized.".to_string());
+            self.request_haptic(HapticFeedback::NotificationWarning);
+            return;
+        }
+        let service_keys = match self.nostr_keys() {
+            Ok(keys) => keys,
+            Err(e) => {
+                self.state.toast = Some(format!("{e:#}"));
+                self.request_haptic(HapticFeedback::NotificationError);
+                return;
+            }
+        };
+
+        let relay_storage = encode_nwc_relay_urls(&relay_urls);
+        let trimmed_name = name.trim();
+        let display_name = if trimmed_name.is_empty() {
+            format!("NWC {}", self.state.nwc.connections.len() + 1)
+        } else {
+            trimmed_name.to_string()
+        };
+        let permissions = normalize_nwc_permissions(permissions);
+        let allow_get_balance = permissions.contains(&NwcPermission::GetBalance);
+        let allow_pay_invoice = permissions.contains(&NwcPermission::PayInvoice);
+
+        self.state.nwc.connections.push(NwcConnection {
+            id: format!("nwc-{client_pubkey_hex}"),
+            name: display_name,
+            relay: relay_storage.clone(),
+            uri: String::new(),
+            service_pubkey: service_keys.public_key().to_hex(),
+            client_pubkey: client_pubkey_hex,
+            budget_sat,
+            spent_sat: 0,
+            budget_display: crate::state::format_sats(budget_sat),
+            spent_display: crate::state::format_sats(0),
+            budget_interval,
+            budget_interval_display: budget_interval.display_name().to_string(),
+            permissions,
+            permissions_configured: true,
+            allow_get_balance,
+            allow_pay_invoice,
+            created_at: now_unix(),
+            last_used_at: None,
+        });
+        self.state.nwc.default_relay = relay_storage;
+        self.state.toast = Some("NWC client authorized.".to_string());
+        self.request_haptic(HapticFeedback::NotificationSuccess);
+        self.save_app_data();
+
+        let tx = self.tx.clone();
+        let relays = relay_urls
+            .into_iter()
+            .map(|relay| relay.to_string())
+            .collect::<Vec<_>>();
+        self.rt.spawn(async move {
+            for relay in relays {
+                let msg = match publish_targeted_nwc_info_event(
+                    relay.clone(),
+                    service_keys.clone(),
+                    client_pubkey,
+                )
+                .await
+                {
                     Ok(()) => AsyncMsg::NwcInfoEventPublished { relay },
                     Err(e) => AsyncMsg::NwcInfoEventFailed {
                         relay,

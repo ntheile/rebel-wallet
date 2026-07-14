@@ -363,6 +363,19 @@ pub(crate) fn build_nwc_info_event(keys: &Keys) -> anyhow::Result<Event> {
         .context("failed to sign NWC info event")
 }
 
+pub(crate) fn build_targeted_nwc_info_event(
+    keys: &Keys,
+    client_pubkey: PublicKey,
+) -> anyhow::Result<Event> {
+    EventBuilder::new(Kind::WalletConnectInfo, nwc_info_content())
+        .tags([
+            Tag::custom("encryption", ["nip04"]),
+            Tag::custom("p", [client_pubkey.to_hex()]),
+        ])
+        .finalize(keys)
+        .context("failed to sign targeted NWC info event")
+}
+
 pub(crate) async fn publish_nwc_info_event(relay: String, keys: Keys) -> anyhow::Result<()> {
     let client = client_for_relay(&relay).await?;
     let info_event = build_nwc_info_event(&keys)?;
@@ -371,6 +384,23 @@ pub(crate) async fn publish_nwc_info_event(relay: String, keys: Keys) -> anyhow:
         .to([relay.as_str()])
         .await
         .context("failed to publish NWC info event")
+        .map(|_| ());
+    client.shutdown().await;
+    result
+}
+
+pub(crate) async fn publish_targeted_nwc_info_event(
+    relay: String,
+    keys: Keys,
+    client_pubkey: PublicKey,
+) -> anyhow::Result<()> {
+    let client = client_for_relay(&relay).await?;
+    let info_event = build_targeted_nwc_info_event(&keys, client_pubkey)?;
+    let result = client
+        .send_event(&info_event)
+        .to([relay.as_str()])
+        .await
+        .context("failed to publish targeted NWC info event")
         .map(|_| ());
     client.shutdown().await;
     result
@@ -1173,5 +1203,29 @@ fn network_name(network: &WalletNetwork) -> &'static str {
     match network {
         WalletNetwork::Mainnet => "mainnet",
         WalletNetwork::Signet => "signet",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn targeted_info_event_identifies_the_authorized_client() {
+        let wallet_keys = Keys::generate();
+        let client_pubkey = Keys::generate().public_key();
+
+        let event = build_targeted_nwc_info_event(&wallet_keys, client_pubkey)
+            .expect("targeted info event");
+
+        assert_eq!(event.kind, Kind::WalletConnectInfo);
+        assert_eq!(event.pubkey, wallet_keys.public_key());
+        assert!(event.tags.iter().any(|tag| {
+            let fields = tag.as_slice();
+            fields.first().is_some_and(|field| field == "p")
+                && fields
+                    .get(1)
+                    .is_some_and(|field| field == &client_pubkey.to_hex())
+        }));
     }
 }

@@ -117,6 +117,14 @@ pub enum AppAction {
         budget_interval: NwcBudgetInterval,
         permissions: Vec<NwcPermission>,
     },
+    AuthorizeNwcConnection {
+        name: String,
+        relay: String,
+        client_pubkey: String,
+        budget_sat: u64,
+        budget_interval: NwcBudgetInterval,
+        permissions: Vec<NwcPermission>,
+    },
     DeleteNwcConnection {
         id: String,
     },

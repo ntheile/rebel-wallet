@@ -2652,6 +2652,8 @@ public enum AppAction: Equatable, Hashable {
     )
     case createNwcConnection(name: String, relay: String, budgetSat: UInt64, budgetInterval: NwcBudgetInterval, permissions: [NwcPermission]
     )
+    case authorizeNwcConnection(name: String, relay: String, clientPubkey: String, budgetSat: UInt64, budgetInterval: NwcBudgetInterval, permissions: [NwcPermission]
+    )
     case deleteNwcConnection(id: String
     )
     case generateNostrKey
@@ -2839,60 +2841,63 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 53: return .createNwcConnection(name: try FfiConverterString.read(from: &buf), relay: try FfiConverterString.read(from: &buf), budgetSat: try FfiConverterUInt64.read(from: &buf), budgetInterval: try FfiConverterTypeNwcBudgetInterval.read(from: &buf), permissions: try FfiConverterSequenceTypeNwcPermission.read(from: &buf)
         )
 
-        case 54: return .deleteNwcConnection(id: try FfiConverterString.read(from: &buf)
+        case 54: return .authorizeNwcConnection(name: try FfiConverterString.read(from: &buf), relay: try FfiConverterString.read(from: &buf), clientPubkey: try FfiConverterString.read(from: &buf), budgetSat: try FfiConverterUInt64.read(from: &buf), budgetInterval: try FfiConverterTypeNwcBudgetInterval.read(from: &buf), permissions: try FfiConverterSequenceTypeNwcPermission.read(from: &buf)
         )
 
-        case 55: return .generateNostrKey
-
-        case 56: return .importNostrSecret(nsecOrHex: try FfiConverterString.read(from: &buf)
+        case 55: return .deleteNwcConnection(id: try FfiConverterString.read(from: &buf)
         )
 
-        case 57: return .exportNostrSecret
+        case 56: return .generateNostrKey
 
-        case 58: return .clearNostrKey
-
-        case 59: return .editNostrProfile(name: try FfiConverterString.read(from: &buf), about: try FfiConverterString.read(from: &buf), picture: try FfiConverterString.read(from: &buf), lud16: try FfiConverterString.read(from: &buf), nip05: try FfiConverterString.read(from: &buf)
+        case 57: return .importNostrSecret(nsecOrHex: try FfiConverterString.read(from: &buf)
         )
 
-        case 60: return .uploadNostrProfilePicture(imageBase64: try FfiConverterString.read(from: &buf)
+        case 58: return .exportNostrSecret
+
+        case 59: return .clearNostrKey
+
+        case 60: return .editNostrProfile(name: try FfiConverterString.read(from: &buf), about: try FfiConverterString.read(from: &buf), picture: try FfiConverterString.read(from: &buf), lud16: try FfiConverterString.read(from: &buf), nip05: try FfiConverterString.read(from: &buf)
         )
 
-        case 61: return .addContact(npub: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf), lightningAddress: try FfiConverterString.read(from: &buf), lnurl: try FfiConverterString.read(from: &buf), picture: try FfiConverterString.read(from: &buf)
+        case 61: return .uploadNostrProfilePicture(imageBase64: try FfiConverterString.read(from: &buf)
         )
 
-        case 62: return .editContact(contactId: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf), lightningAddress: try FfiConverterString.read(from: &buf), lnurl: try FfiConverterString.read(from: &buf), picture: try FfiConverterString.read(from: &buf)
+        case 62: return .addContact(npub: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf), lightningAddress: try FfiConverterString.read(from: &buf), lnurl: try FfiConverterString.read(from: &buf), picture: try FfiConverterString.read(from: &buf)
         )
 
-        case 63: return .followContact(contactId: try FfiConverterString.read(from: &buf)
+        case 63: return .editContact(contactId: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf), lightningAddress: try FfiConverterString.read(from: &buf), lnurl: try FfiConverterString.read(from: &buf), picture: try FfiConverterString.read(from: &buf)
         )
 
-        case 64: return .unfollowContact(contactId: try FfiConverterString.read(from: &buf)
+        case 64: return .followContact(contactId: try FfiConverterString.read(from: &buf)
         )
 
-        case 65: return .deleteContact(contactId: try FfiConverterString.read(from: &buf)
+        case 65: return .unfollowContact(contactId: try FfiConverterString.read(from: &buf)
         )
 
-        case 66: return .publishNostrProfile
-
-        case 67: return .refreshNostrProfile
-
-        case 68: return .deleteNostrProfile
-
-        case 69: return .publishContactList
-
-        case 70: return .refreshContactList
-
-        case 71: return .clearNostrProfileCache
-
-        case 72: return .loadDirectMessages(contactId: try FfiConverterString.read(from: &buf)
+        case 66: return .deleteContact(contactId: try FfiConverterString.read(from: &buf)
         )
 
-        case 73: return .sendDirectMessage(contactId: try FfiConverterString.read(from: &buf), message: try FfiConverterString.read(from: &buf)
+        case 67: return .publishNostrProfile
+
+        case 68: return .refreshNostrProfile
+
+        case 69: return .deleteNostrProfile
+
+        case 70: return .publishContactList
+
+        case 71: return .refreshContactList
+
+        case 72: return .clearNostrProfileCache
+
+        case 73: return .loadDirectMessages(contactId: try FfiConverterString.read(from: &buf)
         )
 
-        case 74: return .clearToast
+        case 74: return .sendDirectMessage(contactId: try FfiConverterString.read(from: &buf), message: try FfiConverterString.read(from: &buf)
+        )
 
-        case 75: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
+        case 75: return .clearToast
+
+        case 76: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3148,30 +3153,40 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterSequenceTypeNwcPermission.write(permissions, into: &buf)
 
 
-        case let .deleteNwcConnection(id):
+        case let .authorizeNwcConnection(name,relay,clientPubkey,budgetSat,budgetInterval,permissions):
             writeInt(&buf, Int32(54))
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterString.write(relay, into: &buf)
+            FfiConverterString.write(clientPubkey, into: &buf)
+            FfiConverterUInt64.write(budgetSat, into: &buf)
+            FfiConverterTypeNwcBudgetInterval.write(budgetInterval, into: &buf)
+            FfiConverterSequenceTypeNwcPermission.write(permissions, into: &buf)
+
+
+        case let .deleteNwcConnection(id):
+            writeInt(&buf, Int32(55))
             FfiConverterString.write(id, into: &buf)
 
 
         case .generateNostrKey:
-            writeInt(&buf, Int32(55))
+            writeInt(&buf, Int32(56))
 
 
         case let .importNostrSecret(nsecOrHex):
-            writeInt(&buf, Int32(56))
+            writeInt(&buf, Int32(57))
             FfiConverterString.write(nsecOrHex, into: &buf)
 
 
         case .exportNostrSecret:
-            writeInt(&buf, Int32(57))
-
-
-        case .clearNostrKey:
             writeInt(&buf, Int32(58))
 
 
-        case let .editNostrProfile(name,about,picture,lud16,nip05):
+        case .clearNostrKey:
             writeInt(&buf, Int32(59))
+
+
+        case let .editNostrProfile(name,about,picture,lud16,nip05):
+            writeInt(&buf, Int32(60))
             FfiConverterString.write(name, into: &buf)
             FfiConverterString.write(about, into: &buf)
             FfiConverterString.write(picture, into: &buf)
@@ -3180,12 +3195,12 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
 
 
         case let .uploadNostrProfilePicture(imageBase64):
-            writeInt(&buf, Int32(60))
+            writeInt(&buf, Int32(61))
             FfiConverterString.write(imageBase64, into: &buf)
 
 
         case let .addContact(npub,name,lightningAddress,lnurl,picture):
-            writeInt(&buf, Int32(61))
+            writeInt(&buf, Int32(62))
             FfiConverterString.write(npub, into: &buf)
             FfiConverterString.write(name, into: &buf)
             FfiConverterString.write(lightningAddress, into: &buf)
@@ -3194,7 +3209,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
 
 
         case let .editContact(contactId,name,npub,lightningAddress,lnurl,picture):
-            writeInt(&buf, Int32(62))
+            writeInt(&buf, Int32(63))
             FfiConverterString.write(contactId, into: &buf)
             FfiConverterString.write(name, into: &buf)
             FfiConverterString.write(npub, into: &buf)
@@ -3204,61 +3219,61 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
 
 
         case let .followContact(contactId):
-            writeInt(&buf, Int32(63))
-            FfiConverterString.write(contactId, into: &buf)
-
-
-        case let .unfollowContact(contactId):
             writeInt(&buf, Int32(64))
             FfiConverterString.write(contactId, into: &buf)
 
 
-        case let .deleteContact(contactId):
+        case let .unfollowContact(contactId):
             writeInt(&buf, Int32(65))
             FfiConverterString.write(contactId, into: &buf)
 
 
-        case .publishNostrProfile:
+        case let .deleteContact(contactId):
             writeInt(&buf, Int32(66))
+            FfiConverterString.write(contactId, into: &buf)
 
 
-        case .refreshNostrProfile:
+        case .publishNostrProfile:
             writeInt(&buf, Int32(67))
 
 
-        case .deleteNostrProfile:
+        case .refreshNostrProfile:
             writeInt(&buf, Int32(68))
 
 
-        case .publishContactList:
+        case .deleteNostrProfile:
             writeInt(&buf, Int32(69))
 
 
-        case .refreshContactList:
+        case .publishContactList:
             writeInt(&buf, Int32(70))
 
 
-        case .clearNostrProfileCache:
+        case .refreshContactList:
             writeInt(&buf, Int32(71))
 
 
-        case let .loadDirectMessages(contactId):
+        case .clearNostrProfileCache:
             writeInt(&buf, Int32(72))
+
+
+        case let .loadDirectMessages(contactId):
+            writeInt(&buf, Int32(73))
             FfiConverterString.write(contactId, into: &buf)
 
 
         case let .sendDirectMessage(contactId,message):
-            writeInt(&buf, Int32(73))
+            writeInt(&buf, Int32(74))
             FfiConverterString.write(contactId, into: &buf)
             FfiConverterString.write(message, into: &buf)
 
 
         case .clearToast:
-            writeInt(&buf, Int32(74))
+            writeInt(&buf, Int32(75))
 
 
         case let .requestHaptic(feedback):
-            writeInt(&buf, Int32(75))
+            writeInt(&buf, Int32(76))
             FfiConverterTypeHapticFeedback.write(feedback, into: &buf)
 
         }

@@ -24,7 +24,7 @@ struct NwcConnectionsView: View {
         .navigationTitle("NWC")
         .background(pageBackground)
         .foregroundStyle(primaryText)
-        .alert("Delete NWC string?", isPresented: Binding(
+        .alert("Delete NWC connection?", isPresented: Binding(
             get: { deleteConnection != nil },
             set: { if !$0 { deleteConnection = nil } }
         )) {
@@ -59,7 +59,7 @@ struct NwcConnectionsView: View {
     private var connectionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Saved Strings")
+                Text("Connections")
                     .font(.caption.bold())
                     .foregroundStyle(mutedText)
                 Spacer()
@@ -74,7 +74,7 @@ struct NwcConnectionsView: View {
                     Image(systemName: "link.badge.plus")
                         .font(.title2)
                         .foregroundStyle(walletAccent)
-                    Text("No NWC strings")
+                    Text("No NWC connections")
                         .font(.headline)
                     Text("Create one to authorize a Nostr Wallet Connect client.")
                         .font(.caption)
@@ -86,16 +86,19 @@ struct NwcConnectionsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
             } else {
                 ForEach(connections, id: \.id) { connection in
+                    let exportUri = connection.uri.isEmpty ? nil : nwcUri(connection)
                     NwcConnectionCard(
                         connection: connection,
-                        uri: nwcUri(connection),
+                        uri: exportUri,
                         copied: copiedConnectionId == connection.id,
                         showQRCode: {
-                            presentedConnection = NwcConnectionExport(
-                                id: connection.id,
-                                name: connection.name,
-                                uri: nwcUri(connection)
-                            )
+                            if let exportUri {
+                                presentedConnection = NwcConnectionExport(
+                                    id: connection.id,
+                                    name: connection.name,
+                                    uri: exportUri
+                                )
+                            }
                         },
                         copy: { copy(connection) },
                         delete: { deleteConnection = connection }
@@ -106,6 +109,7 @@ struct NwcConnectionsView: View {
     }
 
     private func copy(_ connection: NwcConnection) {
+        guard !connection.uri.isEmpty else { return }
         UIPasteboard.general.string = nwcUri(connection)
         copiedConnectionId = connection.id
         manager.requestHaptic(.impactLight)
@@ -433,7 +437,7 @@ struct NwaWalletAuthApprovalView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.walletAccent) private var walletAccent
     @FocusState private var focusedField: NwcCreateField?
-    let request: NwaWalletCreatedRequest
+    let request: NwaWalletAuthRequest
     @State private var relay = ""
     @State private var budgetText = ""
     @State private var budgetInterval: NwcBudgetInterval = .daily
@@ -443,6 +447,7 @@ struct NwaWalletAuthApprovalView: View {
     @State private var editing = false
     @State private var customRelayDraft: NwcCustomRelayDraft?
     @State private var approving = false
+    @State private var approvedConnection: NwcConnection?
     @State private var errorMessage: String?
 
     private var relays: [String] {
@@ -493,8 +498,8 @@ struct NwaWalletAuthApprovalView: View {
                                     Text("wants to connect to this wallet")
                                         .font(.subheadline)
                                         .foregroundStyle(mutedText)
-                                    if !request.appId.isEmpty {
-                                        Text(request.appId)
+                                    if let requestingAppDescription = request.requestingAppDescription {
+                                        Text(requestingAppDescription)
                                             .font(.caption.monospaced())
                                             .foregroundStyle(mutedText)
                                     }
@@ -661,7 +666,7 @@ struct NwaWalletAuthApprovalView: View {
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundStyle(Color.yellow)
-                                Text("This mobile-to-mobile flow returns a full NWC URI to the requesting app. Only approve apps you trust.")
+                                Text("The requesting app keeps its NWC secret. Rebel receives only its public key and returns public connection details.")
                                     .font(.caption)
                                     .foregroundStyle(mutedText)
                             }
@@ -676,14 +681,20 @@ struct NwaWalletAuthApprovalView: View {
                             }
 
                             Button {
-                                Task { await approve() }
+                                Task {
+                                    if let approvedConnection {
+                                        await returnToRequestingApp(approvedConnection)
+                                    } else {
+                                        await approve()
+                                    }
+                                }
                             } label: {
                                 HStack {
                                     if approving {
                                         ProgressView()
                                             .tint(.white)
                                     }
-                                    Text(approving ? "Connecting..." : "Connect")
+                                    Text(approving ? "Connecting..." : approvedConnection == nil ? "Connect" : "Return to App")
                                 }
                                 .frame(maxWidth: .infinity)
                             }
@@ -693,7 +704,7 @@ struct NwaWalletAuthApprovalView: View {
                             Button {
                                 cancel()
                             } label: {
-                                Text("Cancel")
+                                Text(approvedConnection == nil ? "Cancel" : "Done")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(SecondaryButtonStyle())
@@ -750,15 +761,15 @@ struct NwaWalletAuthApprovalView: View {
         approving = true
         errorMessage = nil
         let existingIds = Set(manager.state.nwc.connections.map(\.id))
-        var createdConnection: NwcConnection?
         let effectivePermissions = permissionsForCreate
         NwcWakeInbox.appendDebug(
             source: "App",
             message: "NWA approval settings callback=\(request.callbackTargetDescription) budget_sat=\(parsedBudget) interval=\(budgetInterval.title.lowercased()) relays=\(relays.joined(separator: ",")) permissions=\(effectivePermissions.map(\.methodName).joined(separator: ","))"
         )
-        manager.dispatch(.createNwcConnection(
+        manager.dispatch(.authorizeNwcConnection(
             name: request.displayName,
             relay: relayStorage,
+            clientPubkey: request.clientPubkey,
             budgetSat: parsedBudget,
             budgetInterval: budgetInterval,
             permissions: effectivePermissions
@@ -766,31 +777,45 @@ struct NwaWalletAuthApprovalView: View {
 
         do {
             let connection = try await waitForCreatedConnection(existingIds: existingIds)
-            createdConnection = connection
             try await manager.registerNwcWakeConnectionForNwa(connection)
-            let nwcUri = NwcWakeRegistrationService.uriWithConnectionMetadata(
-                connection.uri,
-                lud16: manager.state.lightningAddress.address
-            )
-            guard let callback = request.approvedCallback(nwcUri: nwcUri) else {
-                throw NwaApprovalError.invalidCallback
-            }
-            guard await manager.openVerifiedNwaCallback(callback) else {
-                throw NwaApprovalError.callbackDeliveryFailed
-            }
-            await MainActor.run {
-                manager.dismissNwaWalletRequest(request)
-                dismiss()
-            }
+            approvedConnection = connection
+            await returnToRequestingApp(connection)
         } catch {
-            if let createdConnection {
-                await manager.rollbackNwaConnection(createdConnection)
-            }
             await MainActor.run {
                 approving = false
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func returnToRequestingApp(_ connection: NwcConnection) async {
+        approving = true
+        errorMessage = nil
+        guard request.returnTo != nil else {
+            manager.dismissNwaWalletRequest(request)
+            dismiss()
+            return
+        }
+        guard let callback = request.approvedCallback(
+            walletPubkey: connection.servicePubkey,
+            relays: relays,
+            lud16: manager.state.lightningAddress.address
+        ) else {
+            approving = false
+            errorMessage = NwaApprovalError.invalidCallback.localizedDescription
+            return
+        }
+        guard await manager.openVerifiedNwaCallback(callback) else {
+            NwcWakeInbox.appendDebug(
+                source: "App",
+                message: "NWA connection approved but verified callback could not be opened"
+            )
+            approving = false
+            errorMessage = "The connection was approved, but the requesting app could not be reopened. Return to it manually or retry."
+            return
+        }
+        manager.dismissNwaWalletRequest(request)
+        dismiss()
     }
 
     private func initializeEditablePolicy() {
@@ -846,6 +871,11 @@ struct NwaWalletAuthApprovalView: View {
     }
 
     private func cancel() {
+        if approvedConnection != nil {
+            manager.dismissNwaWalletRequest(request)
+            dismiss()
+            return
+        }
         Task {
             if let callback = request.cancelledCallback() {
                 _ = await manager.openVerifiedNwaCallback(callback)
@@ -896,7 +926,6 @@ private struct NwaPolicyRow: View {
 private enum NwaApprovalError: LocalizedError {
     case connectionTimedOut
     case invalidCallback
-    case callbackDeliveryFailed
 
     var errorDescription: String? {
         switch self {
@@ -904,8 +933,6 @@ private enum NwaApprovalError: LocalizedError {
             return "Timed out while creating the NWC connection."
         case .invalidCallback:
             return "The requesting app callback URL is invalid."
-        case .callbackDeliveryFailed:
-            return "The verified requesting app could not open the callback. The NWC connection was revoked."
         }
     }
 }
@@ -1365,7 +1392,7 @@ private struct NwcPermissionToggleRow: View {
 
 private struct NwcConnectionCard: View {
     let connection: NwcConnection
-    let uri: String
+    let uri: String?
     let copied: Bool
     let showQRCode: () -> Void
     let copy: () -> Void
@@ -1429,9 +1456,10 @@ private struct NwcConnectionCard: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(truncateMiddle(uri, maxLength: 80, prefixCount: 28))
+                Text(uri.map { truncateMiddle($0, maxLength: 80, prefixCount: 28) }
+                    ?? "Client-managed connection")
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(primaryText)
+                    .foregroundStyle(uri == nil ? mutedText : primaryText)
                     .textSelection(.enabled)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1441,26 +1469,28 @@ private struct NwcConnectionCard: View {
             .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
 
-            HStack(spacing: 10) {
-                Button(action: showQRCode) {
-                    Image(systemName: "qrcode")
-                        .frame(width: 44)
-                }
-                .buttonStyle(SecondaryButtonStyle())
-                .accessibilityLabel("Show NWC QR code")
+            if let uri {
+                HStack(spacing: 10) {
+                    Button(action: showQRCode) {
+                        Image(systemName: "qrcode")
+                            .frame(width: 44)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .accessibilityLabel("Show NWC QR code")
 
-                Button(action: copy) {
-                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .frame(maxWidth: .infinity)
-                        .lineLimit(1)
-                }
-                .buttonStyle(SecondaryButtonStyle())
+                    Button(action: copy) {
+                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
 
-                ShareLink(item: uri) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity)
+                    ShareLink(item: uri) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
                 }
-                .buttonStyle(SecondaryButtonStyle())
             }
 
             HStack(spacing: 8) {
