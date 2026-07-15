@@ -1637,10 +1637,13 @@ public struct NwcConnection: Equatable, Hashable {
     public var allowPayInvoice: Bool
     public var createdAt: UInt64
     public var lastUsedAt: UInt64?
+    public var expiresAt: UInt64?
+    public var budgetPeriodStartedAt: UInt64
+    public var pendingInfoEventRelays: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, name: String, relay: String, uri: String, servicePubkey: String, clientPubkey: String, budgetSat: UInt64, spentSat: UInt64, budgetDisplay: String, spentDisplay: String, budgetInterval: NwcBudgetInterval, budgetIntervalDisplay: String, permissions: [NwcPermission], permissionsConfigured: Bool, allowGetBalance: Bool, allowPayInvoice: Bool, createdAt: UInt64, lastUsedAt: UInt64?) {
+    public init(id: String, name: String, relay: String, uri: String, servicePubkey: String, clientPubkey: String, budgetSat: UInt64, spentSat: UInt64, budgetDisplay: String, spentDisplay: String, budgetInterval: NwcBudgetInterval, budgetIntervalDisplay: String, permissions: [NwcPermission], permissionsConfigured: Bool, allowGetBalance: Bool, allowPayInvoice: Bool, createdAt: UInt64, lastUsedAt: UInt64?, expiresAt: UInt64?, budgetPeriodStartedAt: UInt64, pendingInfoEventRelays: [String]) {
         self.id = id
         self.name = name
         self.relay = relay
@@ -1659,6 +1662,9 @@ public struct NwcConnection: Equatable, Hashable {
         self.allowPayInvoice = allowPayInvoice
         self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt
+        self.expiresAt = expiresAt
+        self.budgetPeriodStartedAt = budgetPeriodStartedAt
+        self.pendingInfoEventRelays = pendingInfoEventRelays
     }
 
 
@@ -1694,7 +1700,10 @@ public struct FfiConverterTypeNwcConnection: FfiConverterRustBuffer {
                 allowGetBalance: FfiConverterBool.read(from: &buf),
                 allowPayInvoice: FfiConverterBool.read(from: &buf),
                 createdAt: FfiConverterUInt64.read(from: &buf),
-                lastUsedAt: FfiConverterOptionUInt64.read(from: &buf)
+                lastUsedAt: FfiConverterOptionUInt64.read(from: &buf),
+                expiresAt: FfiConverterOptionUInt64.read(from: &buf),
+                budgetPeriodStartedAt: FfiConverterUInt64.read(from: &buf),
+                pendingInfoEventRelays: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
@@ -1717,6 +1726,9 @@ public struct FfiConverterTypeNwcConnection: FfiConverterRustBuffer {
         FfiConverterBool.write(value.allowPayInvoice, into: &buf)
         FfiConverterUInt64.write(value.createdAt, into: &buf)
         FfiConverterOptionUInt64.write(value.lastUsedAt, into: &buf)
+        FfiConverterOptionUInt64.write(value.expiresAt, into: &buf)
+        FfiConverterUInt64.write(value.budgetPeriodStartedAt, into: &buf)
+        FfiConverterSequenceString.write(value.pendingInfoEventRelays, into: &buf)
     }
 }
 
@@ -2652,7 +2664,7 @@ public enum AppAction: Equatable, Hashable {
     )
     case createNwcConnection(name: String, relay: String, budgetSat: UInt64, budgetInterval: NwcBudgetInterval, permissions: [NwcPermission]
     )
-    case authorizeNwcConnection(name: String, relay: String, clientPubkey: String, budgetSat: UInt64, budgetInterval: NwcBudgetInterval, permissions: [NwcPermission]
+    case authorizeNwcConnection(name: String, relay: String, clientPubkey: String, budgetSat: UInt64, budgetInterval: NwcBudgetInterval, permissions: [NwcPermission], expiresAt: UInt64?
     )
     case deleteNwcConnection(id: String
     )
@@ -2841,7 +2853,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 53: return .createNwcConnection(name: try FfiConverterString.read(from: &buf), relay: try FfiConverterString.read(from: &buf), budgetSat: try FfiConverterUInt64.read(from: &buf), budgetInterval: try FfiConverterTypeNwcBudgetInterval.read(from: &buf), permissions: try FfiConverterSequenceTypeNwcPermission.read(from: &buf)
         )
 
-        case 54: return .authorizeNwcConnection(name: try FfiConverterString.read(from: &buf), relay: try FfiConverterString.read(from: &buf), clientPubkey: try FfiConverterString.read(from: &buf), budgetSat: try FfiConverterUInt64.read(from: &buf), budgetInterval: try FfiConverterTypeNwcBudgetInterval.read(from: &buf), permissions: try FfiConverterSequenceTypeNwcPermission.read(from: &buf)
+        case 54: return .authorizeNwcConnection(name: try FfiConverterString.read(from: &buf), relay: try FfiConverterString.read(from: &buf), clientPubkey: try FfiConverterString.read(from: &buf), budgetSat: try FfiConverterUInt64.read(from: &buf), budgetInterval: try FfiConverterTypeNwcBudgetInterval.read(from: &buf), permissions: try FfiConverterSequenceTypeNwcPermission.read(from: &buf), expiresAt: try FfiConverterOptionUInt64.read(from: &buf)
         )
 
         case 55: return .deleteNwcConnection(id: try FfiConverterString.read(from: &buf)
@@ -3153,7 +3165,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterSequenceTypeNwcPermission.write(permissions, into: &buf)
 
 
-        case let .authorizeNwcConnection(name,relay,clientPubkey,budgetSat,budgetInterval,permissions):
+        case let .authorizeNwcConnection(name,relay,clientPubkey,budgetSat,budgetInterval,permissions,expiresAt):
             writeInt(&buf, Int32(54))
             FfiConverterString.write(name, into: &buf)
             FfiConverterString.write(relay, into: &buf)
@@ -3161,6 +3173,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterUInt64.write(budgetSat, into: &buf)
             FfiConverterTypeNwcBudgetInterval.write(budgetInterval, into: &buf)
             FfiConverterSequenceTypeNwcPermission.write(permissions, into: &buf)
+            FfiConverterOptionUInt64.write(expiresAt, into: &buf)
 
 
         case let .deleteNwcConnection(id):
@@ -3712,10 +3725,12 @@ public func FfiConverterTypeMainTab_lower(_ value: MainTab) -> RustBuffer {
 
 public enum NwcBudgetInterval: Equatable, Hashable {
 
+    case never
     case hourly
     case daily
     case weekly
     case monthly
+    case yearly
 
 
 
@@ -3737,13 +3752,17 @@ public struct FfiConverterTypeNwcBudgetInterval: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .hourly
+        case 1: return .never
 
-        case 2: return .daily
+        case 2: return .hourly
 
-        case 3: return .weekly
+        case 3: return .daily
 
-        case 4: return .monthly
+        case 4: return .weekly
+
+        case 5: return .monthly
+
+        case 6: return .yearly
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -3753,20 +3772,28 @@ public struct FfiConverterTypeNwcBudgetInterval: FfiConverterRustBuffer {
         switch value {
 
 
-        case .hourly:
+        case .never:
             writeInt(&buf, Int32(1))
 
 
-        case .daily:
+        case .hourly:
             writeInt(&buf, Int32(2))
 
 
-        case .weekly:
+        case .daily:
             writeInt(&buf, Int32(3))
 
 
-        case .monthly:
+        case .weekly:
             writeInt(&buf, Int32(4))
+
+
+        case .monthly:
+            writeInt(&buf, Int32(5))
+
+
+        case .yearly:
+            writeInt(&buf, Int32(6))
 
         }
     }

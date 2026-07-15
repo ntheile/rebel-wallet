@@ -745,6 +745,11 @@ struct NwaWalletAuthApprovalView: View {
     }
 
     private func approve() async {
+        if let expiresAt = request.expiresAt,
+           expiresAt <= UInt64(Date().timeIntervalSince1970) {
+            errorMessage = "This connection request has expired."
+            return
+        }
         guard manager.state.setup == .ready else {
             errorMessage = "Open or create the wallet before connecting an app."
             return
@@ -772,7 +777,8 @@ struct NwaWalletAuthApprovalView: View {
             clientPubkey: request.clientPubkey,
             budgetSat: parsedBudget,
             budgetInterval: budgetInterval,
-            permissions: effectivePermissions
+            permissions: effectivePermissions,
+            expiresAt: request.expiresAt
         ))
 
         do {
@@ -805,10 +811,10 @@ struct NwaWalletAuthApprovalView: View {
             errorMessage = NwaApprovalError.invalidCallback.localizedDescription
             return
         }
-        guard await manager.openVerifiedNwaCallback(callback) else {
+        guard await manager.openNwaCallback(callback) else {
             NwcWakeInbox.appendDebug(
                 source: "App",
-                message: "NWA connection approved but verified callback could not be opened"
+                message: "NWA connection approved but callback could not be opened"
             )
             approving = false
             errorMessage = "The connection was approved, but the requesting app could not be reopened. Return to it manually or retry."
@@ -878,7 +884,7 @@ struct NwaWalletAuthApprovalView: View {
         }
         Task {
             if let callback = request.cancelledCallback() {
-                _ = await manager.openVerifiedNwaCallback(callback)
+                _ = await manager.openNwaCallback(callback)
             }
             await MainActor.run {
                 manager.dismissNwaWalletRequest(request)
@@ -1669,13 +1675,9 @@ private extension NwcPermission {
             .getInfo,
             .getBalance,
             .payInvoice,
-            .payKeysend,
             .makeInvoice,
             .lookupInvoice,
-            .listTransactions,
-            .makeHoldInvoice,
-            .cancelHoldInvoice,
-            .settleHoldInvoice
+            .listTransactions
         ]
     }
 
@@ -1757,15 +1759,17 @@ private extension NwcPermission {
 
 private extension NwcBudgetInterval {
     static var createOptions: [NwcBudgetInterval] {
-        [.hourly, .daily, .weekly, .monthly]
+        [.never, .hourly, .daily, .weekly, .monthly, .yearly]
     }
 
     var title: String {
         switch self {
+        case .never: return "Never"
         case .hourly: return "Hourly"
         case .daily: return "Daily"
         case .weekly: return "Weekly"
         case .monthly: return "Monthly"
+        case .yearly: return "Yearly"
         }
     }
 }

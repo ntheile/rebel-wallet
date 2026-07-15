@@ -124,6 +124,7 @@ pub enum AppAction {
         budget_sat: u64,
         budget_interval: NwcBudgetInterval,
         permissions: Vec<NwcPermission>,
+        expires_at: Option<u64>,
     },
     DeleteNwcConnection {
         id: String,

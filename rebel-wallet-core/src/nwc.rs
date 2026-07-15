@@ -24,7 +24,7 @@ use nostr_sdk::prelude::{
 use crate::nostr_support::public_key_from_npub_or_hex;
 use crate::persistence::ServerConfig;
 use crate::wallet::{open_bark_wallet, WalletOpenMode};
-use crate::{NwcConnection, NwcPermission, NwcWakeRequest, WalletNetwork};
+use crate::{NwcBudgetInterval, NwcConnection, NwcPermission, NwcWakeRequest, WalletNetwork};
 
 const NWC_EXTENSION_PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
 const NWC_EXTENSION_PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
@@ -366,14 +366,18 @@ pub(crate) fn build_nwc_info_event(keys: &Keys) -> anyhow::Result<Event> {
 pub(crate) fn build_targeted_nwc_info_event(
     keys: &Keys,
     client_pubkey: PublicKey,
+    permissions: &[NwcPermission],
 ) -> anyhow::Result<Event> {
-    EventBuilder::new(Kind::WalletConnectInfo, nwc_info_content())
-        .tags([
-            Tag::custom("encryption", ["nip04"]),
-            Tag::custom("p", [client_pubkey.to_hex()]),
-        ])
-        .finalize(keys)
-        .context("failed to sign targeted NWC info event")
+    EventBuilder::new(
+        Kind::WalletConnectInfo,
+        nwc_info_content_for_permissions(permissions),
+    )
+    .tags([
+        Tag::custom("encryption", ["nip04"]),
+        Tag::custom("p", [client_pubkey.to_hex()]),
+    ])
+    .finalize(keys)
+    .context("failed to sign targeted NWC info event")
 }
 
 pub(crate) async fn publish_nwc_info_event(relay: String, keys: Keys) -> anyhow::Result<()> {
@@ -393,9 +397,10 @@ pub(crate) async fn publish_targeted_nwc_info_event(
     relay: String,
     keys: Keys,
     client_pubkey: PublicKey,
+    permissions: Vec<NwcPermission>,
 ) -> anyhow::Result<()> {
     let client = client_for_relay(&relay).await?;
-    let info_event = build_targeted_nwc_info_event(&keys, client_pubkey)?;
+    let info_event = build_targeted_nwc_info_event(&keys, client_pubkey, &permissions)?;
     let result = client
         .send_event(&info_event)
         .to([relay.as_str()])
@@ -411,11 +416,21 @@ fn authorized_connection<'a>(
     context: &'a NwcServiceContext,
 ) -> anyhow::Result<&'a NwcConnection> {
     let client_pubkey = event.pubkey.to_hex();
-    context
+    let connection = context
         .connections
         .iter()
         .find(|connection| connection.client_pubkey == client_pubkey)
-        .ok_or_else(|| anyhow!("NWC request client is not authorized: {client_pubkey}"))
+        .ok_or_else(|| anyhow!("NWC request client is not authorized: {client_pubkey}"))?;
+    if connection_is_expired(connection, crate::time::now_unix()) {
+        anyhow::bail!("NWC connection has expired");
+    }
+    Ok(connection)
+}
+
+fn connection_is_expired(connection: &NwcConnection, now: u64) -> bool {
+    connection
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= now)
 }
 
 async fn fetch_nwc_request_event(wake: &NwcWakeRequest) -> anyhow::Result<Event> {
@@ -733,10 +748,12 @@ async fn pay_invoice_response(
     context: &NwcServiceContext,
     connection: &NwcConnection,
 ) -> anyhow::Result<(Response, u64, Vec<NwcConnection>)> {
+    let mut renewed_connection = connection.clone();
+    renew_budget_if_due(&mut renewed_connection, crate::time::now_unix());
     let wallet = open_wallet_for_extension(context).await?;
     let invoice = Bolt11Invoice::from_str(&params.invoice).context("invalid Lightning invoice")?;
     let amount_sat = pay_invoice_amount_sat(&invoice, params.amount)?;
-    enforce_budget(connection, amount_sat)?;
+    enforce_budget(&renewed_connection, amount_sat)?;
     let payment_hash: PaymentHash = (*invoice.payment_hash()).into();
 
     let user_amount = params
@@ -768,8 +785,9 @@ async fn pay_invoice_response(
         .iter_mut()
         .find(|candidate| candidate.id == connection.id)
     {
-        updated.spent_sat = updated.spent_sat.saturating_add(amount_sat);
+        updated.spent_sat = renewed_connection.spent_sat.saturating_add(amount_sat);
         updated.spent_display = crate::state::format_sats(updated.spent_sat);
+        updated.budget_period_started_at = renewed_connection.budget_period_started_at;
         updated.last_used_at = Some(crate::time::now_unix());
     }
 
@@ -1070,6 +1088,33 @@ fn enforce_budget(connection: &NwcConnection, amount_sat: u64) -> anyhow::Result
     Ok(())
 }
 
+fn renew_budget_if_due(connection: &mut NwcConnection, now: u64) {
+    let period_seconds = match connection.budget_interval {
+        NwcBudgetInterval::Never => return,
+        NwcBudgetInterval::Hourly => 60 * 60,
+        NwcBudgetInterval::Daily => 24 * 60 * 60,
+        NwcBudgetInterval::Weekly => 7 * 24 * 60 * 60,
+        NwcBudgetInterval::Monthly => 30 * 24 * 60 * 60,
+        NwcBudgetInterval::Yearly => 365 * 24 * 60 * 60,
+    };
+    let period_started_at = if connection.budget_period_started_at == 0 {
+        connection.created_at
+    } else {
+        connection.budget_period_started_at
+    };
+    let elapsed = now.saturating_sub(period_started_at);
+    if elapsed < period_seconds {
+        connection.budget_period_started_at = period_started_at;
+        return;
+    }
+
+    let completed_periods = elapsed / period_seconds;
+    connection.budget_period_started_at =
+        period_started_at.saturating_add(completed_periods.saturating_mul(period_seconds));
+    connection.spent_sat = 0;
+    connection.spent_display = crate::state::format_sats(0);
+}
+
 fn snapshot_json_from_context(
     context: &NwcServiceContext,
     mut connections: Vec<NwcConnection>,
@@ -1100,13 +1145,19 @@ fn connection_methods(connection: &NwcConnection) -> Vec<Method> {
     connection
         .enabled_permissions()
         .into_iter()
+        .filter(|permission| NwcPermission::IMPLEMENTED.contains(permission))
         .map(|permission| permission.to_method())
         .collect()
 }
 
 fn nwc_info_content() -> String {
-    NwcPermission::ALL
+    nwc_info_content_for_permissions(&NwcPermission::IMPLEMENTED)
+}
+
+fn nwc_info_content_for_permissions(permissions: &[NwcPermission]) -> String {
+    NwcPermission::IMPLEMENTED
         .into_iter()
+        .filter(|permission| permissions.contains(permission))
         .map(|permission| permission.method_name())
         .collect::<Vec<_>>()
         .join(" ")
@@ -1210,16 +1261,45 @@ fn network_name(network: &WalletNetwork) -> &'static str {
 mod tests {
     use super::*;
 
+    fn test_connection(interval: NwcBudgetInterval) -> NwcConnection {
+        NwcConnection {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            relay: "wss://relay.example.com".to_string(),
+            uri: String::new(),
+            service_pubkey: Keys::generate().public_key().to_hex(),
+            client_pubkey: Keys::generate().public_key().to_hex(),
+            budget_sat: 1_000,
+            spent_sat: 500,
+            budget_display: "1,000 sats".to_string(),
+            spent_display: "500 sats".to_string(),
+            budget_interval: interval,
+            budget_interval_display: interval.display_name().to_string(),
+            permissions: NwcPermission::IMPLEMENTED.to_vec(),
+            permissions_configured: true,
+            allow_get_balance: true,
+            allow_pay_invoice: true,
+            created_at: 1_000,
+            last_used_at: None,
+            expires_at: None,
+            budget_period_started_at: 1_000,
+            pending_info_event_relays: Vec::new(),
+        }
+    }
+
     #[test]
     fn targeted_info_event_identifies_the_authorized_client() {
         let wallet_keys = Keys::generate();
         let client_pubkey = Keys::generate().public_key();
 
-        let event = build_targeted_nwc_info_event(&wallet_keys, client_pubkey)
-            .expect("targeted info event");
+        let event =
+            build_targeted_nwc_info_event(&wallet_keys, client_pubkey, &NwcPermission::IMPLEMENTED)
+                .expect("targeted info event");
 
         assert_eq!(event.kind, Kind::WalletConnectInfo);
         assert_eq!(event.pubkey, wallet_keys.public_key());
+        assert!(event.content.contains("get_info"));
+        assert!(!event.content.contains("pay_keysend"));
         assert!(event.tags.iter().any(|tag| {
             let fields = tag.as_slice();
             fields.first().is_some_and(|field| field == "p")
@@ -1227,5 +1307,49 @@ mod tests {
                     .get(1)
                     .is_some_and(|field| field == &client_pubkey.to_hex())
         }));
+    }
+
+    #[test]
+    fn targeted_info_event_only_advertises_granted_methods() {
+        let wallet_keys = Keys::generate();
+        let client_pubkey = Keys::generate().public_key();
+        let event = build_targeted_nwc_info_event(
+            &wallet_keys,
+            client_pubkey,
+            &[NwcPermission::GetInfo, NwcPermission::GetBalance],
+        )
+        .expect("targeted info event");
+
+        assert_eq!(event.content, "get_info get_balance");
+    }
+
+    #[test]
+    fn expired_connection_is_rejected_at_the_expiration_boundary() {
+        let mut connection = test_connection(NwcBudgetInterval::Never);
+        connection.expires_at = Some(2_000);
+
+        assert!(!connection_is_expired(&connection, 1_999));
+        assert!(connection_is_expired(&connection, 2_000));
+    }
+
+    #[test]
+    fn daily_budget_renews_after_completed_periods() {
+        let mut connection = test_connection(NwcBudgetInterval::Daily);
+        renew_budget_if_due(&mut connection, 1_000 + 2 * 24 * 60 * 60 + 60);
+
+        assert_eq!(connection.spent_sat, 0);
+        assert_eq!(
+            connection.budget_period_started_at,
+            1_000 + 2 * 24 * 60 * 60
+        );
+    }
+
+    #[test]
+    fn never_budget_does_not_renew() {
+        let mut connection = test_connection(NwcBudgetInterval::Never);
+        renew_budget_if_due(&mut connection, u64::MAX);
+
+        assert_eq!(connection.spent_sat, 500);
+        assert_eq!(connection.budget_period_started_at, 1_000);
     }
 }

@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use bark::ark::lightning::{PaymentHash, Preimage};
 use bark::ark::vtxo::Full;
 use bark::ark::{Vtxo, VtxoPolicy};
@@ -70,6 +70,7 @@ const NWC_CLIENT_SECRET_KEY_PREFIX: &str = "nwc_client_secret:";
 const MAX_NWC_WAKE_HISTORY: usize = 30;
 const MAX_NWC_RELAYS_PER_CONNECTION: usize = 2;
 const NWC_RELAY_STORAGE_SEPARATOR: &str = "\n";
+const NWC_INFO_EVENT_PUBLISH_ATTEMPTS: usize = 3;
 const NOSTR_DERIVATION_PATH: &str = "m/44'/1237'/0'/0/0";
 
 fn profile_picture_download_key(pubkey: &str, remote_url: &str) -> String {
@@ -98,6 +99,43 @@ pub(crate) fn derive_nostr_keys_from_mnemonic(mnemonic: &str) -> anyhow::Result<
 
 fn nwc_client_secret_key(client_pubkey: &str) -> String {
     format!("{NWC_CLIENT_SECRET_KEY_PREFIX}{client_pubkey}")
+}
+
+fn nwc_info_event_key(client_pubkey: &str, relay: &str) -> String {
+    format!("{client_pubkey}|{relay}")
+}
+
+async fn publish_nwc_info_event_with_retry(
+    relay: String,
+    keys: Keys,
+    client_pubkey: Option<NostrPublicKey>,
+    permissions: Vec<NwcPermission>,
+) -> anyhow::Result<()> {
+    let mut last_error = None;
+    for attempt in 0..NWC_INFO_EVENT_PUBLISH_ATTEMPTS {
+        let result = if let Some(client_pubkey) = client_pubkey {
+            publish_targeted_nwc_info_event(
+                relay.clone(),
+                keys.clone(),
+                client_pubkey,
+                permissions.clone(),
+            )
+            .await
+        } else {
+            publish_nwc_info_event(relay.clone(), keys.clone()).await
+        };
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+
+        if attempt + 1 < NWC_INFO_EVENT_PUBLISH_ATTEMPTS {
+            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("NWC info event publication failed")))
 }
 
 fn build_nwc_connection_uri(
@@ -268,7 +306,7 @@ fn lightning_details_from_vtxo(vtxo: &Vtxo<Full>) -> MovementLightningDetails {
 }
 
 fn normalize_nwc_permissions(permissions: Vec<NwcPermission>) -> Vec<NwcPermission> {
-    NwcPermission::ALL
+    NwcPermission::IMPLEMENTED
         .into_iter()
         .filter(|permission| permissions.contains(permission))
         .collect()
@@ -326,6 +364,7 @@ struct AppCore {
     payment_annotations: Vec<PaymentAnnotation>,
     zap_receipts: Vec<ZapReceiptRecord>,
     nwc_in_flight_wake_requests: HashSet<String>,
+    nwc_in_flight_info_events: HashSet<String>,
     rev: u64,
     next_capability_id: u64,
     send_fee_estimate_request_id: u64,
@@ -357,6 +396,7 @@ impl AppCore {
             payment_annotations: Vec::new(),
             zap_receipts: Vec::new(),
             nwc_in_flight_wake_requests: HashSet::new(),
+            nwc_in_flight_info_events: HashSet::new(),
             rev: 0,
             next_capability_id: 0,
             send_fee_estimate_request_id: 0,
@@ -589,6 +629,7 @@ impl AppCore {
                 budget_sat,
                 budget_interval,
                 permissions,
+                expires_at,
             } => self.authorize_nwc_connection(
                 name,
                 relay,
@@ -596,6 +637,7 @@ impl AppCore {
                 budget_sat,
                 budget_interval,
                 permissions,
+                expires_at,
             ),
             AppAction::DeleteNwcConnection { id } => self.delete_nwc_connection(id),
             AppAction::GenerateNostrKey => self.generate_nostr_key(),
@@ -784,6 +826,10 @@ impl AppCore {
         )
         .to_string();
         let relay_storage = encode_nwc_relay_urls(&relay_urls);
+        let pending_info_event_relays = relay_urls
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         let created_at = now_unix();
         let trimmed_name = name.trim();
         let display_name = if trimmed_name.is_empty() {
@@ -814,28 +860,15 @@ impl AppCore {
             allow_pay_invoice,
             created_at,
             last_used_at: None,
+            expires_at: None,
+            budget_period_started_at: created_at,
+            pending_info_event_relays,
         });
         self.state.nwc.default_relay = relay_storage;
         self.state.toast = Some("NWC string created.".to_string());
         self.request_haptic(HapticFeedback::NotificationSuccess);
         self.save_app_data();
-        let tx = self.tx.clone();
-        let relays = relay_urls
-            .into_iter()
-            .map(|relay| relay.to_string())
-            .collect::<Vec<_>>();
-        self.rt.spawn(async move {
-            for relay in relays {
-                let msg = match publish_nwc_info_event(relay.clone(), service_keys.clone()).await {
-                    Ok(()) => AsyncMsg::NwcInfoEventPublished { relay },
-                    Err(e) => AsyncMsg::NwcInfoEventFailed {
-                        relay,
-                        error: format!("{e:#}"),
-                    },
-                };
-                let _ = tx.send(CoreMsg::Async(msg));
-            }
-        });
+        self.publish_pending_nwc_info_events();
     }
 
     fn authorize_nwc_connection(
@@ -846,7 +879,13 @@ impl AppCore {
         budget_sat: u64,
         budget_interval: NwcBudgetInterval,
         permissions: Vec<NwcPermission>,
+        expires_at: Option<u64>,
     ) {
+        if expires_at.is_some_and(|expires_at| expires_at <= now_unix()) {
+            self.state.toast = Some("The NWA request has expired.".to_string());
+            self.request_haptic(HapticFeedback::NotificationWarning);
+            return;
+        }
         if !self.ensure_wallet_derived_nostr_key() {
             self.state.toast = Some("Create or open the wallet before adding NWC.".to_string());
             self.request_haptic(HapticFeedback::NotificationWarning);
@@ -891,6 +930,11 @@ impl AppCore {
         };
 
         let relay_storage = encode_nwc_relay_urls(&relay_urls);
+        let pending_info_event_relays = relay_urls
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let created_at = now_unix();
         let trimmed_name = name.trim();
         let display_name = if trimmed_name.is_empty() {
             format!("NWC {}", self.state.nwc.connections.len() + 1)
@@ -918,37 +962,17 @@ impl AppCore {
             permissions_configured: true,
             allow_get_balance,
             allow_pay_invoice,
-            created_at: now_unix(),
+            created_at,
             last_used_at: None,
+            expires_at,
+            budget_period_started_at: created_at,
+            pending_info_event_relays,
         });
         self.state.nwc.default_relay = relay_storage;
         self.state.toast = Some("NWC client authorized.".to_string());
         self.request_haptic(HapticFeedback::NotificationSuccess);
         self.save_app_data();
-
-        let tx = self.tx.clone();
-        let relays = relay_urls
-            .into_iter()
-            .map(|relay| relay.to_string())
-            .collect::<Vec<_>>();
-        self.rt.spawn(async move {
-            for relay in relays {
-                let msg = match publish_targeted_nwc_info_event(
-                    relay.clone(),
-                    service_keys.clone(),
-                    client_pubkey,
-                )
-                .await
-                {
-                    Ok(()) => AsyncMsg::NwcInfoEventPublished { relay },
-                    Err(e) => AsyncMsg::NwcInfoEventFailed {
-                        relay,
-                        error: format!("{e:#}"),
-                    },
-                };
-                let _ = tx.send(CoreMsg::Async(msg));
-            }
-        });
+        self.publish_pending_nwc_info_events();
     }
 
     fn delete_nwc_connection(&mut self, id: String) {
@@ -966,6 +990,11 @@ impl AppCore {
             .connections
             .retain(|connection| connection.id != id);
         if self.state.nwc.connections.len() < before {
+            self.nwc_in_flight_info_events.retain(|key| {
+                !deleted_client_pubkeys
+                    .iter()
+                    .any(|client_pubkey| key.starts_with(&format!("{client_pubkey}|")))
+            });
             self.state.toast = Some("NWC string deleted.".to_string());
             self.request_haptic(HapticFeedback::NotificationWarning);
             for client_pubkey in deleted_client_pubkeys {
@@ -974,6 +1003,73 @@ impl AppCore {
                     .delete_secret(nwc_client_secret_key(&client_pubkey));
             }
             self.save_app_data();
+        }
+    }
+
+    fn publish_pending_nwc_info_events(&mut self) {
+        let Ok(keys) = self.nostr_keys() else {
+            return;
+        };
+        let pending = self
+            .state
+            .nwc
+            .connections
+            .iter()
+            .flat_map(|connection| {
+                let client_pubkey = connection.client_pubkey.clone();
+                let targeted = self
+                    .secrets
+                    .get_secret(nwc_client_secret_key(&client_pubkey))
+                    .is_none();
+                let permissions = connection.enabled_permissions();
+                connection
+                    .pending_info_event_relays
+                    .iter()
+                    .cloned()
+                    .map(move |relay| (client_pubkey.clone(), relay, targeted, permissions.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        for (client_pubkey_hex, relay, targeted, permissions) in pending {
+            let in_flight_key = nwc_info_event_key(&client_pubkey_hex, &relay);
+            if !self.nwc_in_flight_info_events.insert(in_flight_key) {
+                continue;
+            }
+            let client_pubkey = if targeted {
+                match public_key_from_npub_or_hex(&client_pubkey_hex) {
+                    Ok(client_pubkey) => Some(client_pubkey),
+                    Err(_) => {
+                        self.nwc_in_flight_info_events
+                            .remove(&nwc_info_event_key(&client_pubkey_hex, &relay));
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let tx = self.tx.clone();
+            let keys = keys.clone();
+            self.rt.spawn(async move {
+                let result = publish_nwc_info_event_with_retry(
+                    relay.clone(),
+                    keys,
+                    client_pubkey,
+                    permissions,
+                )
+                .await;
+                let message = match result {
+                    Ok(()) => AsyncMsg::NwcInfoEventPublished {
+                        client_pubkey: client_pubkey_hex,
+                        relay,
+                    },
+                    Err(error) => AsyncMsg::NwcInfoEventFailed {
+                        client_pubkey: client_pubkey_hex,
+                        relay,
+                        error: format!("{error:#}"),
+                    },
+                };
+                let _ = tx.send(CoreMsg::Async(message));
+            });
         }
     }
 
@@ -1127,6 +1223,7 @@ impl AppCore {
                     .set_secret(WALLET_SEED_KEY.to_string(), mnemonic);
                 self.ensure_wallet_derived_nostr_key();
                 self.ensure_lightning_address();
+                self.publish_pending_nwc_info_events();
                 self.process_pending_nwc_wake_requests();
                 self.maintain_vtxos();
                 self.claim_pending_lightning_receives();
@@ -1459,9 +1556,23 @@ impl AppCore {
             }
             AsyncMsg::NwcWakeRequestProcessed {
                 processed,
-                updated_connections,
+                mut updated_connections,
             } => {
                 self.nwc_in_flight_wake_requests.remove(&processed.event_id);
+                if let Some(updated_connections) = updated_connections.as_mut() {
+                    for updated in updated_connections.iter_mut() {
+                        if let Some(current) = self
+                            .state
+                            .nwc
+                            .connections
+                            .iter()
+                            .find(|connection| connection.id == updated.id)
+                        {
+                            updated.pending_info_event_relays =
+                                current.pending_info_event_relays.clone();
+                        }
+                    }
+                }
                 if let Some(updated_connections) = updated_connections {
                     self.state.nwc.connections = updated_connections;
                     self.save_app_data();
@@ -1496,10 +1607,33 @@ impl AppCore {
                 self.request_haptic(HapticFeedback::NotificationWarning);
                 self.process_pending_nwc_wake_requests();
             }
-            AsyncMsg::NwcInfoEventPublished { relay } => {
+            AsyncMsg::NwcInfoEventPublished {
+                client_pubkey,
+                relay,
+            } => {
+                self.nwc_in_flight_info_events
+                    .remove(&nwc_info_event_key(&client_pubkey, &relay));
+                if let Some(connection) = self
+                    .state
+                    .nwc
+                    .connections
+                    .iter_mut()
+                    .find(|connection| connection.client_pubkey == client_pubkey)
+                {
+                    connection
+                        .pending_info_event_relays
+                        .retain(|pending_relay| pending_relay != &relay);
+                    self.save_app_data();
+                }
                 self.state.nwc.last_wake_status = format!("NWC info event published to {relay}");
             }
-            AsyncMsg::NwcInfoEventFailed { relay, error } => {
+            AsyncMsg::NwcInfoEventFailed {
+                client_pubkey,
+                relay,
+                error,
+            } => {
+                self.nwc_in_flight_info_events
+                    .remove(&nwc_info_event_key(&client_pubkey, &relay));
                 self.state.nwc.last_wake_status =
                     format!("NWC info event failed on {relay}: {error}");
             }

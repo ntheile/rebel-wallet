@@ -154,9 +154,11 @@ pub(crate) enum AsyncMsg {
         error: String,
     },
     NwcInfoEventPublished {
+        client_pubkey: String,
         relay: String,
     },
     NwcInfoEventFailed {
+        client_pubkey: String,
         relay: String,
         error: String,
     },

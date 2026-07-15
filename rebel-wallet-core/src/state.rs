@@ -69,6 +69,12 @@ pub struct NwcConnection {
     pub allow_pay_invoice: bool,
     pub created_at: u64,
     pub last_used_at: Option<u64>,
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+    #[serde(default)]
+    pub budget_period_started_at: u64,
+    #[serde(default)]
+    pub pending_info_event_relays: Vec<String>,
 }
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,17 +92,13 @@ pub enum NwcPermission {
 }
 
 impl NwcPermission {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const IMPLEMENTED: [Self; 6] = [
         Self::GetInfo,
         Self::GetBalance,
         Self::PayInvoice,
-        Self::PayKeysend,
         Self::MakeInvoice,
         Self::LookupInvoice,
         Self::ListTransactions,
-        Self::MakeHoldInvoice,
-        Self::CancelHoldInvoice,
-        Self::SettleHoldInvoice,
     ];
 }
 
@@ -123,20 +125,24 @@ impl NwcConnection {
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NwcBudgetInterval {
+    Never,
     Hourly,
     #[default]
     Daily,
     Weekly,
     Monthly,
+    Yearly,
 }
 
 impl NwcBudgetInterval {
     pub(crate) fn display_name(&self) -> &'static str {
         match self {
+            Self::Never => "Never",
             Self::Hourly => "Hourly",
             Self::Daily => "Daily",
             Self::Weekly => "Weekly",
             Self::Monthly => "Monthly",
+            Self::Yearly => "Yearly",
         }
     }
 }
