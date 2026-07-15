@@ -10,6 +10,7 @@
 		031CA10D0913601225E060CD /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E5E1121C48A2C550F94906 /* ActivityView.swift */; };
 		09A525B52C7C1F5F8D67B32A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936FB1B08FF781A9F9997609 /* SettingsView.swift */; };
 		10D82D8BEDF6F8B87C9D3393 /* RebelWalletCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 91954F33C35E52090B74C11A /* RebelWalletCore.xcframework */; };
+		1142FA39F4E93B373C47A9AB /* NwaWalletAuthApprovalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E8A12273BB7A04F16D710CC /* NwaWalletAuthApprovalView.swift */; };
 		11A29977382725FC272B253A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08790D56E6532CF87DC5EAF5 /* ContentView.swift */; };
 		18DC007A5A51D30A57687770 /* rebel_wallet_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = B95DB396C0ACC1FB08D6D500 /* rebel_wallet_core.swift */; };
 		19450B4EB3A474AF0761CD2E /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0C4E8C892F802690C2E03D /* NotificationService.swift */; };
@@ -20,6 +21,7 @@
 		2E3FDAA9662F0D04DEC86F30 /* WalletEasterEgg.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07DF4B0F56CEA10895EF3067 /* WalletEasterEgg.swift */; };
 		2F71F386BE8E65B77B9C4A44 /* MainWalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B27DDADBA14C23A4E2298B /* MainWalletView.swift */; };
 		326333CB48C83D5B4722E8C9 /* ButtonStyles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D45F236CEBCEB5E130D6D65 /* ButtonStyles.swift */; };
+		3EC1397EFCDA83EA47BE636E /* NwaWalletAuthRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20A08FAC2F2F9B0CE9E2AF02 /* NwaWalletAuthRequest.swift */; };
 		430B05A25E1EBA780E5F7A16 /* ContactDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82FC9EE794A5E7927FEE7DF8 /* ContactDetailView.swift */; };
 		5BD7FDC594AE8C2772C8DE0B /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 084A69637C40DAFB20690CE9 /* App.swift */; };
 		5F0CDE902BA5F4FF700244BA /* RebelWalletCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 91954F33C35E52090B74C11A /* RebelWalletCore.xcframework */; };
@@ -36,6 +38,7 @@
 		AC5F9605CCFD3CE1158502B0 /* LaunchSplashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16D83FFD70D94BAE3A8ACC73 /* LaunchSplashView.swift */; };
 		B5AAD623F82BE3B1BDB58880 /* DisplayText.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0724D7DE35C122B119C79 /* DisplayText.swift */; };
 		B757D13B7C830FB1E21C287A /* SendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC5043C96A336BFDB3828A80 /* SendView.swift */; };
+		B9CCB02C6244FD9FA6DB98EA /* NwaCallbackOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DCF4ADAA275B48D3BA1A458 /* NwaCallbackOpener.swift */; };
 		C1A583700E1AC609ADFA9491 /* NwcWakeRegistrationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23A4B13A1BA1D7519753B272 /* NwcWakeRegistrationService.swift */; };
 		CE9095245DC4CDF7215A797E /* UIKitPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9755A3599BFF7CE9D4C2B1BA /* UIKitPresentation.swift */; };
 		D096C657DFB51D8FC3F689AE /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6865C8CFB78CE40B67FA1DB2 /* ProfileView.swift */; };
@@ -77,10 +80,13 @@
 		08790D56E6532CF87DC5EAF5 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		0B331642D861D9C2C3E7455E /* NwcWakeInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwcWakeInbox.swift; sourceTree = "<group>"; };
 		0BEE4097AE328C49061CF79C /* BackupRestoreViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupRestoreViews.swift; sourceTree = "<group>"; };
+		0DCF4ADAA275B48D3BA1A458 /* NwaCallbackOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwaCallbackOpener.swift; sourceTree = "<group>"; };
 		16D83FFD70D94BAE3A8ACC73 /* LaunchSplashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchSplashView.swift; sourceTree = "<group>"; };
 		182BE8950E50F58DF4E9DFDB /* AppManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppManager.swift; sourceTree = "<group>"; };
 		1CCE970C3B6681B7BC12B085 /* NwcWakeDebugCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwcWakeDebugCard.swift; sourceTree = "<group>"; };
 		1D45F236CEBCEB5E130D6D65 /* ButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ButtonStyles.swift; sourceTree = "<group>"; };
+		1E8A12273BB7A04F16D710CC /* NwaWalletAuthApprovalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwaWalletAuthApprovalView.swift; sourceTree = "<group>"; };
+		20A08FAC2F2F9B0CE9E2AF02 /* NwaWalletAuthRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwaWalletAuthRequest.swift; sourceTree = "<group>"; };
 		23A4B13A1BA1D7519753B272 /* NwcWakeRegistrationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwcWakeRegistrationService.swift; sourceTree = "<group>"; };
 		49D88A349FD70A9153DD2C03 /* App.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		503FC468B99283614CA26E34 /* LightningAddressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightningAddressView.swift; sourceTree = "<group>"; };
@@ -169,6 +175,8 @@
 				08790D56E6532CF87DC5EAF5 /* ContentView.swift */,
 				F0F0724D7DE35C122B119C79 /* DisplayText.swift */,
 				7E9E3BFC2B0F15669B263EA9 /* Haptics.swift */,
+				0DCF4ADAA275B48D3BA1A458 /* NwaCallbackOpener.swift */,
+				20A08FAC2F2F9B0CE9E2AF02 /* NwaWalletAuthRequest.swift */,
 				C896475D71C07B62CA72814E /* PushNotifications.swift */,
 				D00AD3E0EC1FCD4F0CF40360 /* RebelTheme.swift */,
 				07DF4B0F56CEA10895EF3067 /* WalletEasterEgg.swift */,
@@ -226,6 +234,7 @@
 				16D83FFD70D94BAE3A8ACC73 /* LaunchSplashView.swift */,
 				503FC468B99283614CA26E34 /* LightningAddressView.swift */,
 				B4B27DDADBA14C23A4E2298B /* MainWalletView.swift */,
+				1E8A12273BB7A04F16D710CC /* NwaWalletAuthApprovalView.swift */,
 				50CB043DA11A34DF9BD92812 /* NwcConnectionsView.swift */,
 				1CCE970C3B6681B7BC12B085 /* NwcWakeDebugCard.swift */,
 				6865C8CFB78CE40B67FA1DB2 /* ProfileView.swift */,
@@ -385,6 +394,9 @@
 				AC5F9605CCFD3CE1158502B0 /* LaunchSplashView.swift in Sources */,
 				77560E1840FC1750DD978DFF /* LightningAddressView.swift in Sources */,
 				2F71F386BE8E65B77B9C4A44 /* MainWalletView.swift in Sources */,
+				B9CCB02C6244FD9FA6DB98EA /* NwaCallbackOpener.swift in Sources */,
+				1142FA39F4E93B373C47A9AB /* NwaWalletAuthApprovalView.swift in Sources */,
+				3EC1397EFCDA83EA47BE636E /* NwaWalletAuthRequest.swift in Sources */,
 				F7C403482C2E733CD64D4EF0 /* NwcConnectionsView.swift in Sources */,
 				70D30BA2F59014C6B5E1242B /* NwcWakeDebugCard.swift in Sources */,
 				24F0E2EC7D4661D438CDB1C6 /* NwcWakeInbox.swift in Sources */,
