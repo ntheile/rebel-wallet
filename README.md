@@ -24,7 +24,11 @@ just ios-build
 just ios-xcodeproj
 ```
 
-iOS signing defaults live in `.env`. Put machine-specific overrides in `.env.local`, which is ignored by git:
+Shared iOS signing defaults are documented in `.env.sample`. Copy it to the ignored `.env` file and set your machine-specific values:
+
+```bash
+cp .env.sample .env
+```
 
 ```env
 IOS_BUNDLE_ID=com.YOURORG.rebelwallet
@@ -33,7 +37,7 @@ IOS_APP_GROUP_ID=group.com.YOURORG.rebelwallet
 NWC_WAKE_SERVER_URL=https://YOUR_NOTIFICATION_SERVER
 ```
 
-Use `just ios-xcodeproj` instead of running `xcodegen generate` directly so those env files are loaded before the Xcode project is regenerated.
+Use `just ios-xcodeproj` instead of running `xcodegen generate` directly so `.env.sample`, `.env`, and the optional ignored `.env.local` override are loaded before the Xcode project is regenerated.
 
 To build, install, and launch on a connected iPhone, use:
 
@@ -47,7 +51,7 @@ You can optionally pass a bundle id when launching a local fork:
 just run-ios-phone com.YOURORG.rebelwallet
 ```
 
-That argument only controls the bundle id used for `devicectl` launch. The Xcode project is still generated from `.env` plus `.env.local`, so keep `IOS_BUNDLE_ID`, `IOS_APP_GROUP_ID`, and signing values aligned with the app id and entitlements in your Apple developer account.
+That argument only controls the bundle id used for `devicectl` launch. The Xcode project is generated from `.env.sample` plus local `.env` and `.env.local` overrides, so keep `IOS_BUNDLE_ID`, `IOS_APP_GROUP_ID`, and signing values aligned with the app id and entitlements in your Apple developer account.
 
 ## Apple Developer Setup
 
@@ -67,7 +71,7 @@ Enable Push Notifications on the main app id. The notification service extension
 
 For APNs, create an Apple Push Notification authentication key in the developer portal and keep the `.p8` file, Key ID, and Team ID for the wake/notification server. The app itself only needs the signing team, app id, app group, and push capability; the server uses the APNs key to send wake pushes.
 
-Your `.env.local` should line up with those identifiers:
+Your ignored `.env` (or optional `.env.local` override) should line up with those identifiers:
 
 ```env
 IOS_BUNDLE_ID=com.YOURORG.rebelwallet

@@ -2,6 +2,7 @@
 /build/
 .idea/
 .direnv/
+.env
 .env.local
 .DS_Store
 *.swp

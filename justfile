@@ -35,6 +35,7 @@ run-ios-phone $bundle_id="": ios-rust ios-xcframework ios-xcodeproj
   #!/usr/bin/env bash
   set -euo pipefail
   set -a
+  [ ! -f .env.sample ] || source .env.sample
   [ ! -f .env ] || source .env
   [ ! -f .env.local ] || source .env.local
   set +a
@@ -103,6 +104,7 @@ ios-xcodeproj:
   #!/usr/bin/env bash
   set -euo pipefail
   set -a
+  [ ! -f .env.sample ] || source .env.sample
   [ ! -f .env ] || source .env
   [ ! -f .env.local ] || source .env.local
   set +a
