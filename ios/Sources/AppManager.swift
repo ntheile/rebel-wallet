@@ -36,6 +36,9 @@ final class AppManager: AppReconciler {
         observePushNotificationRegistration()
         observeNwcWakeInbox()
         rust.dispatch(action: .bootstrap)
+        if let deviceToken = NwcPushPlatformContext.cachedDeviceToken {
+            syncPushNotificationRegistration(status: "Registered", deviceToken: deviceToken)
+        }
         syncNwcWakeSnapshot()
         drainQueuedNwcWakeRequests()
     }
@@ -209,17 +212,24 @@ final class AppManager: AppReconciler {
             let deviceToken = notification.userInfo?[PushNotificationEvents.deviceTokenKey] as? String
 
             Task { @MainActor [weak self] in
-                self?.dispatch(.setPushNotificationRegistration(
-                    apnsDeviceToken: deviceToken,
-                    registrationStatus: status ?? "Unknown",
-                    wakeServerUrl: NwcPushPlatformContext.serverURL,
-                    appId: Bundle.main.bundleIdentifier ?? "com.rebelwallet.app",
-                    environment: NwcPushPlatformContext.apnsEnvironment,
-                    installId: NwcPushPlatformContext.installId
-                ))
+                self?.syncPushNotificationRegistration(
+                    status: status ?? "Unknown",
+                    deviceToken: deviceToken
+                )
             }
         }
         notificationObservers.append(observer)
+    }
+
+    private func syncPushNotificationRegistration(status: String, deviceToken: String?) {
+        dispatch(.setPushNotificationRegistration(
+            apnsDeviceToken: deviceToken,
+            registrationStatus: status,
+            wakeServerUrl: NwcPushPlatformContext.serverURL,
+            appId: Bundle.main.bundleIdentifier ?? "com.rebelwallet.app",
+            environment: NwcPushPlatformContext.apnsEnvironment,
+            installId: NwcPushPlatformContext.installId
+        ))
     }
 
     private func observeNwcWakeInbox() {

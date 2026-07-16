@@ -31,6 +31,10 @@ final class NotificationService: UNNotificationServiceExtension {
             )
             if NwcWakeInbox.isProcessed(eventId: wake.eventId) {
                 currentWake = nil
+                NwcWakeInbox.appendDebug(
+                    source: "NSE",
+                    message: "Skipped already processed event_id=\(wake.eventId)"
+                )
                 setGenericWakeNotification(content, body: "Processing Request")
             } else {
                 let outcome = respondToWakeIfPossible(wake, startedAt: startedAt)
@@ -122,7 +126,10 @@ final class NotificationService: UNNotificationServiceExtension {
             message: "\(result.message) total_duration_ms=\(durationMs)"
         )
         if result.success {
-            NwcWakeInbox.markProcessed(eventId: wake.eventId)
+            let processedEventIds = result.processedEventIds.isEmpty
+                ? [wake.eventId]
+                : result.processedEventIds
+            NwcWakeInbox.markProcessed(eventIds: processedEventIds)
             if let updatedSnapshot = result.updatedSnapshotJson {
                 NwcWakeInbox.saveSnapshot(updatedSnapshot)
             }

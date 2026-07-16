@@ -72,6 +72,7 @@ pub struct NwcExtensionWakeResult {
     pub message: String,
     pub notification_body: String,
     pub updated_snapshot_json: Option<String>,
+    pub processed_event_ids: Vec<String>,
 }
 
 fn nwc_extension_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
@@ -228,6 +229,7 @@ pub fn process_nwc_wake_from_snapshot(
                 message: format!("failed to start NWC wake runtime: {e:#}"),
                 notification_body: nwc_notification_body(None),
                 updated_snapshot_json: None,
+                processed_event_ids: vec![],
             }
         }
     };
@@ -241,12 +243,14 @@ pub fn process_nwc_wake_from_snapshot(
             ),
             notification_body: nwc_notification_body(Some(&processed.method)),
             updated_snapshot_json: processed.updated_snapshot_json,
+            processed_event_ids: processed.processed_event_ids,
         },
         Err(e) => NwcExtensionWakeResult {
             success: false,
             message: format!("{e:#}"),
             notification_body: nwc_notification_body(None),
             updated_snapshot_json: None,
+            processed_event_ids: vec![],
         },
     }
 }
@@ -274,6 +278,7 @@ pub fn process_nwc_event_from_snapshot(
                 message: format!("failed to start NWC wake runtime: {e:#}"),
                 notification_body: nwc_notification_body(None),
                 updated_snapshot_json: None,
+                processed_event_ids: vec![],
             }
         }
     };
@@ -291,12 +296,14 @@ pub fn process_nwc_event_from_snapshot(
             ),
             notification_body: nwc_notification_body(Some(&processed.method)),
             updated_snapshot_json: processed.updated_snapshot_json,
+            processed_event_ids: processed.processed_event_ids,
         },
         Err(e) => NwcExtensionWakeResult {
             success: false,
             message: format!("{e:#}"),
             notification_body: nwc_notification_body(None),
             updated_snapshot_json: None,
+            processed_event_ids: vec![],
         },
     }
 }

@@ -30,8 +30,8 @@ use crate::{NwcBudgetInterval, NwcConnection, NwcPermission, NwcWakeRequest, Wal
 const NWC_EXTENSION_PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
 const NWC_EXTENSION_PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 const NWC_EXTENSION_TOTAL_BUDGET: Duration = Duration::from_secs(26);
-const NWC_EXTENSION_RELAY_LINGER: Duration = Duration::from_secs(4);
-const NWC_EXTENSION_MIN_LINGER_BUDGET: Duration = Duration::from_millis(750);
+const NWC_EXTENSION_RELAY_LINGER: Duration = Duration::from_millis(500);
+const NWC_EXTENSION_MIN_LINGER_BUDGET: Duration = Duration::from_millis(250);
 const NWC_EXTENSION_MAX_LINGER_EVENTS: usize = 12;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -65,6 +65,7 @@ pub(crate) struct NwcProcessedWake {
     pub(crate) processed_at: u64,
     pub(crate) updated_connections: Option<Vec<NwcConnection>>,
     pub(crate) updated_snapshot_json: Option<String>,
+    pub(crate) processed_event_ids: Vec<String>,
 }
 
 pub(crate) fn build_nwc_wake_snapshot(
@@ -196,14 +197,17 @@ async fn process_nwc_request_event_inner(
 ) -> anyhow::Result<NwcProcessedWake> {
     let response_started_at = Instant::now();
     let relay = wake.relay.clone();
+    let relay_connect_started_at = Instant::now();
     let client = client_for_relay(&relay).await?;
+    let relay_connect_ms = relay_connect_started_at.elapsed().as_millis();
 
     let result = async {
         let mut processed =
             process_nwc_request_event_with_client(&client, wake, event, &context).await?;
         processed.status = format!(
-            "Response published in {} ms",
-            response_started_at.elapsed().as_millis()
+            "Response published in {} ms; relay_connect_ms={relay_connect_ms}; {}",
+            response_started_at.elapsed().as_millis(),
+            processed.status
         );
 
         if let Some(deadline) = extension_deadline {
@@ -225,33 +229,49 @@ async fn process_nwc_request_event_with_client(
     event: Event,
     context: &NwcServiceContext,
 ) -> anyhow::Result<NwcProcessedWake> {
+    let request_started_at = Instant::now();
     let connection = authorized_connection(&event, &context)?;
     let request = decrypt_nwc_request(&event, &context.keys)?;
+    let request_auth_ms = request_started_at.elapsed().as_millis();
     let method = request.method.as_str().to_string();
-    let (response, amount_sat, updated_connections) =
+    let response_started_at = Instant::now();
+    let (response, amount_sat, updated_connections, request_timings) =
         response_for_request(&request, &context, connection).await;
+    let request_handler_ms = response_started_at.elapsed().as_millis();
+    let response_build_started_at = Instant::now();
     let updated_snapshot_json = updated_connections.clone().and_then(|connections| {
         snapshot_json_from_context(context, connections)
             .map_err(|e| eprintln!("failed to encode updated NWC snapshot: {e:#}"))
             .ok()
     });
     let response_event = build_nwc_response_event(&event, response, &context.keys)?;
+    let response_build_ms = response_build_started_at.elapsed().as_millis();
 
+    let relay_publish_started_at = Instant::now();
     client
         .send_event(&response_event)
         .to([wake.relay.as_str()])
         .await
         .context("failed to publish NWC response")?;
+    let relay_publish_ms = relay_publish_started_at.elapsed().as_millis();
 
+    let request_timings = request_timings
+        .map(|timings| format!("; {timings}"))
+        .unwrap_or_default();
+
+    let processed_event_id = wake.event_id.clone();
     Ok(NwcProcessedWake {
         wake,
         client_pubkey: event.pubkey.to_hex(),
         method,
-        status: "Responded".to_string(),
+        status: format!(
+            "request_auth_ms={request_auth_ms}; request_handler_ms={request_handler_ms}{request_timings}; response_build_ms={response_build_ms}; relay_publish_ms={relay_publish_ms}"
+        ),
         amount_sat,
         processed_at: crate::time::now_unix(),
         updated_connections,
         updated_snapshot_json,
+        processed_event_ids: vec![processed_event_id],
     })
 }
 
@@ -341,6 +361,9 @@ async fn linger_for_followup_nwc_requests(
             if followup.updated_snapshot_json.is_some() {
                 processed.updated_snapshot_json = followup.updated_snapshot_json;
             }
+            processed
+                .processed_event_ids
+                .extend(followup.processed_event_ids);
             followups += 1;
         }
     }
@@ -476,7 +499,7 @@ async fn response_for_request(
     request: &Request,
     context: &NwcServiceContext,
     connection: &NwcConnection,
-) -> (Response, u64, Option<Vec<NwcConnection>>) {
+) -> (Response, u64, Option<Vec<NwcConnection>>, Option<String>) {
     let permission = permission_for_request(&request.params);
     if !connection.allows_permission(permission) {
         return (
@@ -487,10 +510,11 @@ async fn response_for_request(
             ),
             0,
             None,
+            None,
         );
     }
 
-    let (response, amount_sat, updated_connections) = match &request.params {
+    let (response, amount_sat, updated_connections, request_timings) = match &request.params {
         RequestParams::GetInfo => (
             Response {
                 result_type: Method::GetInfo,
@@ -508,9 +532,10 @@ async fn response_for_request(
             },
             0,
             None,
+            None,
         ),
         RequestParams::GetBalance => match get_balance_response(context).await {
-            Ok(response) => (response, 0, None),
+            Ok(response) => (response, 0, None, None),
             Err(e) => (
                 error_response(
                     Method::GetBalance,
@@ -519,10 +544,11 @@ async fn response_for_request(
                 ),
                 0,
                 None,
+                None,
             ),
         },
         RequestParams::MakeInvoice(params) => match make_invoice_response(params, context).await {
-            Ok(response) => (response, 0, None),
+            Ok(response) => (response, 0, None, None),
             Err(e) => (
                 error_response(
                     Method::MakeInvoice,
@@ -531,13 +557,17 @@ async fn response_for_request(
                 ),
                 0,
                 None,
+                None,
             ),
         },
         RequestParams::PayInvoice(params) => {
             match pay_invoice_response(params, context, connection).await {
-                Ok((response, amount_sat, updated_connections)) => {
-                    (response, amount_sat, Some(updated_connections))
-                }
+                Ok((response, amount_sat, updated_connections, timings)) => (
+                    response,
+                    amount_sat,
+                    Some(updated_connections),
+                    Some(timings),
+                ),
                 Err(e) => (
                     error_response(
                         Method::PayInvoice,
@@ -546,12 +576,13 @@ async fn response_for_request(
                     ),
                     0,
                     None,
+                    None,
                 ),
             }
         }
         RequestParams::LookupInvoice(params) => {
             match lookup_invoice_response(params, context).await {
-                Ok(response) => (response, 0, None),
+                Ok(response) => (response, 0, None, None),
                 Err(e) => (
                     error_response(
                         Method::LookupInvoice,
@@ -560,12 +591,13 @@ async fn response_for_request(
                     ),
                     0,
                     None,
+                    None,
                 ),
             }
         }
         RequestParams::ListTransactions(params) => {
             match list_transactions_response(params, context).await {
-                Ok(response) => (response, 0, None),
+                Ok(response) => (response, 0, None, None),
                 Err(e) => (
                     error_response(
                         Method::ListTransactions,
@@ -574,13 +606,19 @@ async fn response_for_request(
                     ),
                     0,
                     None,
+                    None,
                 ),
             }
         }
-        _ => (not_implemented_response(request.method.clone()), 0, None),
+        _ => (
+            not_implemented_response(request.method.clone()),
+            0,
+            None,
+            None,
+        ),
     };
 
-    (response, amount_sat, updated_connections)
+    (response, amount_sat, updated_connections, request_timings)
 }
 
 async fn get_balance_response(context: &NwcServiceContext) -> anyhow::Result<Response> {
@@ -754,10 +792,14 @@ async fn pay_invoice_response(
     params: &nostr::nips::nip47::PayInvoiceRequest,
     context: &NwcServiceContext,
     connection: &NwcConnection,
-) -> anyhow::Result<(Response, u64, Vec<NwcConnection>)> {
+) -> anyhow::Result<(Response, u64, Vec<NwcConnection>, String)> {
+    let pay_started_at = Instant::now();
     let mut renewed_connection = connection.clone();
     renew_budget_if_due(&mut renewed_connection, crate::time::now_unix());
+    let wallet_open_started_at = Instant::now();
     let wallet = open_wallet_for_extension(context).await?;
+    let wallet_open_ms = wallet_open_started_at.elapsed().as_millis();
+    let invoice_validation_started_at = Instant::now();
     let invoice = Bolt11Invoice::from_str(&params.invoice).context("invalid Lightning invoice")?;
     let amount_sat = pay_invoice_amount_sat(&invoice, params.amount)?;
     enforce_budget(&renewed_connection, amount_sat)?;
@@ -770,6 +812,7 @@ async fn pay_invoice_response(
         .context("Rebel Wallet only supports whole-sat NWC payment amounts")?
         .filter(|amount| *amount > 0)
         .map(Amount::from_sat);
+    let invoice_validation_ms = invoice_validation_started_at.elapsed().as_millis();
 
     // The full app keeps Bark's mailbox stream alive. The NSE opens a short-lived
     // wallet, so mirror that behavior while paying to receive the preimage as soon
@@ -784,28 +827,63 @@ async fn pay_invoice_response(
                 .await
         })
     };
-    let preimage = async {
-        match wallet
+    let payment_attempt: anyhow::Result<PayInvoiceAttempt> = async {
+        let initial_state_started_at = Instant::now();
+        let initial_state = wallet
             .lightning_send_state(payment_hash)
             .await
-            .context("could not read invoice state")?
-        {
-            LightningSendState::Paid(paid) => Ok(paid.preimage.to_string()),
-            LightningSendState::InProgress(_) => wait_for_paid_invoice(&wallet, payment_hash).await,
+            .context("could not read invoice state")?;
+        let initial_state_ms = initial_state_started_at.elapsed().as_millis();
+        let (initial_state_name, payment_start_ms, settlement) = match initial_state {
+            LightningSendState::Paid(paid) => (
+                "paid",
+                0,
+                PaidInvoiceWait {
+                    preimage: paid.preimage.to_string(),
+                    elapsed_ms: 0,
+                    checks: 0,
+                    check_io_ms: 0,
+                },
+            ),
+            LightningSendState::InProgress(_) => (
+                "in_progress",
+                0,
+                wait_for_paid_invoice(&wallet, payment_hash).await?,
+            ),
             LightningSendState::Unknown => {
+                let payment_start_started_at = Instant::now();
                 wallet
                     .pay_lightning_invoice(invoice.clone(), user_amount, false)
                     .await
                     .context("Bark payment failed")?;
-                wait_for_paid_invoice(&wallet, payment_hash).await
+                let payment_start_ms = payment_start_started_at.elapsed().as_millis();
+                (
+                    "unknown",
+                    payment_start_ms,
+                    wait_for_paid_invoice(&wallet, payment_hash).await?,
+                )
             }
-        }
+        };
+
+        Ok(PayInvoiceAttempt {
+            initial_state_name,
+            initial_state_ms,
+            payment_start_ms,
+            settlement,
+        })
     }
     .await;
+    let mailbox_status = if mailbox_task.is_finished() {
+        "stopped"
+    } else {
+        "active"
+    };
     mailbox_shutdown.cancel();
     mailbox_task.abort();
     let _ = mailbox_task.await;
-    let preimage = preimage?;
+    let payment_attempt = payment_attempt?;
+    let settlement = payment_attempt.settlement;
+    let preimage = settlement.preimage;
 
     let mut updated_connections = context.connections.clone();
     if let Some(updated) = updated_connections
@@ -818,6 +896,17 @@ async fn pay_invoice_response(
         updated.last_used_at = Some(crate::time::now_unix());
     }
 
+    let timings = format!(
+        "pay_phases wallet_open_ms={wallet_open_ms} invoice_validation_ms={invoice_validation_ms} initial_state={} initial_state_ms={} payment_start_ms={} settlement_ms={} settlement_checks={} settlement_check_io_ms={} mailbox={mailbox_status} pay_total_ms={}",
+        payment_attempt.initial_state_name,
+        payment_attempt.initial_state_ms,
+        payment_attempt.payment_start_ms,
+        settlement.elapsed_ms,
+        settlement.checks,
+        settlement.check_io_ms,
+        pay_started_at.elapsed().as_millis()
+    );
+
     Ok((
         Response {
             result_type: Method::PayInvoice,
@@ -829,6 +918,7 @@ async fn pay_invoice_response(
         },
         amount_sat,
         updated_connections,
+        timings,
     ))
 }
 
@@ -1026,19 +1116,47 @@ fn transaction_matches_list_request(
     true
 }
 
+struct PaidInvoiceWait {
+    preimage: String,
+    elapsed_ms: u128,
+    checks: u32,
+    check_io_ms: u128,
+}
+
+struct PayInvoiceAttempt {
+    initial_state_name: &'static str,
+    initial_state_ms: u128,
+    payment_start_ms: u128,
+    settlement: PaidInvoiceWait,
+}
+
 async fn wait_for_paid_invoice(
     wallet: &bark::Wallet,
     payment_hash: PaymentHash,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<PaidInvoiceWait> {
+    let started_at = Instant::now();
     let deadline = Instant::now() + NWC_EXTENSION_PAYMENT_SETTLE_TIMEOUT;
+    let mut checks = 0u32;
+    let mut check_io_ms = 0u128;
 
     loop {
-        match wallet
+        let check_started_at = Instant::now();
+        let state = wallet
             .check_lightning_payment(payment_hash, false)
             .await
-            .context("could not drive paid invoice state")?
-        {
-            LightningSendState::Paid(paid) => return Ok(paid.preimage.to_string()),
+            .context("could not drive paid invoice state")?;
+        check_io_ms += check_started_at.elapsed().as_millis();
+        checks += 1;
+
+        match state {
+            LightningSendState::Paid(paid) => {
+                return Ok(PaidInvoiceWait {
+                    preimage: paid.preimage.to_string(),
+                    elapsed_ms: started_at.elapsed().as_millis(),
+                    checks,
+                    check_io_ms,
+                })
+            }
             LightningSendState::Unknown => anyhow::bail!("paid invoice record was not found"),
             LightningSendState::InProgress(_) => {
                 if Instant::now() >= deadline {

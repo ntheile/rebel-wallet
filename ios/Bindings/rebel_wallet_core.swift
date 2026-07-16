@@ -1909,14 +1909,16 @@ public struct NwcExtensionWakeResult: Equatable, Hashable {
     public var message: String
     public var notificationBody: String
     public var updatedSnapshotJson: String?
+    public var processedEventIds: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(success: Bool, message: String, notificationBody: String, updatedSnapshotJson: String?) {
+    public init(success: Bool, message: String, notificationBody: String, updatedSnapshotJson: String?, processedEventIds: [String]) {
         self.success = success
         self.message = message
         self.notificationBody = notificationBody
         self.updatedSnapshotJson = updatedSnapshotJson
+        self.processedEventIds = processedEventIds
     }
 
     
@@ -1938,7 +1940,8 @@ public struct FfiConverterTypeNwcExtensionWakeResult: FfiConverterRustBuffer {
                 success: FfiConverterBool.read(from: &buf), 
                 message: FfiConverterString.read(from: &buf), 
                 notificationBody: FfiConverterString.read(from: &buf), 
-                updatedSnapshotJson: FfiConverterOptionString.read(from: &buf)
+                updatedSnapshotJson: FfiConverterOptionString.read(from: &buf), 
+                processedEventIds: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
@@ -1947,6 +1950,7 @@ public struct FfiConverterTypeNwcExtensionWakeResult: FfiConverterRustBuffer {
         FfiConverterString.write(value.message, into: &buf)
         FfiConverterString.write(value.notificationBody, into: &buf)
         FfiConverterOptionString.write(value.updatedSnapshotJson, into: &buf)
+        FfiConverterSequenceString.write(value.processedEventIds, into: &buf)
     }
 }
 

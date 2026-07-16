@@ -22,6 +22,7 @@ impl AppCore {
         self.load_app_data();
         self.refresh_cached_contact_profiles_on_startup();
         self.load_nostr_key();
+        self.sync_nwc_push_registrations();
         self.refresh_price();
         if let Some(mnemonic) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
             self.state.busy.bootstrapping = true;

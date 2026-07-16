@@ -199,12 +199,27 @@ enum NwcWakeInbox {
     }
 
     static func markProcessed(eventId: String) {
+        markProcessed(eventIds: [eventId])
+    }
+
+    static func markProcessed(eventIds: [String]) {
         guard let defaults = appGroupDefaults() else {
             return
         }
 
-        var ids = processedEventIds(from: defaults).filter { $0 != eventId }
-        ids.append(eventId)
+        let newIds = eventIds.reduce(into: [String]()) { uniqueIds, eventId in
+            guard !eventId.isEmpty, !uniqueIds.contains(eventId) else {
+                return
+            }
+            uniqueIds.append(eventId)
+        }
+        guard !newIds.isEmpty else {
+            return
+        }
+
+        let newIdSet = Set(newIds)
+        var ids = processedEventIds(from: defaults).filter { !newIdSet.contains($0) }
+        ids.append(contentsOf: newIds)
         if ids.count > maxProcessedEventIds {
             ids.removeFirst(ids.count - maxProcessedEventIds)
         }

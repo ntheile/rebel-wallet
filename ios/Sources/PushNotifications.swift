@@ -8,6 +8,8 @@ enum PushNotificationEvents {
 }
 
 enum NwcPushPlatformContext {
+    private static let deviceTokenKey = "RebelWalletApnsDeviceToken"
+
     static var serverURL: String? {
         guard let value = Bundle.main.object(forInfoDictionaryKey: "RebelWalletNwcWakeServerURL") as? String else {
             return nil
@@ -30,6 +32,15 @@ enum NwcPushPlatformContext {
         UserDefaults.standard.set(value, forKey: key)
         return value
     }
+
+    static var cachedDeviceToken: String? {
+        get {
+            UserDefaults.standard.string(forKey: deviceTokenKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: deviceTokenKey)
+        }
+    }
 }
 
 final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -47,6 +58,7 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        NwcPushPlatformContext.cachedDeviceToken = token
         postRegistrationStatus("Registered", deviceToken: token)
         NSLog("RebelWallet APNs device token: %@", token)
     }
