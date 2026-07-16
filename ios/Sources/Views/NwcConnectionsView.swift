@@ -69,15 +69,19 @@ struct NwcConnectionsView: View {
             .padding(.horizontal, 4)
 
             if connections.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Image(systemName: "link.badge.plus")
-                        .font(.title2)
-                        .foregroundStyle(walletAccent)
-                    Text("No NWC connections")
-                        .font(.headline)
-                    Text("Create one to authorize a Nostr Wallet Connect client.")
-                        .font(.caption)
-                        .foregroundStyle(mutedText)
+                HStack(spacing: 12) {
+                    Image("NwcIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 42, height: 42)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("No NWC connections")
+                            .font(.headline)
+                        Text("Create one to authorize a Nostr Wallet Connect client.")
+                            .font(.caption)
+                            .foregroundStyle(mutedText)
+                    }
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -150,101 +154,101 @@ private struct NwcCreateConnectionView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                NwcConnectionVisualization()
-                    .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 14) {
+                    NwcConnectionVisualization()
+                        .frame(maxWidth: .infinity)
 
-                SettingsCard(title: "New NWC String") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        TextField("Name", text: $name)
-                            .textInputAutocapitalization(.words)
-                            .focused($focusedField, equals: .name)
-                            .profileField()
+                    TextField("Name", text: $name)
+                        .textInputAutocapitalization(.words)
+                        .focused($focusedField, equals: .name)
+                        .profileField()
 
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Relay")
-                                .font(.caption.bold())
-                                .foregroundStyle(mutedText)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Budget")
+                            .font(.caption.bold())
+                            .foregroundStyle(mutedText)
 
-                            NwcRelayPresetMenu(
-                                selection: NwcRelayPreset.matching(relay),
-                                relay: relay,
-                                select: selectRelayPreset,
-                                editCustom: editCustomRelay
-                            )
-                        }
-
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Budget")
-                                .font(.caption.bold())
-                                .foregroundStyle(mutedText)
-
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                TextField("", text: $budgetText)
-                                    .keyboardType(.numberPad)
-                                    .focused($focusedField, equals: .budget)
-                                    .multilineTextAlignment(.center)
-                                    .font(.system(size: 34, weight: .light))
-                                    .foregroundStyle(primaryText)
-                                    .frame(minWidth: 90)
-                                    .onChange(of: budgetText) { _, newValue in
-                                        let formatted = formatBudgetInput(newValue)
-                                        if formatted != newValue {
-                                            budgetText = formatted
-                                        }
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            TextField("", text: $budgetText)
+                                .keyboardType(.numberPad)
+                                .focused($focusedField, equals: .budget)
+                                .multilineTextAlignment(.center)
+                                .font(.system(size: 34, weight: .light))
+                                .foregroundStyle(primaryText)
+                                .frame(minWidth: 90)
+                                .onChange(of: budgetText) { _, newValue in
+                                    let formatted = formatBudgetInput(newValue)
+                                    if formatted != newValue {
+                                        budgetText = formatted
                                     }
-
-                                Text("sats")
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(mutedText)
-                                    .frame(width: 42, alignment: .leading)
-                            }
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 12)
-                            .background(Color.black, in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.18)))
-
-                            HStack(spacing: 10) {
-                                ForEach([5000, 10000, 500_000], id: \.self) { amount in
-                                    Button {
-                                        budgetText = formatBudgetInput("\(amount)")
-                                        manager.requestHaptic(.selection)
-                                    } label: {
-                                        Text(compactSats(amount))
-                                            .font(.caption.bold())
-                                            .frame(maxWidth: .infinity)
-                                    }
-                                    .buttonStyle(SecondaryButtonStyle())
                                 }
-                            }
-                        }
 
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Interval")
-                                .font(.caption.bold())
+                            Text("sats")
+                                .font(.subheadline.bold())
                                 .foregroundStyle(mutedText)
+                                .frame(width: 42, alignment: .leading)
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 12)
+                        .background(Color.black, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.18)))
 
-                            Picker("Interval", selection: $budgetInterval) {
-                                ForEach(NwcBudgetInterval.createOptions, id: \.self) { interval in
-                                    Text(interval.title)
-                                        .tag(interval)
+                        HStack(spacing: 10) {
+                            ForEach([5000, 10000, 500_000], id: \.self) { amount in
+                                Button {
+                                    budgetText = formatBudgetInput("\(amount)")
+                                    manager.requestHaptic(.selection)
+                                } label: {
+                                    Text(compactSats(amount))
+                                        .font(.caption.bold())
+                                        .frame(maxWidth: .infinity)
                                 }
+                                .buttonStyle(SecondaryButtonStyle())
                             }
-                            .pickerStyle(.segmented)
                         }
-
-                        permissionsSection
-
-                        Button {
-                            createConnection()
-                        } label: {
-                            Label("Connect", systemImage: "link.badge.plus")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(PrimaryButtonStyle(color: walletAccent))
-                        .disabled(!canCreate)
                     }
-                    .padding(14)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Interval")
+                            .font(.caption.bold())
+                            .foregroundStyle(mutedText)
+
+                        Picker("Interval", selection: $budgetInterval) {
+                            ForEach(NwcBudgetInterval.createOptions, id: \.self) { interval in
+                                Text(interval.title)
+                                    .tag(interval)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    permissionsSection
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Relay")
+                            .font(.caption.bold())
+                            .foregroundStyle(mutedText)
+
+                        NwcRelayPresetMenu(
+                            selection: NwcRelayPreset.matching(relay),
+                            relay: relay,
+                            select: selectRelayPreset,
+                            editCustom: editCustomRelay
+                        )
+                    }
+
+                    Button {
+                        createConnection()
+                    } label: {
+                        Label("Connect", systemImage: "link.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(PrimaryButtonStyle(color: walletAccent))
+                    .disabled(!canCreate)
                 }
+                .padding(14)
+                .background(surfaceBackground, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
             }
             .padding(16)
         }
@@ -619,6 +623,8 @@ private struct NwcCreateHeroButton: View {
 }
 
 struct NwcConnectionVisualization: View {
+    var externalAppIconURL: String? = nil
+
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 10) {
@@ -646,19 +652,12 @@ struct NwcConnectionVisualization: View {
                     .font(.system(size: 34, weight: .medium))
                     .foregroundStyle(mutedText)
                     .padding(.horizontal, 8)
-                    .background(Color.black, in: Capsule())
+                    .background(surfaceBackground, in: Capsule())
             }
             .frame(maxWidth: .infinity)
 
             VStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.white.opacity(0.92))
-                    Image(systemName: "square.grid.2x2")
-                        .font(.system(size: 38, weight: .semibold))
-                        .foregroundStyle(Color.black.opacity(0.55))
-                }
-                .frame(width: 68, height: 68)
+                NwaExternalAppIcon(url: externalAppIconURL, size: 68)
 
                 Text("External App")
                     .font(.caption.bold())
@@ -671,7 +670,65 @@ struct NwcConnectionVisualization: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 18)
         .frame(minHeight: 138)
-        .background(Color.black, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct NwaExternalAppIcon: View {
+    let url: String?
+    let size: CGFloat
+
+    var body: some View {
+        RemoteAppIcon(url: url, size: size) {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.92))
+                .overlay {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(Color.black.opacity(0.55))
+                }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.20)))
+    }
+}
+
+private struct NwcSavedConnectionIcon: View {
+    let url: String?
+    let size: CGFloat
+
+    var body: some View {
+        RemoteAppIcon(url: url, size: size) {
+            Image("NwcIcon")
+                .resizable()
+                .scaledToFit()
+        }
+    }
+}
+
+private struct RemoteAppIcon<Placeholder: View>: View {
+    let url: String?
+    let size: CGFloat
+    @ViewBuilder let placeholder: Placeholder
+    @StateObject private var loader = ProfileImageLoader()
+
+    var body: some View {
+        ZStack {
+            placeholder
+
+            if let image = loader.image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.235))
+        .task(id: url) {
+            guard let url, let parsed = URL(string: url) else {
+                loader.reset()
+                return
+            }
+            loader.load(parsed, allowRemote: true)
+        }
     }
 }
 
@@ -848,10 +905,7 @@ private struct NwcConnectionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image("NwcIcon")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 38, height: 38)
+            NwcSavedConnectionIcon(url: connection.iconUrl, size: 38)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(connection.name)
@@ -955,10 +1009,7 @@ private struct NwcConnectionDetailsCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                Image("NwcIcon")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 42, height: 42)
+                NwcSavedConnectionIcon(url: connection.iconUrl, size: 42)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(connection.name)

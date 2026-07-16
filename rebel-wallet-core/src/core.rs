@@ -876,6 +876,7 @@ impl AppCore {
         self.state.nwc.connections.push(NwcConnection {
             id: format!("nwc-{client_pubkey}"),
             name: display_name,
+            icon_url: None,
             relay: relay_storage.clone(),
             uri: String::new(),
             wallet_managed_secret: true,
@@ -918,6 +919,7 @@ impl AppCore {
     fn build_authorized_nwc_connection(
         &mut self,
         name: String,
+        icon_url: Option<String>,
         relay: String,
         client_pubkey: String,
         budget_sat: u64,
@@ -967,6 +969,7 @@ impl AppCore {
         Ok(NwcConnection {
             id: format!("nwc-{client_pubkey_hex}"),
             name: display_name,
+            icon_url,
             relay: relay_storage.clone(),
             uri: String::new(),
             wallet_managed_secret: false,
@@ -2789,6 +2792,7 @@ mod tests {
         let mut connections = vec![NwcConnection {
             id: "test".to_string(),
             name: "Test".to_string(),
+            icon_url: None,
             relay: "wss://relay.example.com".to_string(),
             uri: "nostr+walletconnect://secret-bearing-uri".to_string(),
             wallet_managed_secret: true,

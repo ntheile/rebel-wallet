@@ -57,10 +57,10 @@ struct NwaWalletAuthApprovalView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    NwcConnectionVisualization()
-                        .frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 16) {
+                        NwcConnectionVisualization(externalAppIconURL: request.iconUrl)
+                            .frame(maxWidth: .infinity)
 
-                    SettingsCard(title: "Nostr Wallet Auth") {
                         VStack(alignment: .leading, spacing: 16) {
                             HStack(alignment: .top, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 6) {
@@ -235,17 +235,6 @@ struct NwaWalletAuthApprovalView: View {
                                 }
                             }
 
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(Color.yellow)
-                                Text("The requesting app keeps its NWC secret. Rebel receives only its public key and returns public connection details.")
-                                    .font(.caption)
-                                    .foregroundStyle(mutedText)
-                            }
-                            .padding(12)
-                            .background(Color.yellow.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.yellow.opacity(0.25)))
-
                             if let errorMessage {
                                 Text(errorMessage)
                                     .font(.caption)
@@ -280,8 +269,10 @@ struct NwaWalletAuthApprovalView: View {
                             .buttonStyle(SecondaryButtonStyle())
                             .disabled(approving)
                         }
-                        .padding(14)
                     }
+                    .padding(14)
+                    .background(surfaceBackground, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
                 }
                 .padding(16)
             }

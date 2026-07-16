@@ -39,6 +39,7 @@ impl AppCore {
         };
         let connection = match self.build_authorized_nwc_connection(
             request.state.display_name.clone(),
+            request.state.icon_url.clone(),
             relay,
             request.state.client_pubkey.clone(),
             budget_sat,

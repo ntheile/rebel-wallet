@@ -207,6 +207,7 @@ mod tests {
         NwcConnection {
             id: id.to_string(),
             name: id.to_string(),
+            icon_url: None,
             relay: "wss://relay.example.com".to_string(),
             uri: String::new(),
             wallet_managed_secret: false,

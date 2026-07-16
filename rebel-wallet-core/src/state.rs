@@ -44,6 +44,7 @@ pub struct NwaRequestState {
     pub id: String,
     pub client_pubkey: String,
     pub display_name: String,
+    pub icon_url: Option<String>,
     pub requesting_app_description: Option<String>,
     pub callback_target_description: String,
     pub relay: String,
@@ -72,6 +73,8 @@ pub struct NwcState {
 pub struct NwcConnection {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub icon_url: Option<String>,
     pub relay: String,
     pub uri: String,
     #[serde(default)]

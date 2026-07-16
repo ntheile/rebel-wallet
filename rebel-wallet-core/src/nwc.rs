@@ -1410,6 +1410,7 @@ mod tests {
         NwcConnection {
             id: "test".to_string(),
             name: "Test".to_string(),
+            icon_url: None,
             relay: "wss://relay.example.com".to_string(),
             uri: String::new(),
             wallet_managed_secret: false,

@@ -7,6 +7,7 @@ use crate::{NwaRequestState, NwcBudgetInterval, NwcPermission};
 
 const MAX_REQUEST_LENGTH: usize = 8192;
 const MAX_CALLBACK_LENGTH: usize = 2048;
+const MAX_ICON_URL_LENGTH: usize = 2048;
 const MIN_STATE_LENGTH: usize = 32;
 const MAX_STATE_LENGTH: usize = 256;
 
@@ -109,6 +110,7 @@ impl NwaRequest {
         } else {
             name.to_string()
         };
+        let icon_url = parse_icon_url(query.value("icon"));
         let requesting_app_description = return_to
             .as_ref()
             .and_then(|callback| callback.host_str().map(str::to_string));
@@ -122,6 +124,7 @@ impl NwaRequest {
                 id: format!("{client_pubkey}-{now}"),
                 client_pubkey,
                 display_name,
+                icon_url,
                 requesting_app_description,
                 callback_target_description,
                 relay,
@@ -238,6 +241,26 @@ fn parse_callback(return_to: Option<&str>, state: Option<&str>) -> (Option<Url>,
     (Some(callback), state.map(str::to_string))
 }
 
+fn parse_icon_url(icon: Option<&str>) -> Option<String> {
+    let icon = icon?.trim();
+    if icon.is_empty() || icon.len() > MAX_ICON_URL_LENGTH {
+        return None;
+    }
+
+    let url = Url::parse(icon).ok()?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.port().is_some_and(|port| port != 443)
+    {
+        return None;
+    }
+
+    let host = url.host_str()?.to_ascii_lowercase();
+    is_public_domain(&host).then(|| url.to_string())
+}
+
 fn is_allowed_callback(callback: &Url) -> bool {
     if !callback.username().is_empty()
         || callback.password().is_some()
@@ -338,7 +361,7 @@ mod tests {
     fn parses_client_created_nwa_request_and_converts_msats() {
         let request = NwaRequest::parse(
             &format!(
-                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.getalby.com&max_amount=500000000&budget_renewal=monthly&request_methods=get_info+pay_invoice&name=Alby+Go"
+                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.getalby.com&max_amount=500000000&budget_renewal=monthly&request_methods=get_info+pay_invoice&name=Alby+Go&icon=https%3A%2F%2Fexample.com%2Falby.png"
             ),
             100,
         )
@@ -346,12 +369,36 @@ mod tests {
 
         assert_eq!(request.state.client_pubkey, CLIENT);
         assert_eq!(request.state.display_name, "Alby Go");
+        assert_eq!(
+            request.state.icon_url.as_deref(),
+            Some("https://example.com/alby.png")
+        );
         assert_eq!(request.state.budget_sat, 500_000);
         assert_eq!(request.state.budget_interval, NwcBudgetInterval::Monthly);
         assert_eq!(
             request.state.permissions,
             vec![NwcPermission::GetInfo, NwcPermission::PayInvoice]
         );
+    }
+
+    #[test]
+    fn ignores_unsafe_app_icon_urls() {
+        for icon in [
+            "http://example.com/icon.png",
+            "https://localhost/icon.png",
+            "https://127.0.0.1/icon.png",
+            "https://user@example.com/icon.png",
+            "https://example.com:8443/icon.png",
+        ] {
+            let request = NwaRequest::parse(
+                &format!(
+                    "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&icon={icon}"
+                ),
+                100,
+            )
+            .unwrap();
+            assert_eq!(request.state.icon_url, None, "accepted unsafe icon {icon}");
+        }
     }
 
     #[test]
