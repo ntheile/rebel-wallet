@@ -27,7 +27,30 @@ pub struct AppState {
     pub busy: BusyState,
     pub capability_request: Option<CapabilityRequest>,
     pub push_notifications: PushNotificationState,
+    pub nwa: NwaState,
     pub nwc: NwcState,
+}
+
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
+pub struct NwaState {
+    pub request: Option<NwaRequestState>,
+    pub approving: bool,
+    pub error_message: Option<String>,
+    pub callback_pending: bool,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwaRequestState {
+    pub id: String,
+    pub client_pubkey: String,
+    pub display_name: String,
+    pub requesting_app_description: Option<String>,
+    pub callback_target_description: String,
+    pub relay: String,
+    pub budget_sat: u64,
+    pub budget_interval: NwcBudgetInterval,
+    pub permissions: Vec<NwcPermission>,
+    pub expires_at: Option<u64>,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
@@ -51,6 +74,8 @@ pub struct NwcConnection {
     pub name: String,
     pub relay: String,
     pub uri: String,
+    #[serde(default)]
+    pub wallet_managed_secret: bool,
     pub service_pubkey: String,
     pub client_pubkey: String,
     pub budget_sat: u64,
@@ -684,6 +709,12 @@ impl AppState {
             push_notifications: PushNotificationState {
                 apns_device_token: None,
                 registration_status: "Not requested".to_string(),
+            },
+            nwa: NwaState {
+                request: None,
+                approving: false,
+                error_message: None,
+                callback_pending: false,
             },
             nwc: NwcState {
                 connections: vec![],

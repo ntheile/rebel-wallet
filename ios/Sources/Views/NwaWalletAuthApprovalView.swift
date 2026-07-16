@@ -2,10 +2,9 @@ import SwiftUI
 
 struct NwaWalletAuthApprovalView: View {
     @Bindable var manager: AppManager
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.walletAccent) private var walletAccent
     @FocusState private var focusedField: NwaApprovalField?
-    let request: NwaWalletAuthRequest
+    let request: NwaRequestState
     @State private var relay = ""
     @State private var budgetText = ""
     @State private var budgetInterval: NwcBudgetInterval = .daily
@@ -14,9 +13,14 @@ struct NwaWalletAuthApprovalView: View {
     @State private var initialized = false
     @State private var editing = false
     @State private var customRelayDraft: NwcCustomRelayDraft?
-    @State private var approving = false
-    @State private var approvedConnection: NwcConnection?
-    @State private var errorMessage: String?
+
+    private var approving: Bool {
+        manager.state.nwa.approving
+    }
+
+    private var errorMessage: String? {
+        manager.state.nwa.errorMessage
+    }
 
     private var relays: [String] {
         nwcRelayURLs(relay)
@@ -249,12 +253,10 @@ struct NwaWalletAuthApprovalView: View {
                             }
 
                             Button {
-                                Task {
-                                    if let approvedConnection {
-                                        await returnToRequestingApp(approvedConnection)
-                                    } else {
-                                        await approve()
-                                    }
+                                if manager.state.nwa.callbackPending {
+                                    manager.dispatch(.retryNwaCallback)
+                                } else {
+                                    approve()
                                 }
                             } label: {
                                 HStack {
@@ -262,7 +264,7 @@ struct NwaWalletAuthApprovalView: View {
                                         ProgressView()
                                             .tint(.white)
                                     }
-                                    Text(approving ? "Connecting..." : approvedConnection == nil ? "Connect" : "Return to App")
+                                    Text(approving ? "Connecting..." : manager.state.nwa.callbackPending ? "Return to App" : "Connect")
                                 }
                                 .frame(maxWidth: .infinity)
                             }
@@ -272,7 +274,7 @@ struct NwaWalletAuthApprovalView: View {
                             Button {
                                 cancel()
                             } label: {
-                                Text(approvedConnection == nil ? "Cancel" : "Done")
+                                Text(manager.state.nwa.callbackPending ? "Done" : "Cancel")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(SecondaryButtonStyle())
@@ -312,85 +314,18 @@ struct NwaWalletAuthApprovalView: View {
         }
     }
 
-    private func approve() async {
-        if let expiresAt = request.expiresAt,
-           expiresAt <= UInt64(Date().timeIntervalSince1970)
-        {
-            errorMessage = "This connection request has expired."
-            return
-        }
-        guard manager.state.setup == .ready else {
-            errorMessage = "Open or create the wallet before connecting an app."
-            return
-        }
-        guard !relays.isEmpty else {
-            errorMessage = "The request did not include a valid relay."
-            return
-        }
-        guard let parsedBudget else {
-            errorMessage = "Enter a valid budget."
-            return
-        }
-
-        approving = true
-        errorMessage = nil
-        let existingIds = Set(manager.state.nwc.connections.map(\.id))
-        let effectivePermissions = permissionsForCreate
+    private func approve() {
+        guard let parsedBudget, !relays.isEmpty else { return }
         NwcWakeInbox.appendDebug(
             source: "App",
-            message: "NWA approval settings callback=\(request.callbackTargetDescription) budget_sat=\(parsedBudget) interval=\(budgetInterval.title.lowercased()) relays=\(relays.joined(separator: ",")) permissions=\(effectivePermissions.map(\.methodName).joined(separator: ","))"
+            message: "NWA approval settings callback=\(request.callbackTargetDescription) budget_sat=\(parsedBudget) interval=\(budgetInterval.title.lowercased()) relays=\(relays.joined(separator: ",")) permissions=\(permissionsForCreate.map(\.methodName).joined(separator: ","))"
         )
-        manager.dispatch(.authorizeNwcConnection(
-            name: request.displayName,
+        manager.dispatch(.approveNwaRequest(
             relay: relayStorage,
-            clientPubkey: request.clientPubkey,
             budgetSat: parsedBudget,
             budgetInterval: budgetInterval,
-            permissions: effectivePermissions,
-            expiresAt: request.expiresAt
+            permissions: permissionsForCreate
         ))
-
-        do {
-            let connection = try await waitForCreatedConnection(existingIds: existingIds)
-            try await manager.registerNwcWakeConnectionForNwa(connection)
-            approvedConnection = connection
-            await returnToRequestingApp(connection)
-        } catch {
-            await MainActor.run {
-                approving = false
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
-    private func returnToRequestingApp(_ connection: NwcConnection) async {
-        approving = true
-        errorMessage = nil
-        guard request.returnTo != nil else {
-            manager.dismissNwaWalletRequest(request)
-            dismiss()
-            return
-        }
-        guard let callback = request.approvedCallback(
-            walletPubkey: connection.servicePubkey,
-            relays: relays,
-            lud16: manager.state.lightningAddress.address
-        ) else {
-            approving = false
-            errorMessage = NwaApprovalError.invalidCallback.localizedDescription
-            return
-        }
-        guard await manager.openNwaCallback(callback) else {
-            NwcWakeInbox.appendDebug(
-                source: "App",
-                message: "NWA connection approved but callback could not be opened"
-            )
-            approving = false
-            errorMessage = "The connection was approved, but the requesting app could not be reopened. Return to it manually or retry."
-            return
-        }
-        manager.dismissNwaWalletRequest(request)
-        dismiss()
     }
 
     private func initializeEditablePolicy() {
@@ -446,32 +381,15 @@ struct NwaWalletAuthApprovalView: View {
     }
 
     private func cancel() {
-        if approvedConnection != nil {
-            manager.dismissNwaWalletRequest(request)
-            dismiss()
-            return
+        if manager.state.nwa.callbackPending {
+            manager.dispatch(.completeNwaCallbackOpen(opened: true))
+        } else {
+            manager.dispatch(.cancelNwaRequest)
         }
-        Task {
-            if let callback = request.cancelledCallback() {
-                _ = await manager.openNwaCallback(callback)
-            }
-            await MainActor.run {
-                manager.dismissNwaWalletRequest(request)
-                dismiss()
-            }
-        }
-    }
-
-    private func waitForCreatedConnection(existingIds: Set<String>) async throws -> NwcConnection {
-        for _ in 0 ..< 50 {
-            if let connection = manager.state.nwc.connections.last(where: { !existingIds.contains($0.id) }) {
-                return connection
-            }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        throw NwaApprovalError.connectionTimedOut
     }
 }
+
+extension NwaRequestState: Identifiable {}
 
 private struct NwaPolicyRow: View {
     let icon: String
@@ -494,20 +412,6 @@ private struct NwaPolicyRow: View {
                     .textSelection(.enabled)
             }
             Spacer(minLength: 0)
-        }
-    }
-}
-
-private enum NwaApprovalError: LocalizedError {
-    case connectionTimedOut
-    case invalidCallback
-
-    var errorDescription: String? {
-        switch self {
-        case .connectionTimedOut:
-            return "Timed out while creating the NWC connection."
-        case .invalidCallback:
-            return "The requesting app callback URL is invalid."
         }
     }
 }

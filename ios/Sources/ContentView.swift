@@ -1,5 +1,5 @@
-import SwiftUI
 import PhotosUI
+import SwiftUI
 import UIKit
 
 struct ContentView: View {
@@ -21,7 +21,7 @@ struct ContentView: View {
         .onChange(of: manager.state.router.screenStack) { _, new in
             navPath = new
         }
-        .onChange(of: navPath) { old, new in
+        .onChange(of: navPath) { _, new in
             guard new != manager.state.router.screenStack else { return }
             manager.dispatch(.updateScreenStack(stack: new))
         }
@@ -41,11 +41,19 @@ struct ContentView: View {
             }
         }
         .sheet(item: Binding(
-            get: { manager.pendingNwaWalletRequest },
-            set: { if $0 == nil, let request = manager.pendingNwaWalletRequest { manager.dismissNwaWalletRequest(request) } }
+            get: { manager.state.nwa.request },
+            set: { if $0 == nil, manager.state.nwa.request != nil { manager.dispatch(.cancelNwaRequest) } }
         )) { request in
             NwaWalletAuthApprovalView(manager: manager, request: request)
                 .interactiveDismissDisabled()
+        }
+        .sheet(item: Binding(
+            get: { manager.nwcConnectionExport },
+            set: { manager.nwcConnectionExport = $0 }
+        )) { connection in
+            NwcConnectionQRCodeSheet(connection: connection, initiallyCopied: true)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         .photosPicker(isPresented: Binding(
             get: { manager.state.capabilityRequest?.kind == .photoPick },
@@ -104,7 +112,7 @@ struct ContentView: View {
             NetworkView(manager: manager)
         case .currency:
             CurrencyView(manager: manager)
-        case .contactDetail(let contactId):
+        case let .contactDetail(contactId):
             ContactDetailView(manager: manager, contactId: contactId)
         }
     }

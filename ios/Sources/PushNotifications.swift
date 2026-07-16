@@ -7,10 +7,35 @@ enum PushNotificationEvents {
     static let statusKey = "status"
 }
 
+enum NwcPushPlatformContext {
+    static var serverURL: String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "RebelWalletNwcWakeServerURL") as? String else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.hasPrefix("$(") ? nil : trimmed
+    }
+
+    static var apnsEnvironment: String {
+        let value = Bundle.main.object(forInfoDictionaryKey: "RebelWalletApnsEnvironment") as? String
+        return value == "production" ? "production" : "sandbox"
+    }
+
+    static var installId: String {
+        let key = "RebelWalletNwcWakeInstallId"
+        if let value = UserDefaults.standard.string(forKey: key), !value.isEmpty {
+            return value
+        }
+        let value = UUID().uuidString
+        UserDefaults.standard.set(value, forKey: key)
+        return value
+    }
+}
+
 final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
-        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+        didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         requestPushAuthorization(application)
@@ -18,7 +43,7 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
     }
 
     func application(
-        _ application: UIApplication,
+        _: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
@@ -27,7 +52,7 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
     }
 
     func application(
-        _ application: UIApplication,
+        _: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
         postRegistrationStatus("Registration failed", deviceToken: nil)
@@ -35,14 +60,14 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
     }
 
     func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
+        _: UNUserNotificationCenter,
+        willPresent _: UNNotification
     ) async -> UNNotificationPresentationOptions {
         [.banner, .list, .sound]
     }
 
     func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
+        _: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
         if let wake = StoredNwcWakeRequest(userInfo: response.notification.request.content.userInfo) {
@@ -82,7 +107,7 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
 
     private func postRegistrationStatus(_ status: String, deviceToken: String?) {
         var userInfo: [String: Any] = [
-            PushNotificationEvents.statusKey: status
+            PushNotificationEvents.statusKey: status,
         ]
         if let deviceToken {
             userInfo[PushNotificationEvents.deviceTokenKey] = deviceToken

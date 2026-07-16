@@ -269,9 +269,7 @@ impl AppCore {
             })
             .unwrap_or_else(|| self.state.lightning_address.custom_name.clone());
         let mut nwc_connections = self.state.nwc.connections.clone();
-        for connection in &mut nwc_connections {
-            connection.uri.clear();
-        }
+        super::redact_nwc_connection_secrets(&mut nwc_connections);
 
         let data = PersistedAppData {
             nostr,

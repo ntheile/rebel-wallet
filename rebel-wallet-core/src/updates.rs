@@ -12,6 +12,18 @@ use crate::{
 pub enum AppUpdate {
     FullState(AppState),
     Haptic(HapticFeedback),
+    OpenUrl {
+        rev: u64,
+        url: String,
+    },
+    NwcConnectionExportReady {
+        rev: u64,
+        connection_id: String,
+        name: String,
+        uri: String,
+        copy_to_clipboard: bool,
+        present_qr: bool,
+    },
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
@@ -161,6 +173,20 @@ pub(crate) enum AsyncMsg {
         client_pubkey: String,
         relay: String,
         error: String,
+    },
+    NwaApprovalSucceeded {
+        connection: NwcConnection,
+        callback_url: Option<String>,
+    },
+    NwaApprovalFailed {
+        error: String,
+    },
+    NwcPushRegistrationFinished {
+        fingerprint: String,
+        error: Option<String>,
+    },
+    NwcPushUnregistrationFinished {
+        error: Option<String>,
     },
     PriceUpdated {
         currency: PriceCurrency,

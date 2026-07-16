@@ -6,7 +6,6 @@ struct NwcConnectionsView: View {
     @Environment(\.walletAccent) private var walletAccent
     @State private var copiedConnectionId: String?
     @State private var deleteConnection: NwcConnection?
-    @State private var presentedConnection: NwcConnectionExport?
 
     private var connections: [NwcConnection] {
         manager.state.nwc.connections
@@ -30,7 +29,6 @@ struct NwcConnectionsView: View {
         )) {
             Button("Delete", role: .destructive) {
                 if let deleteConnection {
-                    manager.unregisterNwcWakeConnection(deleteConnection)
                     manager.dispatch(.deleteNwcConnection(id: deleteConnection.id))
                 }
                 deleteConnection = nil
@@ -38,11 +36,6 @@ struct NwcConnectionsView: View {
             Button("Cancel", role: .cancel) {
                 deleteConnection = nil
             }
-        }
-        .sheet(item: $presentedConnection) { connection in
-            NwcConnectionQRCodeSheet(connection: connection)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
         }
     }
 
@@ -86,19 +79,15 @@ struct NwcConnectionsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
             } else {
                 ForEach(connections, id: \.id) { connection in
-                    let exportUri = connection.uri.isEmpty ? nil : nwcUri(connection)
                     NwcConnectionCard(
                         connection: connection,
-                        uri: exportUri,
+                        canExport: connection.walletManagedSecret,
                         copied: copiedConnectionId == connection.id,
                         showQRCode: {
-                            if let exportUri {
-                                presentedConnection = NwcConnectionExport(
-                                    id: connection.id,
-                                    name: connection.name,
-                                    uri: exportUri
-                                )
-                            }
+                            manager.dispatch(.requestNwcConnectionExport(
+                                id: connection.id,
+                                copyToClipboard: false
+                            ))
                         },
                         copy: { copy(connection) },
                         delete: { deleteConnection = connection }
@@ -109,29 +98,23 @@ struct NwcConnectionsView: View {
     }
 
     private func copy(_ connection: NwcConnection) {
-        guard !connection.uri.isEmpty else { return }
-        UIPasteboard.general.string = nwcUri(connection)
+        manager.dispatch(.requestNwcConnectionExport(
+            id: connection.id,
+            copyToClipboard: true
+        ))
         copiedConnectionId = connection.id
-        manager.requestHaptic(.impactLight)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             if copiedConnectionId == connection.id {
                 copiedConnectionId = nil
             }
         }
     }
-
-    private func nwcUri(_ connection: NwcConnection) -> String {
-        NwcWakeRegistrationService.uriWithConnectionMetadata(
-            connection.uri,
-            lud16: manager.state.lightningAddress.address
-        )
-    }
 }
 
 private struct NwcCreateConnectionView: View {
     @Bindable var manager: AppManager
-    @Environment(\.walletAccent) private var walletAccent
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.walletAccent) private var walletAccent
     @FocusState private var focusedField: NwcCreateField?
     @State private var name = ""
     @State private var relay = "wss://relay.getalby.com\nwss://relay2.getalby.com"
@@ -139,13 +122,9 @@ private struct NwcCreateConnectionView: View {
     @State private var budgetInterval: NwcBudgetInterval = .daily
     @State private var permissionPreset: NwcPermissionPreset = .fullAccess
     @State private var selectedPermissions = Set<NwcPermission>(NwcPermissionPreset.fullAccess.permissions)
-    @State private var pendingCreatedConnectionExistingIds: Set<String>?
     @State private var customRelayDraft: NwcCustomRelayDraft?
-    @State private var createdConnection: NwcConnectionExport?
-
-    private var connections: [NwcConnection] {
-        manager.state.nwc.connections
-    }
+    @State private var awaitingCreatedExport = false
+    @State private var presentedCreatedExport = false
 
     private var parsedBudget: UInt64? {
         let cleaned = budgetText.filter(\.isNumber)
@@ -226,7 +205,7 @@ private struct NwcCreateConnectionView: View {
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.18)))
 
                             HStack(spacing: 10) {
-                                ForEach([5_000, 10_000, 500_000], id: \.self) { amount in
+                                ForEach([5000, 10000, 500_000], id: \.self) { amount in
                                     Button {
                                         budgetText = formatBudgetInput("\(amount)")
                                         manager.requestHaptic(.selection)
@@ -281,19 +260,19 @@ private struct NwcCreateConnectionView: View {
         .onAppear {
             relay = manager.state.nwc.defaultRelay
         }
-        .onChange(of: manager.state.nwc.connections) { _, newConnections in
-            copyPendingCreatedConnection(from: newConnections)
+        .onChange(of: manager.nwcConnectionExport?.id) { _, exportId in
+            guard awaitingCreatedExport else { return }
+            if exportId != nil {
+                presentedCreatedExport = true
+            } else if presentedCreatedExport {
+                awaitingCreatedExport = false
+                presentedCreatedExport = false
+                dismiss()
+            }
         }
         .sheet(item: $customRelayDraft) { draft in
             NwcCustomRelaySheet(relay: $relay, initialRelay: draft.url)
                 .presentationDetents([.height(260), .medium])
-        }
-        .sheet(item: $createdConnection, onDismiss: {
-            dismiss()
-        }) { connection in
-            NwcConnectionQRCodeSheet(connection: connection, initiallyCopied: true)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
         }
     }
 
@@ -353,8 +332,7 @@ private struct NwcCreateConnectionView: View {
 
     private func createConnection() {
         guard let parsedBudget else { return }
-        let existingIds = Set(connections.map(\.id))
-        pendingCreatedConnectionExistingIds = existingIds
+        awaitingCreatedExport = true
         manager.dispatch(.createNwcConnection(
             name: name,
             relay: relay,
@@ -362,34 +340,6 @@ private struct NwcCreateConnectionView: View {
             budgetInterval: budgetInterval,
             permissions: permissionsForCreate
         ))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            if pendingCreatedConnectionExistingIds == existingIds {
-                pendingCreatedConnectionExistingIds = nil
-            }
-        }
-    }
-
-    private func copyPendingCreatedConnection(from updatedConnections: [NwcConnection]) {
-        guard let existingIds = pendingCreatedConnectionExistingIds else { return }
-        guard let newest = updatedConnections.last(where: { !existingIds.contains($0.id) }) else {
-            if updatedConnections.count <= existingIds.count {
-                pendingCreatedConnectionExistingIds = nil
-            }
-            return
-        }
-
-        pendingCreatedConnectionExistingIds = nil
-        let uri = NwcWakeRegistrationService.uriWithConnectionMetadata(
-            newest.uri,
-            lud16: manager.state.lightningAddress.address
-        )
-        UIPasteboard.general.string = uri
-        manager.requestHaptic(.impactLight)
-        createdConnection = NwcConnectionExport(
-            id: newest.id,
-            name: newest.name,
-            uri: uri
-        )
     }
 
     private func selectPermissionPreset(_ preset: NwcPermissionPreset) {
@@ -431,7 +381,6 @@ private struct NwcCreateConnectionView: View {
         return String(output.reversed())
     }
 }
-
 
 private enum NwcCreateField: Hashable {
     case name
@@ -732,7 +681,9 @@ enum NwcPermissionPreset: String, CaseIterable, Identifiable {
     case readOnly
     case custom
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     var title: String {
         switch self {
@@ -776,7 +727,7 @@ enum NwcPermissionPreset: String, CaseIterable, Identifiable {
                 .getBalance,
                 .makeInvoice,
                 .lookupInvoice,
-                .listTransactions
+                .listTransactions,
             ]
         case .custom:
             return []
@@ -888,7 +839,7 @@ struct NwcPermissionToggleRow: View {
 
 private struct NwcConnectionCard: View {
     let connection: NwcConnection
-    let uri: String?
+    let canExport: Bool
     let copied: Bool
     let showQRCode: () -> Void
     let copy: () -> Void
@@ -952,10 +903,9 @@ private struct NwcConnectionCard: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(uri.map { truncateMiddle($0, maxLength: 80, prefixCount: 28) }
-                    ?? "Client-managed connection")
+                Text(canExport ? "Wallet-managed connection string" : "Client-managed connection")
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(uri == nil ? mutedText : primaryText)
+                    .foregroundStyle(canExport ? primaryText : mutedText)
                     .textSelection(.enabled)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -965,7 +915,7 @@ private struct NwcConnectionCard: View {
             .background(raisedSurface, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
 
-            if let uri {
+            if canExport {
                 HStack(spacing: 10) {
                     Button(action: showQRCode) {
                         Image(systemName: "qrcode")
@@ -978,12 +928,6 @@ private struct NwcConnectionCard: View {
                         Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .frame(maxWidth: .infinity)
                             .lineLimit(1)
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-
-                    ShareLink(item: uri) {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(SecondaryButtonStyle())
                 }
@@ -1002,13 +946,13 @@ private struct NwcConnectionCard: View {
     }
 }
 
-private struct NwcConnectionExport: Identifiable {
+struct NwcConnectionExport: Identifiable {
     let id: String
     let name: String
     let uri: String
 }
 
-private struct NwcConnectionQRCodeSheet: View {
+struct NwcConnectionQRCodeSheet: View {
     let connection: NwcConnectionExport
     @Environment(\.dismiss) private var dismiss
     @Environment(\.walletAccent) private var walletAccent
@@ -1167,7 +1111,7 @@ extension NwcPermission {
             .payInvoice,
             .makeInvoice,
             .lookupInvoice,
-            .listTransactions
+            .listTransactions,
         ]
     }
 
@@ -1265,8 +1209,8 @@ extension NwcBudgetInterval {
 }
 
 func compactSats(_ amount: Int) -> String {
-    if amount >= 1_000 {
-        return "\(amount / 1_000)k"
+    if amount >= 1000 {
+        return "\(amount / 1000)k"
     }
     return "\(amount)"
 }

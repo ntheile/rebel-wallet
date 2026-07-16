@@ -10,14 +10,13 @@ final class AppManager: AppReconciler {
     let rust: FfiApp
     var state: AppState
     var nwcWakeDebugEntries: [NwcWakeDebugEntry]
-    var pendingNwaWalletRequest: NwaWalletAuthRequest?
+    var nwcConnectionExport: NwcConnectionExport?
     private var lastRevApplied: UInt64
     private var lastNwcWakeStatusLogged: String
     private var lastNwcWakeSnapshot: String?
     private var lastReceiveNotificationKey: String?
     private var receiveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var notificationObservers: [NSObjectProtocol] = []
-    private let nwcWakeRegistration = NwcWakeRegistrationService()
 
     init(storagePaths: AppStoragePaths) {
         let dataDir = storagePaths.dataDir
@@ -26,12 +25,12 @@ final class AppManager: AppReconciler {
         self.rust = rust
 
         let initial = rust.state()
-        self.state = initial
-        self.nwcWakeDebugEntries = NwcWakeInbox.debugEntries()
-        self.lastRevApplied = initial.rev
-        self.lastNwcWakeStatusLogged = initial.nwc.lastWakeStatus
-        self.lastNwcWakeSnapshot = nil
-        self.lastReceiveNotificationKey = Self.receiveNotificationKey(initial.receive)
+        state = initial
+        nwcWakeDebugEntries = NwcWakeInbox.debugEntries()
+        lastRevApplied = initial.rev
+        lastNwcWakeStatusLogged = initial.nwc.lastWakeStatus
+        lastNwcWakeSnapshot = nil
+        lastReceiveNotificationKey = Self.receiveNotificationKey(initial.receive)
 
         rust.listenForUpdates(reconciler: self)
         observePushNotificationRegistration()
@@ -61,21 +60,38 @@ final class AppManager: AppReconciler {
 
     private func apply(update: AppUpdate) {
         switch update {
-        case .fullState(let s):
+        case let .fullState(s):
             if s.rev <= lastRevApplied { return }
             recordNwcWakeDebugChanges(nextState: s)
             notifyIfReceiveCompleted(nextState: s)
             lastRevApplied = s.rev
             state = s
-            nwcWakeRegistration.sync(state: s, signer: rust)
             syncNwcWakeSnapshot()
             // If a Lightning receive completed (e.g. while backgrounded), release the
             // background-execution assertion now that the core no longer needs to run.
             if !isAwaitingLightningReceive {
                 endReceiveBackgroundTask()
             }
-        case .haptic(let feedback):
+        case let .haptic(feedback):
             Haptics.play(feedback)
+        case let .openUrl(_, url):
+            Task {
+                let opened: Bool
+                if let target = URL(string: url) {
+                    opened = await NwaCallbackOpener.open(target)
+                } else {
+                    opened = false
+                }
+                dispatch(.completeNwaCallbackOpen(opened: opened))
+            }
+        case let .nwcConnectionExportReady(_, connectionId, name, uri, copyToClipboard, presentQr):
+            if copyToClipboard {
+                UIPasteboard.general.string = uri
+                Haptics.play(.impactLight)
+            }
+            if presentQr {
+                nwcConnectionExport = NwcConnectionExport(id: connectionId, name: name, uri: uri)
+            }
         }
     }
 
@@ -127,7 +143,7 @@ final class AppManager: AppReconciler {
         content.sound = .default
         content.threadIdentifier = "wallet-receive"
         content.userInfo = [
-            "type": "payment_received"
+            "type": "payment_received",
         ]
 
         let request = UNNotificationRequest(
@@ -178,42 +194,9 @@ final class AppManager: AppReconciler {
         dispatch(.requestHaptic(feedback: feedback))
     }
 
-    func unregisterNwcWakeConnection(_ connection: NwcConnection) {
-        nwcWakeRegistration.unregister(state: state, connection: connection, signer: rust)
-    }
-
-    func registerNwcWakeConnectionForNwa(_ connection: NwcConnection) async throws {
-        try await nwcWakeRegistration.registerNow(state: state, signer: rust, connection: connection)
-    }
-
-    func openNwaCallback(_ callback: URL) async -> Bool {
-        await NwaCallbackOpener.open(callback)
-    }
-
     func handleOpenURL(_ url: URL) {
-        switch NwaWalletAuthRequest.parse(url) {
-        case .success(let request):
-            let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
-            let relayCount = request.relay.split(whereSeparator: { $0.isNewline }).count
-            NwcWakeInbox.appendDebug(
-                source: "App",
-                message: "NWA request accepted wallet_bundle=\(bundleId) client_pubkey=\(request.clientPubkey) callback=\(request.callbackTargetDescription) budget_sat=\(request.budgetSat) interval=\(String(describing: request.budgetInterval)) relays=\(relayCount) permissions=\(request.permissions.count)"
-            )
-            pendingNwaWalletRequest = request
-            if state.setup == .ready {
-                dispatch(.pushScreen(screen: .nwc))
-            }
-        case .failure(.notNwa):
-            return
-        case .failure(let error):
-            NwcWakeInbox.appendDebug(source: "App", message: "NWA request ignored: \(error.localizedDescription)")
-            refreshNwcWakeDebugEntries()
-        }
-    }
-
-    func dismissNwaWalletRequest(_ request: NwaWalletAuthRequest) {
-        guard pendingNwaWalletRequest?.id == request.id else { return }
-        pendingNwaWalletRequest = nil
+        guard url.scheme?.hasPrefix("nostr+walletauth") == true else { return }
+        dispatch(.openNwaRequest(uri: url.absoluteString))
     }
 
     private func observePushNotificationRegistration() {
@@ -228,7 +211,11 @@ final class AppManager: AppReconciler {
             Task { @MainActor [weak self] in
                 self?.dispatch(.setPushNotificationRegistration(
                     apnsDeviceToken: deviceToken,
-                    registrationStatus: status ?? "Unknown"
+                    registrationStatus: status ?? "Unknown",
+                    wakeServerUrl: NwcPushPlatformContext.serverURL,
+                    appId: Bundle.main.bundleIdentifier ?? "com.rebelwallet.app",
+                    environment: NwcPushPlatformContext.apnsEnvironment,
+                    installId: NwcPushPlatformContext.installId
                 ))
             }
         }
@@ -313,8 +300,7 @@ final class AppManager: AppReconciler {
     }
 }
 
-
-struct AppStoragePaths: Sendable {
+struct AppStoragePaths {
     let dataDir: String
     let cacheDir: String
 }
@@ -371,7 +357,6 @@ private enum AppStoragePreparer {
             try? fm.copyItem(at: sourceUrl, to: destinationUrl)
         }
     }
-
 }
 
 final class KeychainSecretStore: SecretStore {
@@ -414,7 +399,7 @@ final class KeychainSecretStore: SecretStore {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: key
+            kSecAttrAccount as String: key,
         ]
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup

@@ -1267,6 +1267,7 @@ mod tests {
             name: "Test".to_string(),
             relay: "wss://relay.example.com".to_string(),
             uri: String::new(),
+            wallet_managed_secret: false,
             service_pubkey: Keys::generate().public_key().to_hex(),
             client_pubkey: Keys::generate().public_key().to_hex(),
             budget_sat: 1_000,

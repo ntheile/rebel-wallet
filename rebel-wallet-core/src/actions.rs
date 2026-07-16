@@ -106,6 +106,24 @@ pub enum AppAction {
     SetPushNotificationRegistration {
         apns_device_token: Option<String>,
         registration_status: String,
+        wake_server_url: Option<String>,
+        app_id: String,
+        environment: String,
+        install_id: String,
+    },
+    OpenNwaRequest {
+        uri: String,
+    },
+    ApproveNwaRequest {
+        relay: String,
+        budget_sat: u64,
+        budget_interval: NwcBudgetInterval,
+        permissions: Vec<NwcPermission>,
+    },
+    RetryNwaCallback,
+    CancelNwaRequest,
+    CompleteNwaCallbackOpen {
+        opened: bool,
     },
     ProcessNwcWakeRequests {
         requests: Vec<NwcWakeRequest>,
@@ -117,14 +135,9 @@ pub enum AppAction {
         budget_interval: NwcBudgetInterval,
         permissions: Vec<NwcPermission>,
     },
-    AuthorizeNwcConnection {
-        name: String,
-        relay: String,
-        client_pubkey: String,
-        budget_sat: u64,
-        budget_interval: NwcBudgetInterval,
-        permissions: Vec<NwcPermission>,
-        expires_at: Option<u64>,
+    RequestNwcConnectionExport {
+        id: String,
+        copy_to_clipboard: bool,
     },
     DeleteNwcConnection {
         id: String,
