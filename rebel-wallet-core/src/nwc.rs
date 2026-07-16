@@ -20,6 +20,7 @@ use nostr_sdk::prelude::{
     nip04, Client as NostrClient, ClientNotification, Event, EventBuilder, EventId, Filter,
     FinalizeEvent, JsonUtil, Keys, Kind, PublicKey, StreamExt, Tag, Timestamp, ToBech32,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::nostr_support::public_key_from_npub_or_hex;
 use crate::persistence::ServerConfig;
@@ -764,21 +765,41 @@ async fn pay_invoice_response(
         .filter(|amount| *amount > 0)
         .map(Amount::from_sat);
 
-    let preimage = match wallet
-        .lightning_send_state(payment_hash)
-        .await
-        .context("could not read invoice state")?
-    {
-        LightningSendState::Paid(paid) => paid.preimage.to_string(),
-        LightningSendState::InProgress(_) => wait_for_paid_invoice(&wallet, payment_hash).await?,
-        LightningSendState::Unknown => {
+    // The full app keeps Bark's mailbox stream alive. The NSE opens a short-lived
+    // wallet, so mirror that behavior while paying to receive the preimage as soon
+    // as the Ark server finishes instead of relying only on status polling.
+    let mailbox_shutdown = CancellationToken::new();
+    let mailbox_task = {
+        let wallet = wallet.clone();
+        let shutdown = mailbox_shutdown.clone();
+        tokio::spawn(async move {
             wallet
-                .pay_lightning_invoice(invoice.clone(), user_amount, false)
+                .subscribe_process_mailbox_messages(None, shutdown)
                 .await
-                .context("Bark payment failed")?;
-            wait_for_paid_invoice(&wallet, payment_hash).await?
-        }
+        })
     };
+    let preimage = async {
+        match wallet
+            .lightning_send_state(payment_hash)
+            .await
+            .context("could not read invoice state")?
+        {
+            LightningSendState::Paid(paid) => Ok(paid.preimage.to_string()),
+            LightningSendState::InProgress(_) => wait_for_paid_invoice(&wallet, payment_hash).await,
+            LightningSendState::Unknown => {
+                wallet
+                    .pay_lightning_invoice(invoice.clone(), user_amount, false)
+                    .await
+                    .context("Bark payment failed")?;
+                wait_for_paid_invoice(&wallet, payment_hash).await
+            }
+        }
+    }
+    .await;
+    mailbox_shutdown.cancel();
+    mailbox_task.abort();
+    let _ = mailbox_task.await;
+    let preimage = preimage?;
 
     let mut updated_connections = context.connections.clone();
     if let Some(updated) = updated_connections

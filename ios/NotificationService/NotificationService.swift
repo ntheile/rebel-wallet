@@ -1,5 +1,6 @@
-import UserNotifications
+import Foundation
 import os.log
+import UserNotifications
 
 private let nseLog = OSLog(
     subsystem: Bundle.main.bundleIdentifier ?? "NWC.NotificationService",
@@ -22,12 +23,17 @@ final class NotificationService: UNNotificationServiceExtension {
 
         if let wake = StoredNwcWakeRequest(userInfo: request.content.userInfo) {
             currentWake = wake
+            let startedAt = Date()
             logWakePayload(wake)
+            NwcWakeInbox.appendDebug(
+                source: "NSE",
+                message: "NSE started event_id=\(wake.eventId) relay=\(wake.relay)"
+            )
             if NwcWakeInbox.isProcessed(eventId: wake.eventId) {
                 currentWake = nil
                 setGenericWakeNotification(content, body: "Processing Request")
             } else {
-                let outcome = respondToWakeIfPossible(wake)
+                let outcome = respondToWakeIfPossible(wake, startedAt: startedAt)
                 if outcome.handled {
                     currentWake = nil
                     setGenericWakeNotification(content, body: outcome.notificationBody)
@@ -84,13 +90,14 @@ final class NotificationService: UNNotificationServiceExtension {
         let notificationBody: String
     }
 
-    private func respondToWakeIfPossible(_ wake: StoredNwcWakeRequest) -> WakeProcessingOutcome {
+    private func respondToWakeIfPossible(
+        _ wake: StoredNwcWakeRequest,
+        startedAt: Date
+    ) -> WakeProcessingOutcome {
         guard let snapshot = NwcWakeInbox.snapshot() else {
             NwcWakeInbox.appendDebug(source: "NSE", message: "No local NWC wake snapshot; queued for app")
             return WakeProcessingOutcome(handled: false, notificationBody: "Processing Request")
         }
-
-        NwcWakeInbox.markProcessed(eventId: wake.eventId)
 
         let result: NwcExtensionWakeResult
         if let eventJson = wake.eventJson {
@@ -109,13 +116,16 @@ final class NotificationService: UNNotificationServiceExtension {
                 walletServicePubkey: wake.walletServicePubkey
             )
         }
-        NwcWakeInbox.appendDebug(source: "NSE", message: result.message)
+        let durationMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        NwcWakeInbox.appendDebug(
+            source: "NSE",
+            message: "\(result.message) total_duration_ms=\(durationMs)"
+        )
         if result.success {
+            NwcWakeInbox.markProcessed(eventId: wake.eventId)
             if let updatedSnapshot = result.updatedSnapshotJson {
                 NwcWakeInbox.saveSnapshot(updatedSnapshot)
             }
-        } else {
-            NwcWakeInbox.unmarkProcessed(eventId: wake.eventId)
         }
         os_log(
             "NWC wake response result: %{private}@",
