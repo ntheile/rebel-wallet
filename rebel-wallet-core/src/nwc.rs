@@ -194,12 +194,17 @@ async fn process_nwc_request_event_inner(
     context: NwcServiceContext,
     extension_deadline: Option<Instant>,
 ) -> anyhow::Result<NwcProcessedWake> {
+    let response_started_at = Instant::now();
     let relay = wake.relay.clone();
     let client = client_for_relay(&relay).await?;
 
     let result = async {
         let mut processed =
             process_nwc_request_event_with_client(&client, wake, event, &context).await?;
+        processed.status = format!(
+            "Response published in {} ms",
+            response_started_at.elapsed().as_millis()
+        );
 
         if let Some(deadline) = extension_deadline {
             linger_for_followup_nwc_requests(&client, &relay, context, &mut processed, deadline)
@@ -343,7 +348,8 @@ async fn linger_for_followup_nwc_requests(
     let _ = client.unsubscribe(subscription.id()).await;
     if followups > 0 {
         processed.status = format!(
-            "Responded; linger processed {followups} follow-up request{}",
+            "{}; linger processed {followups} follow-up request{}",
+            processed.status,
             if followups == 1 { "" } else { "s" }
         );
     }
