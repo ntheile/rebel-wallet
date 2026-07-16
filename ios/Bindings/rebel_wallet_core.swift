@@ -4417,6 +4417,10 @@ public enum Screen: Equatable, Hashable {
     case currency
     case contactDetail(contactId: String
     )
+    case nwcWakeLogs
+    case nwcWakeStatus
+    case nwcConnectionDetail(connectionId: String
+    )
 
 
 
@@ -4463,6 +4467,13 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         case 12: return .contactDetail(contactId: try FfiConverterString.read(from: &buf)
         )
         
+        case 13: return .nwcWakeLogs
+
+        case 14: return .nwcWakeStatus
+
+        case 15: return .nwcConnectionDetail(connectionId: try FfiConverterString.read(from: &buf)
+        )
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -4519,6 +4530,19 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
             writeInt(&buf, Int32(12))
             FfiConverterString.write(contactId, into: &buf)
             
+
+        case .nwcWakeLogs:
+            writeInt(&buf, Int32(13))
+
+
+        case .nwcWakeStatus:
+            writeInt(&buf, Int32(14))
+
+
+        case let .nwcConnectionDetail(connectionId):
+            writeInt(&buf, Int32(15))
+            FfiConverterString.write(connectionId, into: &buf)
+
         }
     }
 }

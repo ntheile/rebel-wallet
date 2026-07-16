@@ -4,8 +4,6 @@ import UIKit
 struct NwcConnectionsView: View {
     @Bindable var manager: AppManager
     @Environment(\.walletAccent) private var walletAccent
-    @State private var copiedConnectionId: String?
-    @State private var deleteConnection: NwcConnection?
 
     private var connections: [NwcConnection] {
         manager.state.nwc.connections
@@ -16,27 +14,35 @@ struct NwcConnectionsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 createLink
                 connectionsSection
-                NwcWakeDebugCard(manager: manager)
             }
             .padding(16)
         }
         .navigationTitle("NWC")
-        .background(pageBackground)
-        .foregroundStyle(primaryText)
-        .alert("Delete NWC connection?", isPresented: Binding(
-            get: { deleteConnection != nil },
-            set: { if !$0 { deleteConnection = nil } }
-        )) {
-            Button("Delete", role: .destructive) {
-                if let deleteConnection {
-                    manager.dispatch(.deleteNwcConnection(id: deleteConnection.id))
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        manager.dispatch(.pushScreen(screen: .nwcWakeLogs))
+                    } label: {
+                        Label("Logs", systemImage: "list.bullet.rectangle")
+                    }
+
+                    Button {
+                        manager.dispatch(.pushScreen(screen: .nwcWakeStatus))
+                    } label: {
+                        Label("Status", systemImage: "waveform.path.ecg")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .rotationEffect(.degrees(90))
+                        .offset(y: 2)
+                        .frame(width: 32, height: 32)
                 }
-                deleteConnection = nil
-            }
-            Button("Cancel", role: .cancel) {
-                deleteConnection = nil
+                .accessibilityLabel("NWC options")
             }
         }
+        .background(pageBackground)
+        .foregroundStyle(primaryText)
     }
 
     private var createLink: some View {
@@ -78,34 +84,27 @@ struct NwcConnectionsView: View {
                 .background(surfaceBackground, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
             } else {
-                ForEach(connections, id: \.id) { connection in
-                    NwcConnectionCard(
-                        connection: connection,
-                        canExport: connection.walletManagedSecret,
-                        copied: copiedConnectionId == connection.id,
-                        showQRCode: {
-                            manager.dispatch(.requestNwcConnectionExport(
-                                id: connection.id,
-                                copyToClipboard: false
-                            ))
-                        },
-                        copy: { copy(connection) },
-                        delete: { deleteConnection = connection }
-                    )
-                }
-            }
-        }
-    }
+                VStack(spacing: 0) {
+                    ForEach(Array(connections.enumerated()), id: \.element.id) { index, connection in
+                        Button {
+                            manager.dispatch(.pushScreen(screen: .nwcConnectionDetail(
+                                connectionId: connection.id
+                            )))
+                        } label: {
+                            NwcConnectionRow(connection: connection)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open \(connection.name) NWC connection")
 
-    private func copy(_ connection: NwcConnection) {
-        manager.dispatch(.requestNwcConnectionExport(
-            id: connection.id,
-            copyToClipboard: true
-        ))
-        copiedConnectionId = connection.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            if copiedConnectionId == connection.id {
-                copiedConnectionId = nil
+                        if index < connections.count - 1 {
+                            Divider()
+                                .overlay(borderColor)
+                                .padding(.leading, 64)
+                        }
+                    }
+                }
+                .background(surfaceBackground, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
             }
         }
     }
@@ -837,7 +836,108 @@ struct NwcPermissionToggleRow: View {
     }
 }
 
-private struct NwcConnectionCard: View {
+private struct NwcConnectionRow: View {
+    let connection: NwcConnection
+
+    private var policySummary: String {
+        let permissionSummary = connection.permissionPresetForDisplay?.title
+            ?? "\(connection.enabledPermissionsForDisplay.count) permissions"
+        return [connection.budgetDisplay, connection.budgetIntervalDisplay, permissionSummary]
+            .joined(separator: "  ·  ")
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image("NwcIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 38, height: 38)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(connection.name)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(primaryText)
+                    .lineLimit(1)
+                Text(policySummary)
+                    .font(.caption)
+                    .foregroundStyle(mutedText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(mutedText)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 62)
+        .contentShape(Rectangle())
+    }
+}
+
+struct NwcConnectionDetailView: View {
+    @Bindable var manager: AppManager
+    let connectionId: String
+    @State private var copied = false
+    @State private var showDeleteConfirmation = false
+
+    private var connection: NwcConnection? {
+        manager.state.nwc.connections.first { $0.id == connectionId }
+    }
+
+    var body: some View {
+        ScrollView {
+            if let connection {
+                NwcConnectionDetailsCard(
+                    connection: connection,
+                    canExport: connection.walletManagedSecret,
+                    copied: copied,
+                    showQRCode: {
+                        manager.dispatch(.requestNwcConnectionExport(
+                            id: connection.id,
+                            copyToClipboard: false
+                        ))
+                    },
+                    copy: { copy(connection) },
+                    delete: { showDeleteConfirmation = true }
+                )
+                .padding(16)
+            } else {
+                ContentUnavailableView(
+                    "Connection Not Found",
+                    systemImage: "link.badge.plus",
+                    description: Text("This NWC connection may have been removed.")
+                )
+                .padding(24)
+            }
+        }
+        .navigationTitle(connection?.name ?? "NWC Connection")
+        .background(pageBackground)
+        .foregroundStyle(primaryText)
+        .alert("Delete NWC connection?", isPresented: $showDeleteConfirmation) {
+            Button("Delete", role: .destructive) {
+                manager.dispatch(.deleteNwcConnection(id: connectionId))
+                manager.dispatch(.popScreen)
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func copy(_ connection: NwcConnection) {
+        manager.dispatch(.requestNwcConnectionExport(
+            id: connection.id,
+            copyToClipboard: true
+        ))
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            copied = false
+        }
+    }
+}
+
+private struct NwcConnectionDetailsCard: View {
     let connection: NwcConnection
     let canExport: Bool
     let copied: Bool
@@ -855,14 +955,10 @@ private struct NwcConnectionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(rebelBlue.opacity(0.2))
-                    Image(systemName: "link")
-                        .font(.headline)
-                        .foregroundStyle(rebelBlue)
-                }
-                .frame(width: 42, height: 42)
+                Image("NwcIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 42, height: 42)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(connection.name)

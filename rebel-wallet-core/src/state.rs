@@ -262,6 +262,9 @@ pub enum Screen {
     Network,
     Currency,
     ContactDetail { contact_id: String },
+    NwcWakeLogs,
+    NwcWakeStatus,
+    NwcConnectionDetail { connection_id: String },
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]

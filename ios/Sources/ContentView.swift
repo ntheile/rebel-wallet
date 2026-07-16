@@ -114,6 +114,12 @@ struct ContentView: View {
             CurrencyView(manager: manager)
         case let .contactDetail(contactId):
             ContactDetailView(manager: manager, contactId: contactId)
+        case .nwcWakeLogs:
+            NwcWakeLogsView(manager: manager)
+        case .nwcWakeStatus:
+            NwcWakeStatusView(manager: manager)
+        case let .nwcConnectionDetail(connectionId):
+            NwcConnectionDetailView(manager: manager, connectionId: connectionId)
         }
     }
 }
