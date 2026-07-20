@@ -2766,7 +2766,7 @@ public enum AppAction: Equatable, Hashable {
     case refreshPrice
     case setPriceCurrency(currency: PriceCurrency
     )
-    case selectNetwork(network: WalletNetwork
+    case selectNetwork(network: WalletNetwork, serverAddress: String?, esploraAddress: String?
     )
     case selectTab(tab: MainTab
     )
@@ -2920,7 +2920,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 10: return .setPriceCurrency(currency: try FfiConverterTypePriceCurrency.read(from: &buf)
         )
         
-        case 11: return .selectNetwork(network: try FfiConverterTypeWalletNetwork.read(from: &buf)
+        case 11: return .selectNetwork(network: try FfiConverterTypeWalletNetwork.read(from: &buf), serverAddress: try FfiConverterOptionString.read(from: &buf), esploraAddress: try FfiConverterOptionString.read(from: &buf)
         )
         
         case 12: return .selectTab(tab: try FfiConverterTypeMainTab.read(from: &buf)
@@ -3152,9 +3152,11 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterTypePriceCurrency.write(currency, into: &buf)
             
         
-        case let .selectNetwork(network):
+        case let .selectNetwork(network,serverAddress,esploraAddress):
             writeInt(&buf, Int32(11))
             FfiConverterTypeWalletNetwork.write(network, into: &buf)
+            FfiConverterOptionString.write(serverAddress, into: &buf)
+            FfiConverterOptionString.write(esploraAddress, into: &buf)
             
         
         case let .selectTab(tab):
@@ -4817,6 +4819,7 @@ public enum WalletNetwork: Equatable, Hashable {
     
     case mainnet
     case signet
+    case regtest
 
 
 
@@ -4842,6 +4845,8 @@ public struct FfiConverterTypeWalletNetwork: FfiConverterRustBuffer {
         
         case 2: return .signet
         
+        case 3: return .regtest
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -4857,6 +4862,10 @@ public struct FfiConverterTypeWalletNetwork: FfiConverterRustBuffer {
         case .signet:
             writeInt(&buf, Int32(2))
         
+
+        case .regtest:
+            writeInt(&buf, Int32(3))
+
         }
     }
 }

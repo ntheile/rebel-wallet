@@ -41,6 +41,8 @@ uniffi::setup_scaffolding!();
 
 pub(crate) const SIGNET_SERVER: &str = "https://ark.signet.2nd.dev";
 pub(crate) const SIGNET_ESPLORA: &str = "https://esplora.signet.2nd.dev";
+pub(crate) const REGTEST_SERVER: &str = "http://127.0.0.1:3535";
+pub(crate) const REGTEST_ESPLORA: &str = "http://127.0.0.1:3000";
 pub(crate) const MAINNET_SERVER: &str = "https://ark.second.tech";
 pub(crate) const MAINNET_ESPLORA: &str = "https://mempool.second.tech/api";
 

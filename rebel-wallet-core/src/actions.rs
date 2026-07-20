@@ -23,6 +23,8 @@ pub enum AppAction {
     },
     SelectNetwork {
         network: WalletNetwork,
+        server_address: Option<String>,
+        esplora_address: Option<String>,
     },
     SelectTab {
         tab: MainTab,

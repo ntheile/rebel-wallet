@@ -67,7 +67,11 @@ impl AppCore {
             }
         }
 
-        for network in [WalletNetwork::Mainnet, WalletNetwork::Signet] {
+        for network in [
+            WalletNetwork::Mainnet,
+            WalletNetwork::Signet,
+            WalletNetwork::Regtest,
+        ] {
             let db_path = self.data_dir.join(network.db_file_name());
             if let Err(e) = remove_wallet_database_files(&db_path) {
                 errors.push(format!("{e:#}"));
@@ -105,8 +109,43 @@ impl AppCore {
         }
     }
 
-    pub(super) fn select_network(&mut self, network: WalletNetwork) {
-        let server_config = ServerConfig::for_network(network);
+    pub(super) fn select_network(
+        &mut self,
+        network: WalletNetwork,
+        server_address: Option<String>,
+        esplora_address: Option<String>,
+    ) {
+        let server_config = match network {
+            WalletNetwork::Regtest => {
+                let server_address =
+                    server_address.unwrap_or_else(|| network.server_address().to_string());
+                let esplora_address =
+                    esplora_address.unwrap_or_else(|| network.esplora_address().to_string());
+                let server_address = match validate_server_url(&server_address, "ASP") {
+                    Ok(address) => address,
+                    Err(message) => {
+                        self.state.toast = Some(message);
+                        self.request_haptic(HapticFeedback::NotificationWarning);
+                        return;
+                    }
+                };
+                let esplora_address = match validate_server_url(&esplora_address, "Esplora") {
+                    Ok(address) => address,
+                    Err(message) => {
+                        self.state.toast = Some(message);
+                        self.request_haptic(HapticFeedback::NotificationWarning);
+                        return;
+                    }
+                };
+                ServerConfig {
+                    network,
+                    server_address,
+                    server_access_token: network.server_access_token().map(str::to_string),
+                    esplora_address,
+                }
+            }
+            WalletNetwork::Mainnet | WalletNetwork::Signet => ServerConfig::for_network(network),
+        };
         let server_address = server_config.server_address;
         let esplora_address = server_config.esplora_address;
 
@@ -181,7 +220,13 @@ impl AppCore {
                     data.receive_memo
                 };
                 self.state.wallet.network = data.network;
-                let server_config = ServerConfig::for_network(self.state.wallet.network);
+                let server_config = if self.state.wallet.network == WalletNetwork::Regtest
+                    && data.servers.network == WalletNetwork::Regtest
+                {
+                    data.servers
+                } else {
+                    ServerConfig::for_network(self.state.wallet.network)
+                };
                 self.state.wallet.server_address = server_config.server_address;
                 self.state.wallet.esplora_address = server_config.esplora_address;
                 self.state.wallet.price_currency = data.price_currency.currency;
@@ -296,6 +341,15 @@ impl AppCore {
     }
 }
 
+fn validate_server_url(value: &str, label: &str) -> Result<String, String> {
+    let value = value.trim();
+    let url = reqwest::Url::parse(value).map_err(|_| format!("Enter a valid {label} URL."))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(format!("Enter a valid HTTP or HTTPS {label} URL."));
+    }
+    Ok(value.trim_end_matches('/').to_string())
+}
+
 fn load_wallet_metadata_value(
     data_dir: &Path,
     network: WalletNetwork,
@@ -341,4 +395,19 @@ fn ensure_wallet_metadata_table(conn: &rusqlite::Connection) -> rusqlite::Result
         [],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_server_url;
+
+    #[test]
+    fn validates_and_normalizes_server_urls() {
+        assert_eq!(
+            validate_server_url("  http://192.168.1.10:3535/  ", "ASP"),
+            Ok("http://192.168.1.10:3535".to_string())
+        );
+        assert!(validate_server_url("ftp://example.com", "ASP").is_err());
+        assert!(validate_server_url("not a url", "Esplora").is_err());
+    }
 }

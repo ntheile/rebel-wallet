@@ -471,7 +471,11 @@ impl AppCore {
             AppAction::MaintainVtxos => self.maintain_vtxos(),
             AppAction::RefreshPrice => self.refresh_price(),
             AppAction::SetPriceCurrency { currency } => self.set_price_currency(currency),
-            AppAction::SelectNetwork { network } => self.select_network(network),
+            AppAction::SelectNetwork {
+                network,
+                server_address,
+                esplora_address,
+            } => self.select_network(network, server_address, esplora_address),
             AppAction::SelectTab { tab } => self.state.router.selected_tab = tab,
             AppAction::PushScreen { screen } => {
                 if screen == Screen::Receive {

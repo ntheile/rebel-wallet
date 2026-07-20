@@ -8,7 +8,7 @@ Nostr, persistence, and routing state.
 
 - iOS bundle id: `com.rebelwallet.app`
 - Bark wallet backend from local `../bark/bark`
-- Signet Ark server and Esplora defaults
+- Mainnet and Signet defaults plus configurable Regtest ASP and Esplora servers
 - iOS Keychain storage for wallet seed and Nostr secret key
 - Local sqlite/files for non-secret wallet and app state
 - Setup/restore, balance, Ark send/receive, Lightning invoice pay/receive
@@ -44,6 +44,11 @@ To build, install, and launch on a connected iPhone, use:
 ```bash
 just run-ios-phone
 ```
+
+To connect to Regtest, open **Settings → Network → Regtest** and enter the ASP and Esplora URLs. The defaults use
+`http://127.0.0.1:3535` and `http://127.0.0.1:3000`, which reach services on the Mac from the iOS Simulator. On a
+physical iPhone, replace `127.0.0.1` with the server computer's LAN address and allow local-network access when iOS
+prompts.
 
 You can optionally pass a bundle id when launching a local fork:
 

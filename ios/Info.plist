@@ -41,6 +41,13 @@
 	<string>Dark</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Rebel Wallet uses the camera to scan payment QR codes.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Rebel Wallet connects to locally hosted Regtest ASP and Esplora servers.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>RebelWalletAppGroupIdentifier</key>
 	<string>$(IOS_APP_GROUP_ID)</string>
 	<key>RebelWalletApnsEnvironment</key>

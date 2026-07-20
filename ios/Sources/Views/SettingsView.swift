@@ -268,9 +268,24 @@ struct CurrencyView: View {
 struct NetworkView: View {
     @Bindable var manager: AppManager
     @State private var selectedNetwork: WalletNetwork = .mainnet
+    @State private var regtestServerAddress = "http://127.0.0.1:3535"
+    @State private var regtestEsploraAddress = "http://127.0.0.1:3000"
 
     private var hasChanges: Bool {
-        selectedNetwork != manager.state.wallet.network
+        if selectedNetwork != manager.state.wallet.network {
+            return true
+        }
+        guard selectedNetwork == .regtest else {
+            return false
+        }
+        return regtestServerAddress.trimmedServerAddress != manager.state.wallet.serverAddress
+            || regtestEsploraAddress.trimmedServerAddress != manager.state.wallet.esploraAddress
+    }
+
+    private var hasValidRegtestFields: Bool {
+        selectedNetwork != .regtest
+            || (!regtestServerAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !regtestEsploraAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     var body: some View {
@@ -316,6 +331,40 @@ struct NetworkView: View {
                     }
                 }
 
+                if selectedNetwork == .regtest {
+                    SettingsCard(title: "Regtest servers") {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("ASP URL")
+                                .font(.caption)
+                                .foregroundStyle(mutedText)
+                            TextField("http://127.0.0.1:3535", text: $regtestServerAddress)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                                .foregroundStyle(primaryText)
+                        }
+                        .padding(14)
+
+                        SettingsDivider()
+
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("Esplora URL")
+                                .font(.caption)
+                                .foregroundStyle(mutedText)
+                            TextField("http://127.0.0.1:3000", text: $regtestEsploraAddress)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                                .foregroundStyle(primaryText)
+                        }
+                        .padding(14)
+                    }
+
+                    Text("On a physical iPhone, use the server computer's LAN address instead of 127.0.0.1.")
+                        .font(.caption)
+                        .foregroundStyle(mutedText)
+                }
+
                 if manager.state.busy.openingWallet {
                     HStack(spacing: 10) {
                         ProgressView()
@@ -326,14 +375,18 @@ struct NetworkView: View {
                 }
 
                 Button {
-                    manager.dispatch(.selectNetwork(network: selectedNetwork))
+                    manager.dispatch(.selectNetwork(
+                        network: selectedNetwork,
+                        serverAddress: selectedNetwork == .regtest ? regtestServerAddress : nil,
+                        esploraAddress: selectedNetwork == .regtest ? regtestEsploraAddress : nil
+                    ))
                     manager.dispatch(.popScreen)
                 } label: {
                     Label("Select network", systemImage: "checkmark")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryButtonStyle(color: rebelBlue))
-                .disabled(!hasChanges || manager.state.busy.openingWallet)
+                .disabled(!hasChanges || !hasValidRegtestFields || manager.state.busy.openingWallet)
             }
             .padding(16)
         }
@@ -343,6 +396,17 @@ struct NetworkView: View {
         .foregroundStyle(primaryText)
         .onAppear {
             selectedNetwork = manager.state.wallet.network
+            if selectedNetwork == .regtest {
+                regtestServerAddress = manager.state.wallet.serverAddress
+                regtestEsploraAddress = manager.state.wallet.esploraAddress
+            }
         }
+    }
+}
+
+private extension String {
+    var trimmedServerAddress: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 }

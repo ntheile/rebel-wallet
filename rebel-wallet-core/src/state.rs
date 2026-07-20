@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::custom_address::validate_custom_address_name;
-use crate::{MAINNET_ESPLORA, MAINNET_SERVER, SIGNET_ESPLORA, SIGNET_SERVER};
+use crate::{
+    MAINNET_ESPLORA, MAINNET_SERVER, REGTEST_ESPLORA, REGTEST_SERVER, SIGNET_ESPLORA, SIGNET_SERVER,
+};
 
 mod send;
 
@@ -290,6 +292,7 @@ pub enum WalletNetwork {
     #[default]
     Mainnet,
     Signet,
+    Regtest,
 }
 
 impl WalletNetwork {
@@ -297,6 +300,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "Mainnet",
             Self::Signet => "Signet",
+            Self::Regtest => "Regtest",
         }
     }
 
@@ -304,6 +308,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "Real bitcoin network",
             Self::Signet => "Test bitcoin network",
+            Self::Regtest => "Local development network",
         }
     }
 
@@ -311,6 +316,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => bitcoin::Network::Bitcoin,
             Self::Signet => bitcoin::Network::Signet,
+            Self::Regtest => bitcoin::Network::Regtest,
         }
     }
 
@@ -318,6 +324,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "rebel-wallet-mainnet.sqlite",
             Self::Signet => "rebel-wallet-signet.sqlite",
+            Self::Regtest => "rebel-wallet-regtest.sqlite",
         }
     }
 
@@ -325,6 +332,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => MAINNET_SERVER,
             Self::Signet => SIGNET_SERVER,
+            Self::Regtest => REGTEST_SERVER,
         }
     }
 
@@ -336,6 +344,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => MAINNET_ESPLORA,
             Self::Signet => SIGNET_ESPLORA,
+            Self::Regtest => REGTEST_ESPLORA,
         }
     }
 }
@@ -889,14 +898,18 @@ fn supported_price_currencies() -> Vec<CurrencyOption> {
 }
 
 fn supported_networks() -> Vec<NetworkOption> {
-    [WalletNetwork::Mainnet, WalletNetwork::Signet]
-        .into_iter()
-        .map(|network| NetworkOption {
-            name: network.display_name().to_string(),
-            caption: network.caption().to_string(),
-            network,
-        })
-        .collect()
+    [
+        WalletNetwork::Mainnet,
+        WalletNetwork::Signet,
+        WalletNetwork::Regtest,
+    ]
+    .into_iter()
+    .map(|network| NetworkOption {
+        name: network.display_name().to_string(),
+        caption: network.caption().to_string(),
+        network,
+    })
+    .collect()
 }
 
 fn should_show_launch_splash(state: &AppState) -> bool {
@@ -1217,7 +1230,7 @@ mod tests {
         let mut state = AppState::initial();
         state.refresh_derived();
 
-        assert_eq!(state.supported_networks.len(), 2);
+        assert_eq!(state.supported_networks.len(), 3);
         assert!(state
             .supported_networks
             .iter()
@@ -1226,6 +1239,10 @@ mod tests {
             .supported_networks
             .iter()
             .any(|network| network.network == WalletNetwork::Mainnet));
+        assert!(state
+            .supported_networks
+            .iter()
+            .any(|network| network.network == WalletNetwork::Regtest));
         assert_eq!(
             WalletNetwork::Signet.db_file_name(),
             "rebel-wallet-signet.sqlite"
@@ -1233,6 +1250,10 @@ mod tests {
         assert_eq!(
             WalletNetwork::Mainnet.db_file_name(),
             "rebel-wallet-mainnet.sqlite"
+        );
+        assert_eq!(
+            WalletNetwork::Regtest.db_file_name(),
+            "rebel-wallet-regtest.sqlite"
         );
         assert_eq!(WalletNetwork::Signet.server_access_token(), None);
         assert_eq!(WalletNetwork::Mainnet.server_access_token(), None);

@@ -1399,6 +1399,7 @@ fn network_name(network: &WalletNetwork) -> &'static str {
     match network {
         WalletNetwork::Mainnet => "mainnet",
         WalletNetwork::Signet => "signet",
+        WalletNetwork::Regtest => "regtest",
     }
 }
 
