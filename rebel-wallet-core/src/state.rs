@@ -23,6 +23,7 @@ pub struct AppState {
     pub direct_messages: Vec<NostrMessage>,
     pub activity: Vec<ActivityItem>,
     pub recovery_phrase: Option<String>,
+    pub revealed_nostr_secret: Option<String>,
     pub toast: Option<String>,
     pub busy: BusyState,
     pub capability_request: Option<CapabilityRequest>,
@@ -445,6 +446,10 @@ impl std::fmt::Debug for AppState {
                 "recovery_phrase",
                 &self.recovery_phrase.as_ref().map(|_| "<redacted>"),
             )
+            .field(
+                "revealed_nostr_secret",
+                &self.revealed_nostr_secret.as_ref().map(|_| "<redacted>"),
+            )
             .field("toast", &self.toast)
             .field("busy", &self.busy)
             .field("capability_request", &self.capability_request)
@@ -568,6 +573,7 @@ impl AppState {
             direct_messages: vec![],
             activity: vec![],
             recovery_phrase: None,
+            revealed_nostr_secret: None,
             toast: None,
             busy: BusyState::default(),
             capability_request: None,
@@ -1030,9 +1036,12 @@ mod tests {
         assert!(format!("{state:?}").contains("recovery_phrase: None"));
 
         state.recovery_phrase = Some("abandon abandon abandon".to_string());
+        state.revealed_nostr_secret = Some("nsec1verysecret".to_string());
         let debug = format!("{state:?}");
         assert!(!debug.contains("abandon"));
+        assert!(!debug.contains("nsec1verysecret"));
         assert!(debug.contains("recovery_phrase: Some(\"<redacted>\")"));
+        assert!(debug.contains("revealed_nostr_secret: Some(\"<redacted>\")"));
     }
 
     #[test]

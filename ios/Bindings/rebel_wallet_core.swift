@@ -872,13 +872,14 @@ public struct AppState: Equatable, Hashable {
     public var directMessages: [NostrMessage]
     public var activity: [ActivityItem]
     public var recoveryPhrase: String?
+    public var revealedNostrSecret: String?
     public var toast: String?
     public var busy: BusyState
     public var capabilityRequest: CapabilityRequest?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, showLaunchSplash: Bool, router: Router, setup: SetupState, wallet: WalletState, supportedNetworks: [NetworkOption], supportedPriceCurrencies: [CurrencyOption], receive: ReceiveState, send: SendState, lightningAddress: LightningAddressState, nostr: NostrState, directMessages: [NostrMessage], activity: [ActivityItem], recoveryPhrase: String?, toast: String?, busy: BusyState, capabilityRequest: CapabilityRequest?) {
+    public init(rev: UInt64, showLaunchSplash: Bool, router: Router, setup: SetupState, wallet: WalletState, supportedNetworks: [NetworkOption], supportedPriceCurrencies: [CurrencyOption], receive: ReceiveState, send: SendState, lightningAddress: LightningAddressState, nostr: NostrState, directMessages: [NostrMessage], activity: [ActivityItem], recoveryPhrase: String?, revealedNostrSecret: String?, toast: String?, busy: BusyState, capabilityRequest: CapabilityRequest?) {
         self.rev = rev
         self.showLaunchSplash = showLaunchSplash
         self.router = router
@@ -893,6 +894,7 @@ public struct AppState: Equatable, Hashable {
         self.directMessages = directMessages
         self.activity = activity
         self.recoveryPhrase = recoveryPhrase
+        self.revealedNostrSecret = revealedNostrSecret
         self.toast = toast
         self.busy = busy
         self.capabilityRequest = capabilityRequest
@@ -928,6 +930,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 directMessages: FfiConverterSequenceTypeNostrMessage.read(from: &buf), 
                 activity: FfiConverterSequenceTypeActivityItem.read(from: &buf), 
                 recoveryPhrase: FfiConverterOptionString.read(from: &buf), 
+                revealedNostrSecret: FfiConverterOptionString.read(from: &buf), 
                 toast: FfiConverterOptionString.read(from: &buf), 
                 busy: FfiConverterTypeBusyState.read(from: &buf), 
                 capabilityRequest: FfiConverterOptionTypeCapabilityRequest.read(from: &buf)
@@ -949,6 +952,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterSequenceTypeNostrMessage.write(value.directMessages, into: &buf)
         FfiConverterSequenceTypeActivityItem.write(value.activity, into: &buf)
         FfiConverterOptionString.write(value.recoveryPhrase, into: &buf)
+        FfiConverterOptionString.write(value.revealedNostrSecret, into: &buf)
         FfiConverterOptionString.write(value.toast, into: &buf)
         FfiConverterTypeBusyState.write(value.busy, into: &buf)
         FfiConverterOptionTypeCapabilityRequest.write(value.capabilityRequest, into: &buf)
@@ -2206,6 +2210,7 @@ public enum AppAction: Equatable, Hashable {
     )
     case clearToast
     case clearRecoveryPhrase
+    case clearRevealedNostrSecret
     case requestHaptic(feedback: HapticFeedback
     )
 
@@ -2404,7 +2409,9 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case 71: return .clearRecoveryPhrase
         
-        case 72: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
+        case 72: return .clearRevealedNostrSecret
+        
+        case 73: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2748,8 +2755,12 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(71))
         
         
-        case let .requestHaptic(feedback):
+        case .clearRevealedNostrSecret:
             writeInt(&buf, Int32(72))
+        
+        
+        case let .requestHaptic(feedback):
+            writeInt(&buf, Int32(73))
             FfiConverterTypeHapticFeedback.write(feedback, into: &buf)
             
         }

@@ -249,6 +249,7 @@ struct NostrKeysPanel: View {
     @Bindable var manager: AppManager
     let done: () -> Void
     @State private var secret = ""
+    @State private var copiedSecret = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -293,6 +294,40 @@ struct NostrKeysPanel: View {
                 .buttonStyle(SecondaryButtonStyle())
                 .disabled(manager.state.nostr.npub == nil)
 
+                if let nsec = manager.state.revealedNostrSecret {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("This secret key controls your Nostr identity. Anyone with it can post as you.")
+                            .font(.caption)
+                            .foregroundStyle(mutedText)
+                        KeyValueBlock(title: "Secret Key", value: nsec, hidden: false)
+                        HStack(spacing: 12) {
+                            Button {
+                                UIPasteboard.general.setItems(
+                                    [[UIPasteboard.typeAutomatic: nsec]],
+                                    options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)]
+                                )
+                                manager.requestHaptic(.impactLight)
+                                copiedSecret = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                    copiedSecret = false
+                                }
+                            } label: {
+                                Label(copiedSecret ? "Copied" : "Copy", systemImage: "doc.on.doc")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+
+                            Button {
+                                manager.dispatch(.clearRevealedNostrSecret)
+                            } label: {
+                                Label("Hide", systemImage: "eye.slash")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                        }
+                    }
+                }
+
                 Button(role: .destructive) {
                     presentClearProfileCacheConfirmation()
                 } label: {
@@ -313,6 +348,9 @@ struct NostrKeysPanel: View {
             .padding(14)
             .background(surfaceBackground, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(borderColor))
+        }
+        .onDisappear {
+            manager.dispatch(.clearRevealedNostrSecret)
         }
     }
 

@@ -591,6 +591,7 @@ impl AppCore {
             } => self.send_direct_message(contact_id, message),
             AppAction::ClearToast => self.state.toast = None,
             AppAction::ClearRecoveryPhrase => self.state.recovery_phrase = None,
+            AppAction::ClearRevealedNostrSecret => self.state.revealed_nostr_secret = None,
             AppAction::RequestHaptic { feedback } => self.request_haptic(feedback),
         }
     }
@@ -1473,8 +1474,8 @@ impl AppCore {
 
     fn export_nostr_secret(&mut self) {
         if let Some(secret) = self.secrets.get_secret(NOSTR_SECRET_KEY.to_string()) {
-            self.state.toast = Some(secret);
-            self.request_haptic(HapticFeedback::NotificationSuccess);
+            self.state.revealed_nostr_secret = Some(secret);
+            self.request_haptic(HapticFeedback::NotificationWarning);
         } else {
             self.state.toast = Some("No Nostr secret key found.".to_string());
             self.request_haptic(HapticFeedback::NotificationWarning);
@@ -3007,6 +3008,49 @@ mod tests {
         assert!(core
             .pending_haptics
             .contains(&HapticFeedback::NotificationWarning));
+    }
+
+    #[test]
+    fn export_nostr_secret_reveals_in_state_not_toast() {
+        struct NostrSecretStore;
+
+        impl SecretStore for NostrSecretStore {
+            fn get_secret(&self, key: String) -> Option<String> {
+                (key == NOSTR_SECRET_KEY).then(|| "nsec1verysecret".to_string())
+            }
+
+            fn set_secret(&self, _key: String, _value: String) -> bool {
+                true
+            }
+
+            fn delete_secret(&self, _key: String) -> bool {
+                true
+            }
+        }
+
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let cache_dir = tempfile::tempdir().expect("temp cache dir");
+        let (tx, _rx) = flume::unbounded();
+        let mut core = AppCore::new(
+            data_dir.path().to_path_buf(),
+            cache_dir.path().to_path_buf(),
+            Arc::new(NostrSecretStore),
+            tx,
+            Runtime::new().expect("tokio runtime"),
+        );
+
+        core.export_nostr_secret();
+
+        assert_eq!(
+            core.state.revealed_nostr_secret.as_deref(),
+            Some("nsec1verysecret")
+        );
+        let toast = core.state.toast.as_deref().unwrap_or("");
+        assert!(!toast.contains("nsec1verysecret"));
+
+        core.handle(CoreMsg::Action(AppAction::ClearRevealedNostrSecret));
+
+        assert_eq!(core.state.revealed_nostr_secret, None);
     }
 
     #[test]
