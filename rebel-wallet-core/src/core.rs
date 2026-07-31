@@ -2943,4 +2943,89 @@ mod tests {
             LightningAddressRegistrationPhase::Idle
         );
     }
+
+    #[test]
+    fn registration_update_with_matching_name_is_activated() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.lightning_address.custom_name = "alice".to_string();
+
+        core.apply_lightning_address_registration_update(
+            "alice".to_string(),
+            "alice@signet.arkzap.me".to_string(),
+            "tark1example".to_string(),
+            Some("lnbc1invoice".to_string()),
+            Some("42".to_string()),
+            Some(10_000_000),
+            true,
+            true,
+            true,
+            false,
+            None,
+        );
+
+        assert_eq!(
+            core.state.lightning_address.custom_address.as_deref(),
+            Some("alice@signet.arkzap.me")
+        );
+        assert_eq!(
+            core.state.lightning_address.registration_phase,
+            LightningAddressRegistrationPhase::Active
+        );
+        assert!(core.state.lightning_address.registration_error.is_none());
+    }
+
+    #[test]
+    fn registration_update_with_mismatched_name_is_not_activated() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.lightning_address.custom_name = "alice".to_string();
+
+        core.apply_lightning_address_registration_update(
+            "mallory".to_string(),
+            "mallory@signet.arkzap.me".to_string(),
+            "tark1example".to_string(),
+            Some("lnbc1invoice".to_string()),
+            Some("42".to_string()),
+            Some(10_000_000),
+            true,
+            true,
+            true,
+            false,
+            None,
+        );
+
+        assert!(core.state.lightning_address.custom_address.is_none());
+        assert_ne!(
+            core.state.lightning_address.registration_phase,
+            LightningAddressRegistrationPhase::Active
+        );
+        assert!(core.state.lightning_address.registration_error.is_some());
+        assert_eq!(core.state.lightning_address.custom_name, "alice");
+    }
+
+    #[test]
+    fn registration_update_with_mismatched_address_is_not_activated() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.lightning_address.custom_name = "alice".to_string();
+
+        core.apply_lightning_address_registration_update(
+            "alice".to_string(),
+            "mallory@signet.arkzap.me".to_string(),
+            "tark1example".to_string(),
+            Some("lnbc1invoice".to_string()),
+            Some("42".to_string()),
+            Some(10_000_000),
+            true,
+            true,
+            true,
+            false,
+            None,
+        );
+
+        assert!(core.state.lightning_address.custom_address.is_none());
+        assert_ne!(
+            core.state.lightning_address.registration_phase,
+            LightningAddressRegistrationPhase::Active
+        );
+        assert!(core.state.lightning_address.registration_error.is_some());
+    }
 }
