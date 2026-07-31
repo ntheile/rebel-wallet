@@ -286,7 +286,10 @@ struct NostrKeysPanel: View {
                 .disabled(secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 Button {
-                    manager.dispatch(.exportNostrSecret)
+                    Task {
+                        guard await DeviceAuth.authenticate(localizedReason: "Authenticate to export your Nostr secret key.") else { return }
+                        manager.dispatch(.exportNostrSecret)
+                    }
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)

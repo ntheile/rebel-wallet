@@ -21,7 +21,6 @@ struct SettingsView: View {
 
                 SettingsCard(title: "General") {
                     SettingsRow(title: "Backup", caption: "Show recovery phrase", accent: rebelGreen) {
-                        manager.dispatch(.showSeed)
                         manager.dispatch(.pushScreen(screen: .backup))
                     }
                     SettingsDivider()
