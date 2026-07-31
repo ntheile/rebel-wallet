@@ -2891,4 +2891,56 @@ mod tests {
             true
         }
     }
+
+    fn test_core() -> (tempfile::TempDir, tempfile::TempDir, AppCore) {
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let cache_dir = tempfile::tempdir().expect("temp cache dir");
+        let (tx, _rx) = flume::unbounded();
+        let core = AppCore::new(
+            data_dir.path().to_path_buf(),
+            cache_dir.path().to_path_buf(),
+            Arc::new(TestSecretStore),
+            tx,
+            Runtime::new().expect("tokio runtime"),
+        );
+        (data_dir, cache_dir, core)
+    }
+
+    #[test]
+    fn pay_destination_ignored_while_payment_is_sending() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.send.destination = "not a valid destination".to_string();
+        core.state.busy.sending_payment = true;
+
+        core.pay_destination();
+
+        assert!(core.state.toast.is_none());
+        assert_eq!(core.state.send.phase, SendPhase::Drafting);
+    }
+
+    #[test]
+    fn pay_destination_ignored_while_send_phase_is_sending() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.send.destination = "not a valid destination".to_string();
+        core.state.send.phase = SendPhase::Sending;
+
+        core.pay_destination();
+
+        assert!(core.state.toast.is_none());
+        assert_eq!(core.state.send.phase, SendPhase::Sending);
+    }
+
+    #[test]
+    fn confirm_registration_payment_requires_awaiting_payment_phase() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.lightning_address.registration_phase = LightningAddressRegistrationPhase::Idle;
+
+        core.confirm_lightning_address_registration_payment();
+
+        assert!(core.state.toast.is_none());
+        assert_eq!(
+            core.state.lightning_address.registration_phase,
+            LightningAddressRegistrationPhase::Idle
+        );
+    }
 }

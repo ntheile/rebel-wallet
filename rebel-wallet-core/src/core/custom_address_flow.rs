@@ -348,6 +348,12 @@ impl AppCore {
     }
 
     pub(super) fn confirm_lightning_address_registration_payment(&mut self) {
+        if self.state.lightning_address.registration_phase
+            != LightningAddressRegistrationPhase::AwaitingPayment
+        {
+            eprintln!("Ignoring registration payment confirmation: no payment is awaiting.");
+            return;
+        }
         let Some(wallet) = self.wallet.clone() else {
             self.state.toast = Some("Wallet is not ready yet.".to_string());
             self.request_haptic(HapticFeedback::NotificationWarning);

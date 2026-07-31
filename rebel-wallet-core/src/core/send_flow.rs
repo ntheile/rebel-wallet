@@ -86,7 +86,15 @@ async fn checked_bitcoin_address(
 }
 
 impl AppCore {
+    fn payment_already_sending(&self) -> bool {
+        self.state.busy.sending_payment || self.state.send.phase == SendPhase::Sending
+    }
+
     pub(super) fn pay_destination(&mut self) {
+        if self.payment_already_sending() {
+            eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
+            return;
+        }
         let destination = self.state.send.destination.trim().to_string();
         if destination.is_empty() {
             self.state.toast = Some("Enter a destination first.".to_string());
@@ -428,6 +436,10 @@ impl AppCore {
     }
 
     pub(super) fn pay_lightning_invoice(&mut self, invoice: String, amount_sat: Option<u64>) {
+        if self.payment_already_sending() {
+            eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
+            return;
+        }
         if let Some(amount_sat) = amount_sat.filter(|amount| *amount > 0) {
             if amount_sat > self.state.wallet.balance_sat {
                 self.state.toast =
@@ -528,6 +540,10 @@ impl AppCore {
     }
 
     fn pay_lnurl_destination(&mut self, destination: String, amount_sat: u64) {
+        if self.payment_already_sending() {
+            eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
+            return;
+        }
         if amount_sat == 0 {
             self.state.toast =
                 Some("Enter an amount before sending to this Lightning address.".to_string());
@@ -598,6 +614,10 @@ impl AppCore {
     }
 
     fn pay_zap_destination(&mut self, destination: String, amount_sat: u64) {
+        if self.payment_already_sending() {
+            eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
+            return;
+        }
         if amount_sat == 0 {
             self.state.toast = Some("Enter an amount before sending a zap.".to_string());
             return;
@@ -690,6 +710,10 @@ impl AppCore {
     }
 
     pub(super) fn pay_ark_address(&mut self, address: String, amount_sat: u64) {
+        if self.payment_already_sending() {
+            eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
+            return;
+        }
         if amount_sat == 0 {
             self.state.toast = Some("Enter an amount before sending.".to_string());
             return;
@@ -727,6 +751,10 @@ impl AppCore {
     }
 
     fn pay_onchain_address(&mut self, address: String, amount_sat: u64) {
+        if self.payment_already_sending() {
+            eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
+            return;
+        }
         if amount_sat == 0 {
             self.state.toast = Some("Enter an amount before sending.".to_string());
             return;
