@@ -54,12 +54,10 @@ impl AppCore {
     pub(super) fn delete_wallet(&mut self) {
         self.wallet = None;
 
+        // Remove local data first. Only delete the secrets once the data they
+        // unlock is confirmed gone, so a failed cleanup cannot orphan the
+        // databases behind an already-deleted seed.
         let mut errors = Vec::new();
-        if !self.secrets.delete_secret(WALLET_SEED_KEY.to_string()) {
-            errors.push("wallet seed".to_string());
-        }
-        let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
-
         for network in [WalletNetwork::Mainnet, WalletNetwork::Signet] {
             let db_path = self.data_dir.join(network.db_file_name());
             if let Err(e) = remove_wallet_database_files(&db_path) {
@@ -84,6 +82,13 @@ impl AppCore {
         let mut state = AppState::initial();
         state.show_launch_splash = false;
         self.state = state;
+
+        if errors.is_empty() {
+            if !self.secrets.delete_secret(WALLET_SEED_KEY.to_string()) {
+                errors.push("wallet seed".to_string());
+            }
+            let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
+        }
 
         if errors.is_empty() {
             self.state.toast = Some("Wallet deleted. Start over to create or restore.".to_string());

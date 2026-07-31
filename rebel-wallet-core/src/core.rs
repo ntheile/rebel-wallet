@@ -3036,6 +3036,79 @@ mod tests {
             .contains(&HapticFeedback::NotificationWarning));
     }
 
+    #[derive(Default)]
+    struct RecordingSecretStore {
+        deleted_keys: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingSecretStore {
+        fn deleted_keys(&self) -> Vec<String> {
+            self.deleted_keys.lock().expect("deleted keys").clone()
+        }
+    }
+
+    impl SecretStore for RecordingSecretStore {
+        fn get_secret(&self, _key: String) -> Option<String> {
+            None
+        }
+
+        fn set_secret(&self, _key: String, _value: String) -> bool {
+            true
+        }
+
+        fn delete_secret(&self, key: String) -> bool {
+            self.deleted_keys.lock().expect("deleted keys").push(key);
+            true
+        }
+    }
+
+    fn recording_secret_core(data_dir: &std::path::Path) -> (Arc<RecordingSecretStore>, AppCore) {
+        let cache_dir = tempfile::tempdir().expect("temp cache dir");
+        let (tx, _rx) = flume::unbounded();
+        let store = Arc::new(RecordingSecretStore::default());
+        let core = AppCore::new(
+            data_dir.to_path_buf(),
+            cache_dir.path().to_path_buf(),
+            store.clone(),
+            tx,
+            Runtime::new().expect("tokio runtime"),
+        );
+        (store, core)
+    }
+
+    #[test]
+    fn delete_wallet_removes_secrets_after_successful_cleanup() {
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let (store, mut core) = recording_secret_core(data_dir.path());
+
+        core.delete_wallet();
+
+        assert_eq!(
+            store.deleted_keys(),
+            vec![WALLET_SEED_KEY.to_string(), NOSTR_SECRET_KEY.to_string()]
+        );
+        assert_eq!(
+            core.state.toast.as_deref(),
+            Some("Wallet deleted. Start over to create or restore.")
+        );
+    }
+
+    #[test]
+    fn delete_wallet_keeps_secrets_when_database_removal_fails() {
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        // A directory at the database path cannot be removed with remove_file,
+        // which forces the database cleanup to fail.
+        std::fs::create_dir(data_dir.path().join(WalletNetwork::Signet.db_file_name()))
+            .expect("blocking directory");
+        let (store, mut core) = recording_secret_core(data_dir.path());
+
+        core.delete_wallet();
+
+        assert!(store.deleted_keys().is_empty());
+        let toast = core.state.toast.as_deref().expect("cleanup warning toast");
+        assert!(toast.contains("cleanup warnings"));
+    }
+
     #[test]
     fn export_nostr_secret_reveals_in_state_not_toast() {
         struct NostrSecretStore;
