@@ -3,12 +3,14 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
-use lightning_invoice::Bolt11Invoice;
+use bitcoin::hashes::Hash as _;
+use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescriptionRef};
 use nostr_sdk::prelude::{
     Alphabet, Event, EventBuilder, Filter, FinalizeEvent, JsonUtil, Keys, Kind,
     PublicKey as NostrPublicKey, RelayUrl, SingleLetterTag, ZapRequestData,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::nostr_support::{nostr_client, public_key_from_npub_or_hex, NOSTR_RELAYS};
 use crate::payments::{lnurl_pay_url, msats_to_display_sats};
@@ -251,16 +253,38 @@ pub(crate) fn zap_receipt_from_event(
         .as_ref()
         .map(|event| event.content.trim().to_string())
         .filter(|content| !content.is_empty());
-    let amount_msat = tags
+
+    // The invoice must be bound to the embedded zap request, either by the
+    // NIP-57 description hash or by an exact plain description (arkzap-me).
+    let invoice = tags.get("bolt11")?;
+    let invoice = Bolt11Invoice::from_str(invoice).ok()?;
+    let description_hash: [u8; 32] = Sha256::digest(description.as_bytes()).into();
+    let invoice_matches_request = match invoice.description() {
+        Bolt11InvoiceDescriptionRef::Hash(hash) => *hash.0.as_byte_array() == description_hash,
+        Bolt11InvoiceDescriptionRef::Direct(direct) => direct.as_inner().0 == description,
+    };
+    if !invoice_matches_request {
+        return None;
+    }
+
+    let receipt_amount_msat = tags
         .get("amount")
-        .or_else(|| request_tags.get("amount"))
         .and_then(|value| value.parse::<u64>().ok());
-    let invoice = tags.get("bolt11").cloned();
+    let request_amount_msat = request_tags
+        .get("amount")
+        .and_then(|value| value.parse::<u64>().ok());
+    for amount_msat in [receipt_amount_msat, request_amount_msat]
+        .into_iter()
+        .flatten()
+    {
+        if invoice.amount_milli_satoshis() != Some(amount_msat) {
+            return None;
+        }
+    }
+    let amount_msat = receipt_amount_msat.or(request_amount_msat);
     let lnurl = request_tags.get("lnurl").cloned();
-    let payment_hash = invoice
-        .as_deref()
-        .and_then(|invoice| Bolt11Invoice::from_str(invoice).ok())
-        .map(|invoice| invoice.payment_hash().to_string());
+    let payment_hash = Some(invoice.payment_hash().to_string());
+    let invoice = tags.get("bolt11").cloned();
 
     Some(ZapReceiptRecord {
         event_id: event.id.to_hex(),
@@ -298,7 +322,30 @@ fn tag_map(event: &Event) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoin::hashes::{sha256, Hash};
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
     use nostr_sdk::prelude::Tag;
+    use secp256k1::{Secp256k1, SecretKey};
+
+    fn test_invoice(description: &str, amount_msats: u64, use_description_hash: bool) -> String {
+        let private_key = SecretKey::from_slice(&[42u8; 32]).expect("secret key");
+        let payment_hash = sha256::Hash::from_slice(&[0u8; 32]).expect("payment hash");
+        let builder = InvoiceBuilder::new(Currency::Bitcoin);
+        let builder = if use_description_hash {
+            builder.description_hash(sha256::Hash::hash(description.as_bytes()))
+        } else {
+            builder.description(description.to_string())
+        };
+        builder
+            .payment_hash(payment_hash)
+            .payment_secret(PaymentSecret([7u8; 32]))
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(144)
+            .amount_milli_satoshis(amount_msats)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
+            .expect("invoice")
+            .to_string()
+    }
 
     #[test]
     fn ignores_receipt_where_only_uppercase_p_matches_own_pubkey() {
@@ -333,6 +380,7 @@ mod tests {
                 Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
                 Tag::parse(["amount", "21000"]).unwrap(),
                 Tag::parse(["description", &request.as_json()]).unwrap(),
+                Tag::parse(["bolt11", &test_invoice(&request.as_json(), 21_000, true)]).unwrap(),
             ])
             .finalize(&Keys::generate())
             .unwrap();
@@ -474,6 +522,11 @@ mod tests {
                 Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
                 Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
                 Tag::parse(["description", &request.as_json()]).unwrap(),
+                Tag::parse([
+                    "bolt11",
+                    &test_invoice(&request.as_json(), 1_000_000, false),
+                ])
+                .unwrap(),
             ])
             .finalize(&Keys::generate())
             .unwrap();
@@ -484,6 +537,90 @@ mod tests {
         assert_eq!(parsed.sender_pubkey, sender.public_key().to_hex());
         assert_eq!(parsed.amount_msat, Some(1_000_000));
         assert_eq!(parsed.comment, Some("thanks".to_string()));
+    }
+
+    #[test]
+    fn ignores_receipt_with_missing_bolt11() {
+        let own = Keys::generate();
+        let sender = Keys::generate();
+        let request = EventBuilder::new(Kind::ZapRequest, "thanks")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "1000000"]).unwrap(),
+            ])
+            .finalize(&sender)
+            .unwrap();
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
+                Tag::parse(["description", &request.as_json()]).unwrap(),
+            ])
+            .finalize(&Keys::generate())
+            .unwrap();
+
+        assert!(zap_receipt_from_event(&receipt, &own.public_key()).is_none());
+    }
+
+    #[test]
+    fn ignores_receipt_with_invoice_for_a_different_description() {
+        let own = Keys::generate();
+        let sender = Keys::generate();
+        let request = EventBuilder::new(Kind::ZapRequest, "thanks")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "1000000"]).unwrap(),
+            ])
+            .finalize(&sender)
+            .unwrap();
+        let other_request = EventBuilder::new(Kind::ZapRequest, "other")
+            .tags([Tag::parse(["p", &own.public_key().to_hex()]).unwrap()])
+            .finalize(&sender)
+            .unwrap();
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
+                Tag::parse(["description", &request.as_json()]).unwrap(),
+                Tag::parse([
+                    "bolt11",
+                    &test_invoice(&other_request.as_json(), 1_000_000, false),
+                ])
+                .unwrap(),
+            ])
+            .finalize(&Keys::generate())
+            .unwrap();
+
+        assert!(zap_receipt_from_event(&receipt, &own.public_key()).is_none());
+    }
+
+    #[test]
+    fn ignores_receipt_when_amount_tag_differs_from_invoice() {
+        let own = Keys::generate();
+        let sender = Keys::generate();
+        let request = EventBuilder::new(Kind::ZapRequest, "thanks")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "1000000"]).unwrap(),
+            ])
+            .finalize(&sender)
+            .unwrap();
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "2000000"]).unwrap(),
+                Tag::parse(["description", &request.as_json()]).unwrap(),
+                Tag::parse([
+                    "bolt11",
+                    &test_invoice(&request.as_json(), 1_000_000, false),
+                ])
+                .unwrap(),
+            ])
+            .finalize(&Keys::generate())
+            .unwrap();
+
+        assert!(zap_receipt_from_event(&receipt, &own.public_key()).is_none());
     }
 
     #[test]
