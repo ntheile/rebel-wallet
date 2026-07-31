@@ -23,6 +23,7 @@ use nostr_sdk::prelude::{
     FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, Tag, ToBech32,
 };
 use tokio::runtime::Runtime;
+use zeroize::Zeroizing;
 
 use crate::activity::{
     activity_from_movement, apply_activity_metadata, coalesce_activity_items,
@@ -81,8 +82,8 @@ fn derive_nostr_keys_from_mnemonic(mnemonic: &str) -> anyhow::Result<Keys> {
     let child = root
         .derive_priv(&secp, &path)
         .context("could not derive Nostr key")?;
-    let secret_hex = child.private_key.display_secret().to_string();
-    Keys::parse(&secret_hex).context("derived invalid Nostr key")
+    let secret_hex = Zeroizing::new(child.private_key.display_secret().to_string());
+    Keys::parse(secret_hex.as_str()).context("derived invalid Nostr key")
 }
 
 async fn wallet_synced_msg(
@@ -289,12 +290,16 @@ impl AppCore {
             AppAction::Bootstrap => self.bootstrap(),
             AppAction::CreateWallet => {
                 self.state.busy.opening_wallet = true;
-                let mnemonic = Mnemonic::generate(12).expect("valid mnemonic").to_string();
+                let mnemonic =
+                    Zeroizing::new(Mnemonic::generate(12).expect("valid mnemonic").to_string());
                 self.open_wallet(mnemonic, WalletOpenMode::Create);
             }
             AppAction::RestoreWallet { mnemonic } => {
                 self.state.busy.opening_wallet = true;
-                self.open_wallet(mnemonic.trim().to_string(), WalletOpenMode::Restore);
+                self.open_wallet(
+                    Zeroizing::new(mnemonic.trim().to_string()),
+                    WalletOpenMode::Restore,
+                );
             }
             AppAction::ReplaceWallet { mnemonic } => {
                 self.wallet = None;
@@ -304,12 +309,17 @@ impl AppCore {
                 self.state.wallet.pending_receive_sat = 0;
                 self.state.wallet.pending_send_sat = 0;
                 self.state.wallet.pending_refresh_sat = 0;
-                self.open_wallet(mnemonic.trim().to_string(), WalletOpenMode::Replace);
+                self.open_wallet(
+                    Zeroizing::new(mnemonic.trim().to_string()),
+                    WalletOpenMode::Replace,
+                );
             }
             AppAction::DeleteWallet => self.delete_wallet(),
             AppAction::ShowSeed => {
                 if let Some(seed) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
-                    let _ = self.tx.send(CoreMsg::Async(AsyncMsg::Seed(seed)));
+                    let _ = self
+                        .tx
+                        .send(CoreMsg::Async(AsyncMsg::Seed(Zeroizing::new(seed))));
                 } else {
                     self.state.toast = Some("Recovery phrase not found.".to_string());
                     self.request_haptic(HapticFeedback::NotificationWarning);
@@ -600,7 +610,7 @@ impl AppCore {
         self.clear_busy_for_async(&msg);
         match msg {
             AsyncMsg::WalletReady { wallet, mnemonic } => {
-                if !self.save_wallet_seed(&mnemonic) {
+                if !self.save_wallet_seed(mnemonic.as_str()) {
                     let message = "Could not save the recovery phrase to the Keychain. \
                                    The wallet is not safely stored. Delete the wallet and \
                                    try again before receiving funds."
@@ -831,7 +841,7 @@ impl AppCore {
                 self.sync_wallet();
             }
             AsyncMsg::Seed(seed) => {
-                self.state.recovery_phrase = Some(seed);
+                self.state.recovery_phrase = Some((*seed).clone());
             }
             AsyncMsg::NostrProfileLoaded { nostr, profile } => {
                 self.state.nostr.name = nostr.name;
@@ -1425,7 +1435,8 @@ impl AppCore {
         let keys = Keys::generate();
         match (keys.secret_key().to_bech32(), keys.public_key().to_bech32()) {
             (Ok(nsec), Ok(npub)) => {
-                if self.persist_nostr_secret(&nsec) {
+                let nsec = Zeroizing::new(nsec);
+                if self.persist_nostr_secret(nsec.as_str()) {
                     self.reset_nostr_identity(npub);
                     self.state.toast = Some("Nostr key generated in Keychain.".to_string());
                     self.request_haptic(HapticFeedback::NotificationSuccess);
@@ -1441,16 +1452,17 @@ impl AppCore {
     }
 
     fn import_nostr_secret(&mut self, nsec_or_hex: String) {
-        let value = nsec_or_hex.trim().to_string();
+        let value = Zeroizing::new(nsec_or_hex.trim().to_string());
         if value.is_empty() {
             self.state.toast = Some("Enter a Nostr secret key.".to_string());
             self.request_haptic(HapticFeedback::NotificationWarning);
             return;
         }
-        match Keys::parse(&value) {
+        match Keys::parse(value.as_str()) {
             Ok(keys) => match (keys.secret_key().to_bech32(), keys.public_key().to_bech32()) {
                 (Ok(nsec), Ok(npub)) => {
-                    if self.persist_nostr_secret(&nsec) {
+                    let nsec = Zeroizing::new(nsec);
+                    if self.persist_nostr_secret(nsec.as_str()) {
                         self.reset_nostr_identity(npub);
                         self.state.toast =
                             Some("Nostr key imported. Refreshing profile...".to_string());
@@ -1473,8 +1485,12 @@ impl AppCore {
     }
 
     fn export_nostr_secret(&mut self) {
-        if let Some(secret) = self.secrets.get_secret(NOSTR_SECRET_KEY.to_string()) {
-            self.state.revealed_nostr_secret = Some(secret);
+        let secret = self
+            .secrets
+            .get_secret(NOSTR_SECRET_KEY.to_string())
+            .map(Zeroizing::new);
+        if let Some(secret) = secret {
+            self.state.revealed_nostr_secret = Some((*secret).clone());
             self.request_haptic(HapticFeedback::NotificationWarning);
         } else {
             self.state.toast = Some("No Nostr secret key found.".to_string());
@@ -1522,8 +1538,12 @@ impl AppCore {
     }
 
     fn load_nostr_key(&mut self) {
-        if let Some(secret) = self.secrets.get_secret(NOSTR_SECRET_KEY.to_string()) {
-            if let Ok(keys) = Keys::parse(&secret) {
+        let secret = self
+            .secrets
+            .get_secret(NOSTR_SECRET_KEY.to_string())
+            .map(Zeroizing::new);
+        if let Some(secret) = secret {
+            if let Ok(keys) = Keys::parse(secret.as_str()) {
                 let npub = keys.public_key().to_bech32().unwrap();
                 if self.state.nostr.npub.as_deref() != Some(npub.as_str()) {
                     self.reset_nostr_identity(npub);
@@ -1544,19 +1564,24 @@ impl AppCore {
             return false;
         }
 
-        let Some(mnemonic) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) else {
+        let Some(mnemonic) = self
+            .secrets
+            .get_secret(WALLET_SEED_KEY.to_string())
+            .map(Zeroizing::new)
+        else {
             return false;
         };
 
-        let Ok(keys) = derive_nostr_keys_from_mnemonic(&mnemonic) else {
+        let Ok(keys) = derive_nostr_keys_from_mnemonic(mnemonic.as_str()) else {
             return false;
         };
 
         match (keys.secret_key().to_bech32(), keys.public_key().to_bech32()) {
             (Ok(nsec), Ok(npub)) => {
+                let nsec = Zeroizing::new(nsec);
                 // The key is re-derivable from the wallet seed, so a failed
                 // Keychain write is not fatal here; warn and continue.
-                self.persist_nostr_secret(&nsec);
+                self.persist_nostr_secret(nsec.as_str());
                 self.reset_nostr_identity(npub);
                 self.save_app_data();
                 self.refresh_nostr_profile();
@@ -1584,8 +1609,9 @@ impl AppCore {
         let secret = self
             .secrets
             .get_secret(NOSTR_SECRET_KEY.to_string())
+            .map(Zeroizing::new)
             .context("Nostr secret key not found")?;
-        Keys::parse(&secret).context("invalid Nostr secret key")
+        Keys::parse(secret.as_str()).context("invalid Nostr secret key")
     }
 
     fn publish_nostr_profile(&mut self) {

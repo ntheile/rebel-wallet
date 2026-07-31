@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use anyhow::Context;
 use bip39::Mnemonic;
+use zeroize::Zeroizing;
 
 use super::custom_address_flow::{
     lightning_address_local_part, pending_custom_lightning_address_matches_name,
@@ -26,19 +27,20 @@ impl AppCore {
         if let Some(mnemonic) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
             self.state.busy.bootstrapping = true;
             self.state.busy.opening_wallet = true;
-            self.open_wallet(mnemonic, WalletOpenMode::OpenOrCreate);
+            self.open_wallet(Zeroizing::new(mnemonic), WalletOpenMode::OpenOrCreate);
         }
     }
 
-    pub(super) fn open_wallet(&self, mnemonic: String, mode: WalletOpenMode) {
+    pub(super) fn open_wallet(&self, mnemonic: Zeroizing<String>, mode: WalletOpenMode) {
         let tx = self.tx.clone();
         let data_dir = self.data_dir.clone();
         let server_config = ServerConfig::from_wallet(&self.state.wallet);
         self.rt.spawn(async move {
             let result = async {
-                let mnemonic = Mnemonic::from_str(&mnemonic).context("invalid recovery phrase")?;
+                let mnemonic =
+                    Mnemonic::from_str(mnemonic.as_str()).context("invalid recovery phrase")?;
                 let wallet = open_bark_wallet(data_dir, &mnemonic, mode, server_config).await?;
-                Ok::<_, anyhow::Error>((wallet, mnemonic.to_string()))
+                Ok::<_, anyhow::Error>((wallet, Zeroizing::new(mnemonic.to_string())))
             }
             .await;
             let msg = match result {
@@ -113,7 +115,7 @@ impl AppCore {
             if let Some(seed) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
                 self.wallet = None;
                 self.state.busy.opening_wallet = true;
-                self.open_wallet(seed, WalletOpenMode::OpenOrCreate);
+                self.open_wallet(Zeroizing::new(seed), WalletOpenMode::OpenOrCreate);
                 self.state.toast = Some("Network changed. Reconnecting wallet.".to_string());
                 self.request_haptic(HapticFeedback::NotificationSuccess);
             } else {

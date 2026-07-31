@@ -1,4 +1,5 @@
 use bark::Wallet;
+use zeroize::Zeroizing;
 
 use crate::nostr_support::FetchedProfileContact;
 use crate::persistence::ZapReceiptRecord;
@@ -33,7 +34,7 @@ pub(crate) enum CoreMsg {
 pub(crate) enum AsyncMsg {
     WalletReady {
         wallet: Wallet,
-        mnemonic: String,
+        mnemonic: Zeroizing<String>,
     },
     WalletSynced {
         balance_sat: u64,
@@ -112,7 +113,7 @@ pub(crate) enum AsyncMsg {
         receipts: Vec<ZapReceiptRecord>,
         records: Vec<FetchedProfileContact>,
     },
-    Seed(String),
+    Seed(Zeroizing<String>),
     NostrProfileLoaded {
         nostr: NostrState,
         profile: Option<FetchedProfileContact>,
