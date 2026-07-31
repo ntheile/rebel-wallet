@@ -256,7 +256,10 @@ struct SeedWordsPanel: View {
                 }
 
                 Button {
-                    UIPasteboard.general.string = words.joined(separator: " ")
+                    UIPasteboard.general.setItems(
+                        [[UIPasteboard.typeAutomatic: words.joined(separator: " ")]],
+                        options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)]
+                    )
                     onHaptic(.impactLight)
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
