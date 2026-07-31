@@ -647,11 +647,20 @@ fn normalize_contact_match_value(value: &str) -> String {
 }
 
 pub(crate) fn truncate_middle(value: &str, max: usize) -> String {
-    if value.len() <= max {
+    if value.chars().count() <= max {
         return value.to_string();
     }
     let edge = max.saturating_sub(3) / 2;
-    format!("{}...{}", &value[..edge], &value[value.len() - edge..])
+    let head: String = value.chars().take(edge).collect();
+    let tail: String = value
+        .chars()
+        .rev()
+        .take(edge)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}...{tail}")
 }
 
 #[cfg(test)]
@@ -722,6 +731,22 @@ mod tests {
             truncate_middle("abcdefghijklmnopqrstuvwxyz", 11),
             "abcd...wxyz"
         );
+    }
+
+    #[test]
+    fn truncate_middle_handles_multibyte_characters() {
+        // Multibyte input must not panic on a UTF-8 char boundary.
+        let emoji_address = "sat⚡oshi😀naka🚀moto@example.com";
+        let truncated = truncate_middle(emoji_address, 13);
+        assert_eq!(truncated, "sat⚡o...e.com");
+        assert!(truncated.is_char_boundary(0));
+        assert!(truncated.is_char_boundary(truncated.len()));
+
+        let cjk_address = "中本聰のビットコインウォレットアドレス";
+        assert_eq!(truncate_middle(cjk_address, 9), "中本聰...ドレス");
+
+        // Input at or under the limit is returned unchanged, even multibyte.
+        assert_eq!(truncate_middle("⚡⚡⚡", 3), "⚡⚡⚡");
     }
 
     #[test]
