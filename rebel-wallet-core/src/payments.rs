@@ -219,6 +219,34 @@ struct LnurlPayInvoice {
     reason: Option<String>,
 }
 
+/// Maximum size of an LNURL JSON response body. A malicious endpoint must not
+/// be able to exhaust memory with an unbounded response.
+const LNURL_RESPONSE_LIMIT_BYTES: usize = 100 * 1024 * 1024;
+
+async fn read_json_body<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    context: &str,
+) -> anyhow::Result<T> {
+    if let Some(length) = response.content_length() {
+        if length > LNURL_RESPONSE_LIMIT_BYTES as u64 {
+            bail!("{context} response is too large");
+        }
+    }
+    let mut body = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("failed to read {context} response"))?
+    {
+        body.extend_from_slice(&chunk);
+        if body.len() > LNURL_RESPONSE_LIMIT_BYTES {
+            bail!("{context} response is too large");
+        }
+    }
+    serde_json::from_slice(&body).with_context(|| format!("failed to parse {context} response"))
+}
+
 pub(crate) fn is_lnurl_pay_destination(destination: &str) -> bool {
     let destination = strip_lightning_prefix(destination.trim());
     let lower = destination.to_ascii_lowercase();
@@ -248,10 +276,8 @@ pub(crate) async fn resolve_lnurl_pay_invoice(
         .await
         .context("failed to fetch LNURL pay request")?
         .error_for_status()
-        .context("LNURL pay request returned an error")?
-        .json::<LnurlPayParams>()
-        .await
-        .context("failed to parse LNURL pay request")?;
+        .context("LNURL pay request returned an error")?;
+    let params: LnurlPayParams = read_json_body(params, "LNURL pay request").await?;
 
     if params.tag.as_deref() != Some("payRequest") {
         bail!("LNURL endpoint is not a pay request");
@@ -280,10 +306,8 @@ pub(crate) async fn resolve_lnurl_pay_invoice(
         .await
         .context("failed to fetch LNURL invoice")?
         .error_for_status()
-        .context("LNURL invoice request returned an error")?
-        .json::<LnurlPayInvoice>()
-        .await
-        .context("failed to parse LNURL invoice response")?;
+        .context("LNURL invoice request returned an error")?;
+    let invoice: LnurlPayInvoice = read_json_body(invoice, "LNURL invoice").await?;
 
     if invoice.status.as_deref() == Some("ERROR") {
         bail!(
