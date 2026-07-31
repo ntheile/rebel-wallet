@@ -598,14 +598,23 @@ impl AppCore {
         self.clear_busy_for_async(&msg);
         match msg {
             AsyncMsg::WalletReady { wallet, mnemonic } => {
+                if !self.save_wallet_seed(&mnemonic) {
+                    let message = "Could not save the recovery phrase to the Keychain. \
+                                   The wallet is not safely stored. Delete the wallet and \
+                                   try again before receiving funds."
+                        .to_string();
+                    self.state.setup = SetupState::Error {
+                        message: message.clone(),
+                    };
+                    self.state.toast = Some(message);
+                    self.request_haptic(HapticFeedback::NotificationError);
+                    return;
+                }
                 self.wallet = Some(wallet);
                 self.state.setup = SetupState::Ready;
                 self.state.router.default_screen = Screen::Home;
                 self.state.router.selected_tab = MainTab::Home;
                 self.state.router.screen_stack.clear();
-                let _ = self
-                    .secrets
-                    .set_secret(WALLET_SEED_KEY.to_string(), mnemonic);
                 self.ensure_wallet_derived_nostr_key();
                 self.ensure_lightning_address();
                 self.maintain_vtxos();
@@ -1379,16 +1388,48 @@ impl AppCore {
         });
     }
 
+    /// Save the wallet seed to the Keychain, retrying once before giving up.
+    fn save_wallet_seed(&self, mnemonic: &str) -> bool {
+        if self
+            .secrets
+            .set_secret(WALLET_SEED_KEY.to_string(), mnemonic.to_string())
+        {
+            return true;
+        }
+        self.secrets
+            .set_secret(WALLET_SEED_KEY.to_string(), mnemonic.to_string())
+    }
+
+    /// Save the Nostr secret to the Keychain, retrying once. On failure a
+    /// warning toast is shown instead of silently proceeding.
+    fn persist_nostr_secret(&mut self, nsec: &str) -> bool {
+        let saved = self
+            .secrets
+            .set_secret(NOSTR_SECRET_KEY.to_string(), nsec.to_string())
+            || self
+                .secrets
+                .set_secret(NOSTR_SECRET_KEY.to_string(), nsec.to_string());
+        if !saved {
+            self.state.toast = Some(
+                "Could not save the Nostr key to the Keychain. It will not survive an app restart."
+                    .to_string(),
+            );
+            self.request_haptic(HapticFeedback::NotificationWarning);
+        }
+        saved
+    }
+
     fn generate_nostr_key(&mut self) {
         let keys = Keys::generate();
         match (keys.secret_key().to_bech32(), keys.public_key().to_bech32()) {
             (Ok(nsec), Ok(npub)) => {
-                let _ = self.secrets.set_secret(NOSTR_SECRET_KEY.to_string(), nsec);
-                self.reset_nostr_identity(npub);
-                self.state.toast = Some("Nostr key generated in Keychain.".to_string());
-                self.request_haptic(HapticFeedback::NotificationSuccess);
-                self.save_app_data();
-                self.sync_primal_follow_contacts(false);
+                if self.persist_nostr_secret(&nsec) {
+                    self.reset_nostr_identity(npub);
+                    self.state.toast = Some("Nostr key generated in Keychain.".to_string());
+                    self.request_haptic(HapticFeedback::NotificationSuccess);
+                    self.save_app_data();
+                    self.sync_primal_follow_contacts(false);
+                }
             }
             _ => {
                 self.state.toast = Some("Could not encode generated Nostr key.".to_string());
@@ -1407,14 +1448,15 @@ impl AppCore {
         match Keys::parse(&value) {
             Ok(keys) => match (keys.secret_key().to_bech32(), keys.public_key().to_bech32()) {
                 (Ok(nsec), Ok(npub)) => {
-                    let _ = self.secrets.set_secret(NOSTR_SECRET_KEY.to_string(), nsec);
-                    self.reset_nostr_identity(npub);
-                    self.state.toast =
-                        Some("Nostr key imported. Refreshing profile...".to_string());
-                    self.request_haptic(HapticFeedback::NotificationSuccess);
-                    self.save_app_data();
-                    self.refresh_nostr_profile();
-                    self.sync_primal_follow_contacts(false);
+                    if self.persist_nostr_secret(&nsec) {
+                        self.reset_nostr_identity(npub);
+                        self.state.toast =
+                            Some("Nostr key imported. Refreshing profile...".to_string());
+                        self.request_haptic(HapticFeedback::NotificationSuccess);
+                        self.save_app_data();
+                        self.refresh_nostr_profile();
+                        self.sync_primal_follow_contacts(false);
+                    }
                 }
                 _ => {
                     self.state.toast = Some("Could not encode imported Nostr key.".to_string());
@@ -1510,7 +1552,9 @@ impl AppCore {
 
         match (keys.secret_key().to_bech32(), keys.public_key().to_bech32()) {
             (Ok(nsec), Ok(npub)) => {
-                let _ = self.secrets.set_secret(NOSTR_SECRET_KEY.to_string(), nsec);
+                // The key is re-derivable from the wallet seed, so a failed
+                // Keychain write is not fatal here; warn and continue.
+                self.persist_nostr_secret(&nsec);
                 self.reset_nostr_identity(npub);
                 self.save_app_data();
                 self.refresh_nostr_profile();
@@ -2904,6 +2948,64 @@ mod tests {
             Runtime::new().expect("tokio runtime"),
         );
         (data_dir, cache_dir, core)
+    }
+
+    struct FailingSecretStore {
+        set_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SecretStore for FailingSecretStore {
+        fn get_secret(&self, _key: String) -> Option<String> {
+            None
+        }
+
+        fn set_secret(&self, _key: String, _value: String) -> bool {
+            self.set_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            false
+        }
+
+        fn delete_secret(&self, _key: String) -> bool {
+            false
+        }
+    }
+
+    fn failing_secret_core() -> (Arc<FailingSecretStore>, AppCore) {
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let cache_dir = tempfile::tempdir().expect("temp cache dir");
+        let (tx, _rx) = flume::unbounded();
+        let store = Arc::new(FailingSecretStore {
+            set_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let core = AppCore::new(
+            data_dir.path().to_path_buf(),
+            cache_dir.path().to_path_buf(),
+            store.clone(),
+            tx,
+            Runtime::new().expect("tokio runtime"),
+        );
+        (store, core)
+    }
+
+    #[test]
+    fn save_wallet_seed_retries_once_then_gives_up() {
+        let (store, core) = failing_secret_core();
+
+        assert!(!core.save_wallet_seed("abandon abandon abandon"));
+        assert_eq!(store.set_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn persist_nostr_secret_warns_when_keychain_write_fails() {
+        let (store, mut core) = failing_secret_core();
+
+        assert!(!core.persist_nostr_secret("nsec1example"));
+        assert_eq!(store.set_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let toast = core.state.toast.as_deref().expect("warning toast");
+        assert!(toast.contains("Keychain"));
+        assert!(core
+            .pending_haptics
+            .contains(&HapticFeedback::NotificationWarning));
     }
 
     #[test]
