@@ -269,9 +269,7 @@ pub(crate) async fn resolve_lnurl_pay_invoice(
 
     let mut callback =
         reqwest::Url::parse(&params.callback).context("LNURL callback is not a valid URL")?;
-    if callback.scheme() != "https" && callback.scheme() != "http" {
-        bail!("LNURL callback must use http or https");
-    }
+    ensure_lnurl_url_scheme(&callback, "LNURL callback")?;
     callback
         .query_pairs_mut()
         .append_pair("amount", &amount_msat.to_string());
@@ -309,7 +307,12 @@ pub(crate) fn lnurl_pay_url(destination: &str) -> anyhow::Result<reqwest::Url> {
         let (local, domain) = destination
             .split_once('@')
             .ok_or_else(|| anyhow!("invalid Lightning address"))?;
-        let base = format!("https://{domain}");
+        let scheme = if is_onion_host(domain) {
+            "http"
+        } else {
+            "https"
+        };
+        let base = format!("{scheme}://{domain}");
         let mut url = reqwest::Url::parse(&base).context("invalid Lightning address domain")?;
         url.path_segments_mut()
             .map_err(|_| anyhow!("invalid Lightning address domain"))?
@@ -325,13 +328,25 @@ pub(crate) fn lnurl_pay_url(destination: &str) -> anyhow::Result<reqwest::Url> {
         }
         let url = String::from_utf8(bytes).context("LNURL does not contain a valid URL")?;
         let url = reqwest::Url::parse(&url).context("LNURL does not contain a valid URL")?;
-        if url.scheme() != "https" && url.scheme() != "http" {
-            bail!("LNURL must use http or https");
-        }
+        ensure_lnurl_url_scheme(&url, "LNURL")?;
         return Ok(url);
     }
 
     bail!("not a Lightning address or LNURL")
+}
+
+fn is_onion_host(host: &str) -> bool {
+    host.to_ascii_lowercase().ends_with(".onion")
+}
+
+/// LNURL requests must use HTTPS. Plain HTTP is only allowed for `.onion`
+/// hosts, where the transport is already protected by Tor.
+fn ensure_lnurl_url_scheme(url: &reqwest::Url, context: &str) -> anyhow::Result<()> {
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if url.host_str().is_some_and(is_onion_host) => Ok(()),
+        _ => bail!("{context} must use https (http is only allowed for .onion hosts)"),
+    }
 }
 
 pub(crate) fn strip_lightning_prefix(destination: &str) -> &str {
@@ -357,6 +372,10 @@ pub(crate) fn is_valid_lightning_address(address: &str) -> bool {
     }
     let domain = domain.to_ascii_lowercase();
     if !domain.contains('.') || domain.starts_with('.') || domain.ends_with('.') {
+        return false;
+    }
+    // Reject IP literals: Lightning addresses must use public DNS hostnames.
+    if domain.parse::<std::net::IpAddr>().is_ok() {
         return false;
     }
     domain.split('.').all(|label| {
@@ -546,7 +565,10 @@ mod tests {
     use bark::movement::PaymentMethod as BarkPaymentMethod;
     use bark::payment_request::{AvailablePaymentMethod, PaymentMethodParsingError};
 
-    use super::{decimal_btc_to_sat, embedded_send_amount_sat, preferred_send_option};
+    use super::{
+        decimal_btc_to_sat, embedded_send_amount_sat, is_valid_lightning_address, lnurl_pay_url,
+        preferred_send_option,
+    };
 
     const ARK_ADDRESS: &str = "tark1pwh9vsmezqqpharv69q4z8m6x364d5m5prnmcalcalq9pdmzw0y7mpveck4pcfhezqypczkrrj3lkx5ue4qrf4jc7ztpt9htdttmh2judhqnu7aue8p0y9mq47jn9z";
     const BITCOIN_ADDRESS: &str = "bc1qrrz8r05xuyjh667a2nfgvh96d5x47aug0prxwm";
@@ -635,5 +657,47 @@ mod tests {
         assert_eq!(decimal_btc_to_sat("0.000000001"), None);
         assert_eq!(decimal_btc_to_sat("-1"), None);
         assert_eq!(decimal_btc_to_sat("1.2.3"), None);
+    }
+
+    fn lnurl_for_url(url: &str) -> String {
+        let hrp = bech32::Hrp::parse("lnurl").unwrap();
+        bech32::encode::<bech32::Bech32>(hrp, url.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn rejects_plain_http_lnurl() {
+        let lnurl = lnurl_for_url("http://example.com/lnurl");
+        let err = lnurl_pay_url(&lnurl).unwrap_err();
+        assert!(err.to_string().contains("must use https"));
+    }
+
+    #[test]
+    fn allows_http_lnurl_for_onion_host() {
+        let lnurl = lnurl_for_url("http://example.onion/lnurl");
+        let url = lnurl_pay_url(&lnurl).unwrap();
+        assert_eq!(url.scheme(), "http");
+    }
+
+    #[test]
+    fn uses_https_for_lightning_address_well_known_url() {
+        let url = lnurl_pay_url("user@example.com").unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.as_str(), "https://example.com/.well-known/lnurlp/user");
+    }
+
+    #[test]
+    fn uses_http_for_onion_lightning_address_well_known_url() {
+        let url = lnurl_pay_url("user@example.onion").unwrap();
+        assert_eq!(url.scheme(), "http");
+        assert_eq!(url.as_str(), "http://example.onion/.well-known/lnurlp/user");
+    }
+
+    #[test]
+    fn rejects_ip_literal_lightning_address_hosts() {
+        assert!(!is_valid_lightning_address("user@192.168.1.1"));
+        assert!(!is_valid_lightning_address("user@169.254.169.254"));
+        assert!(!is_valid_lightning_address("user@[::1]"));
+        assert!(is_valid_lightning_address("user@example.com"));
+        assert!(is_valid_lightning_address("user@example.onion"));
     }
 }
