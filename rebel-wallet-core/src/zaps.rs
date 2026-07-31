@@ -207,12 +207,17 @@ pub(crate) fn zap_receipt_from_event(
     if event.kind != Kind::ZapReceipt {
         return None;
     }
+    if event.verify().is_err() {
+        return None;
+    }
     let own_hex = own_pubkey.to_hex();
     let tags = tag_map(event);
-    let description = tags.get("description").cloned();
-    let zap_request = description
-        .as_deref()
-        .and_then(|description| Event::from_json(description).ok());
+    let description = tags.get("description").cloned()?;
+    let zap_request = Event::from_json(&description).ok()?;
+    if zap_request.kind != Kind::ZapRequest || zap_request.verify().is_err() {
+        return None;
+    }
+    let zap_request = Some(zap_request);
     let request_tags = zap_request.as_ref().map(tag_map).unwrap_or_default();
     let tag_p = tag_values(event, "p");
     let tag_upper_p = tag_values(event, "P");
@@ -315,11 +320,19 @@ mod tests {
     fn parses_received_receipt_using_lowercase_p_as_recipient_and_uppercase_p_as_sender() {
         let own = Keys::generate();
         let sender = Keys::generate();
+        let request = EventBuilder::new(Kind::ZapRequest, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "21000"]).unwrap(),
+            ])
+            .finalize(&sender)
+            .unwrap();
         let receipt = EventBuilder::new(Kind::ZapReceipt, "")
             .tags([
                 Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
                 Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
                 Tag::parse(["amount", "21000"]).unwrap(),
+                Tag::parse(["description", &request.as_json()]).unwrap(),
             ])
             .finalize(&Keys::generate())
             .unwrap();
@@ -329,6 +342,120 @@ mod tests {
         assert_eq!(parsed.recipient_pubkey, own.public_key().to_hex());
         assert_eq!(parsed.sender_pubkey, sender.public_key().to_hex());
         assert_eq!(parsed.amount_msat, Some(21_000));
+    }
+
+    #[test]
+    fn ignores_receipt_with_missing_description() {
+        let own = Keys::generate();
+        let sender = Keys::generate();
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "21000"]).unwrap(),
+            ])
+            .finalize(&Keys::generate())
+            .unwrap();
+
+        assert!(zap_receipt_from_event(&receipt, &own.public_key()).is_none());
+    }
+
+    #[test]
+    fn ignores_receipt_with_tampered_zap_request_content() {
+        let own = Keys::generate();
+        let sender = Keys::generate();
+        let request = EventBuilder::new(Kind::ZapRequest, "thanks")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "21000"]).unwrap(),
+            ])
+            .finalize(&sender)
+            .unwrap();
+        let mut request_json: serde_json::Value = serde_json::from_str(&request.as_json()).unwrap();
+        request_json["content"] = serde_json::Value::from("send refund to attacker");
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
+                Tag::parse(["description", &request_json.to_string()]).unwrap(),
+            ])
+            .finalize(&Keys::generate())
+            .unwrap();
+
+        assert!(zap_receipt_from_event(&receipt, &own.public_key()).is_none());
+    }
+
+    #[test]
+    fn ignores_receipt_when_zap_request_pubkey_does_not_match_signature() {
+        let own = Keys::generate();
+        let sender = Keys::generate();
+        let impersonated = Keys::generate();
+        let request = EventBuilder::new(Kind::ZapRequest, "thanks")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "21000"]).unwrap(),
+            ])
+            .finalize(&sender)
+            .unwrap();
+        let mut request_json: serde_json::Value = serde_json::from_str(&request.as_json()).unwrap();
+        request_json["pubkey"] = serde_json::Value::from(impersonated.public_key().to_hex());
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["P", &impersonated.public_key().to_hex()]).unwrap(),
+                Tag::parse(["description", &request_json.to_string()]).unwrap(),
+            ])
+            .finalize(&Keys::generate())
+            .unwrap();
+
+        assert!(zap_receipt_from_event(&receipt, &own.public_key()).is_none());
+    }
+
+    #[test]
+    fn ignores_receipt_when_embedded_event_is_not_a_zap_request() {
+        let own = Keys::generate();
+        let sender = Keys::generate();
+        let not_a_request = EventBuilder::new(Kind::TextNote, "thanks")
+            .tags([Tag::parse(["p", &own.public_key().to_hex()]).unwrap()])
+            .finalize(&sender)
+            .unwrap();
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
+                Tag::parse(["description", &not_a_request.as_json()]).unwrap(),
+            ])
+            .finalize(&Keys::generate())
+            .unwrap();
+
+        assert!(zap_receipt_from_event(&receipt, &own.public_key()).is_none());
+    }
+
+    #[test]
+    fn ignores_receipt_with_tampered_outer_event() {
+        let own = Keys::generate();
+        let sender = Keys::generate();
+        let request = EventBuilder::new(Kind::ZapRequest, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "21000"]).unwrap(),
+            ])
+            .finalize(&sender)
+            .unwrap();
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags([
+                Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                Tag::parse(["P", &sender.public_key().to_hex()]).unwrap(),
+                Tag::parse(["amount", "21000"]).unwrap(),
+                Tag::parse(["description", &request.as_json()]).unwrap(),
+            ])
+            .finalize(&Keys::generate())
+            .unwrap();
+        let mut receipt_json: serde_json::Value = serde_json::from_str(&receipt.as_json()).unwrap();
+        receipt_json["content"] = serde_json::Value::from("tampered");
+        let tampered = Event::from_json(receipt_json.to_string()).unwrap();
+
+        assert!(zap_receipt_from_event(&tampered, &own.public_key()).is_none());
     }
 
     #[test]
