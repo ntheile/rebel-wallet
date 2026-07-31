@@ -2205,6 +2205,7 @@ public enum AppAction: Equatable, Hashable {
     case sendDirectMessage(contactId: String, message: String
     )
     case clearToast
+    case clearRecoveryPhrase
     case requestHaptic(feedback: HapticFeedback
     )
 
@@ -2401,7 +2402,9 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case 70: return .clearToast
         
-        case 71: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
+        case 71: return .clearRecoveryPhrase
+        
+        case 72: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2741,8 +2744,12 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(70))
         
         
-        case let .requestHaptic(feedback):
+        case .clearRecoveryPhrase:
             writeInt(&buf, Int32(71))
+        
+        
+        case let .requestHaptic(feedback):
+            writeInt(&buf, Int32(72))
             FfiConverterTypeHapticFeedback.write(feedback, into: &buf)
             
         }

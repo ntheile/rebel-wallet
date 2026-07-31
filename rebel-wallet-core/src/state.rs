@@ -7,7 +7,7 @@ mod send;
 
 pub(crate) use send::sort_contacts_by_name_npub;
 
-#[derive(uniffi::Record, Clone, Debug)]
+#[derive(uniffi::Record, Clone)]
 pub struct AppState {
     pub rev: u64,
     pub show_launch_splash: bool,
@@ -420,6 +420,36 @@ pub struct ActivityItem {
 pub enum ActivityIconKind {
     Sent,
     Received,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("rev", &self.rev)
+            .field("show_launch_splash", &self.show_launch_splash)
+            .field("router", &self.router)
+            .field("setup", &self.setup)
+            .field("wallet", &self.wallet)
+            .field("supported_networks", &self.supported_networks)
+            .field(
+                "supported_price_currencies",
+                &self.supported_price_currencies,
+            )
+            .field("receive", &self.receive)
+            .field("send", &self.send)
+            .field("lightning_address", &self.lightning_address)
+            .field("nostr", &self.nostr)
+            .field("direct_messages", &self.direct_messages)
+            .field("activity", &self.activity)
+            .field(
+                "recovery_phrase",
+                &self.recovery_phrase.as_ref().map(|_| "<redacted>"),
+            )
+            .field("toast", &self.toast)
+            .field("busy", &self.busy)
+            .field("capability_request", &self.capability_request)
+            .finish()
+    }
 }
 
 impl AppState {
@@ -992,6 +1022,17 @@ mod tests {
         assert_eq!(state.receive.receive_request, None);
         assert_eq!(state.receive.amount_sat, 0);
         assert_eq!(state.receive.memo, "");
+    }
+
+    #[test]
+    fn debug_redacts_recovery_phrase() {
+        let mut state = AppState::initial();
+        assert!(format!("{state:?}").contains("recovery_phrase: None"));
+
+        state.recovery_phrase = Some("abandon abandon abandon".to_string());
+        let debug = format!("{state:?}");
+        assert!(!debug.contains("abandon"));
+        assert!(debug.contains("recovery_phrase: Some(\"<redacted>\")"));
     }
 
     #[test]

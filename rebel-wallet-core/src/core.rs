@@ -590,6 +590,7 @@ impl AppCore {
                 message,
             } => self.send_direct_message(contact_id, message),
             AppAction::ClearToast => self.state.toast = None,
+            AppAction::ClearRecoveryPhrase => self.state.recovery_phrase = None,
             AppAction::RequestHaptic { feedback } => self.request_haptic(feedback),
         }
     }
@@ -3006,6 +3007,16 @@ mod tests {
         assert!(core
             .pending_haptics
             .contains(&HapticFeedback::NotificationWarning));
+    }
+
+    #[test]
+    fn clear_recovery_phrase_removes_seed_from_state() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.recovery_phrase = Some("abandon abandon abandon".to_string());
+
+        core.handle(CoreMsg::Action(AppAction::ClearRecoveryPhrase));
+
+        assert_eq!(core.state.recovery_phrase, None);
     }
 
     #[test]

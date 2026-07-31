@@ -68,6 +68,9 @@ struct BackupView: View {
                 manager.dispatch(.showSeed)
             }
         }
+        .onDisappear {
+            manager.dispatch(.clearRecoveryPhrase)
+        }
     }
 }
 
