@@ -159,4 +159,6 @@ pub enum AppAction {
     RequestHaptic {
         feedback: HapticFeedback,
     },
+    Foregrounded,
+    Backgrounded,
 }

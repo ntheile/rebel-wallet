@@ -9,8 +9,6 @@ use bip39::Mnemonic;
 
 use crate::persistence::ServerConfig;
 
-const VTXO_REFRESH_EXPIRY_THRESHOLD_BLOCKS: u32 = 144;
-
 /// Client identifier sent to the Ark server on every RPC (`x-user-agent`).
 /// Format is `<name>/<version>`; the name must be lowercase ASCII.
 const USER_AGENT: &str = concat!("rebel-wallet/", env!("CARGO_PKG_VERSION"));
@@ -116,14 +114,7 @@ pub(crate) async fn open_bark_wallet(
         remove_wallet_database_files(&db_path)?;
     }
     let db: Arc<dyn BarkPersister> = Arc::new(SqliteClient::open(&db_path)?);
-    let config = Config {
-        server_address: server_config.server_address,
-        server_access_token: server_config.server_access_token,
-        esplora_address: Some(server_config.esplora_address),
-        vtxo_refresh_expiry_threshold: VTXO_REFRESH_EXPIRY_THRESHOLD_BLOCKS,
-        user_agent: Some(USER_AGENT.to_string()),
-        ..Config::network_default(network)
-    };
+    let config = bark_config(server_config);
     let lock_manager = Box::new(MemoryLockManager::new());
     let seed = WalletSeed::new_from_mnemonic(network, mnemonic);
 
@@ -166,6 +157,17 @@ pub(crate) async fn open_bark_wallet(
     })
 }
 
+fn bark_config(server_config: ServerConfig) -> Config {
+    let network = server_config.network.bitcoin_network();
+    Config {
+        server_address: server_config.server_address,
+        server_access_token: server_config.server_access_token,
+        esplora_address: Some(server_config.esplora_address),
+        user_agent: Some(USER_AGENT.to_string()),
+        ..Config::network_default(network)
+    }
+}
+
 pub(crate) fn remove_wallet_database_files(db_path: &Path) -> anyhow::Result<()> {
     for suffix in ["", "-wal", "-shm"] {
         let path = PathBuf::from(format!("{}{}", db_path.display(), suffix));
@@ -182,7 +184,18 @@ pub(crate) fn remove_wallet_database_files(db_path: &Path) -> anyhow::Result<()>
 
 #[cfg(test)]
 mod tests {
-    use super::{failed_recovery_notice, WalletRecoverySummary};
+    use super::{bark_config, failed_recovery_notice, WalletRecoverySummary};
+    use crate::persistence::ServerConfig;
+    use crate::WalletNetwork;
+
+    #[test]
+    fn refresh_threshold_uses_bark_network_defaults() {
+        let mainnet = bark_config(ServerConfig::for_network(WalletNetwork::Mainnet));
+        let signet = bark_config(ServerConfig::for_network(WalletNetwork::Signet));
+
+        assert_eq!(mainnet.vtxo_refresh_expiry_threshold, 144);
+        assert_eq!(signet.vtxo_refresh_expiry_threshold, 12);
+    }
 
     #[test]
     fn complete_recovery_notice_summarizes_recovered_and_accounted_vtxos() {

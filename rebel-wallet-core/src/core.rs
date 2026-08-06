@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use bark::actions::lightning::receive::{LightningReceiveState, Progress as ReceiveProgress};
@@ -46,7 +46,7 @@ use crate::profile_cache::{
     save_own_profile_picture_remote_url, update_cached_picture,
 };
 use crate::time::{now_label, now_unix};
-use crate::updates::{AppUpdate, AsyncMsg, CoreMsg, HapticFeedback};
+use crate::updates::{AppUpdate, AsyncMsg, CoreMsg, HapticFeedback, WalletSnapshot};
 use crate::wallet::WalletOpenMode;
 use crate::{
     AppAction, AppState, BusyState, CapabilityRequest, CapabilityRequestKind, Contact,
@@ -58,6 +58,12 @@ mod custom_address_flow;
 mod profile_prefetch;
 mod send_flow;
 mod wallet_lifecycle;
+mod wallet_work;
+
+use wallet_work::{
+    refresh_poll_delay, WalletWorkCoordinator, WalletWorkKind, WalletWorkRequest, WalletWorkToken,
+    FOREGROUND_MAINTENANCE_INTERVAL, MAX_REFRESH_POLL_ATTEMPTS, WALLET_WORK_TIMEOUT,
+};
 
 const WALLET_SEED_KEY: &str = "wallet_seed";
 const NOSTR_SECRET_KEY: &str = "nostr_secret";
@@ -93,9 +99,34 @@ async fn wallet_synced_msg(
     lightning_address: &crate::LightningAddressState,
     payment_annotations: &[PaymentAnnotation],
     zap_receipts: &[ZapReceiptRecord],
-    maintenance_checked: bool,
-) -> anyhow::Result<AsyncMsg> {
+) -> anyhow::Result<WalletSnapshot> {
     let balance = wallet.balance().await.context("balance failed")?;
+    // Bark's aggregate claimable balance includes both HTLCs that can still be
+    // claimed off-chain and HTLCs whose preimage was already revealed. Split
+    // those states so the latter aren't presented as claimable in the UI.
+    let receive_balances = async {
+        let pending = wallet.pending_lightning_receives().await?;
+        let mut claimable = 0u64;
+        let mut stuck = 0u64;
+        for receive in pending {
+            let (htlc_ids, amount) = match &receive.progress {
+                ReceiveProgress::HtlcsReady(htlcs) => (&htlcs.vtxo_ids, &mut claimable),
+                ReceiveProgress::PreimageRevealed(htlcs) => (&htlcs.vtxo_ids, &mut stuck),
+                ReceiveProgress::AwaitingPayment | ReceiveProgress::Delivering(_) => continue,
+            };
+            let mut receive_amount = 0u64;
+            for id in htlc_ids {
+                receive_amount += wallet.get_vtxo_by_id(*id).await?.vtxo.amount().to_sat();
+            }
+            *amount += receive_amount;
+        }
+        Ok::<_, anyhow::Error>((claimable, stuck))
+    }
+    .await;
+    let (pending_receive_sat, stuck_receive_sat) = match receive_balances {
+        Ok(balances) => balances,
+        Err(_) => (balance.claimable_lightning_receive.to_sat(), 0),
+    };
     let history = wallet.history().await.context("history failed")?;
     let mut activity = Vec::new();
     for movement in visible_activity_movements(history) {
@@ -116,12 +147,12 @@ async fn wallet_synced_msg(
     }
     let mut activity = coalesce_activity_items(activity);
     apply_activity_metadata(&mut activity, contacts, payment_annotations, zap_receipts);
-    Ok(AsyncMsg::WalletSynced {
+    Ok(WalletSnapshot {
         balance_sat: balance.spendable.to_sat(),
-        pending_receive_sat: balance.claimable_lightning_receive.to_sat(),
+        pending_receive_sat,
+        stuck_receive_sat,
         pending_send_sat: balance.pending_lightning_send.to_sat(),
         pending_refresh_sat: balance.pending_in_round.to_sat(),
-        maintenance_checked,
         activity,
     })
 }
@@ -238,6 +269,14 @@ struct AppCore {
     tx: Sender<CoreMsg>,
     rt: Runtime,
     wallet: Option<Wallet>,
+    wallet_generation: u64,
+    wallet_work: WalletWorkCoordinator,
+    wallet_foregrounded: bool,
+    last_maintenance_completed_at: Option<Instant>,
+    wallet_retry_kind: Option<WalletWorkKind>,
+    refresh_poll_nonce: u64,
+    refresh_poll_scheduled: bool,
+    refresh_poll_attempt: u8,
     profile_db: Option<rusqlite::Connection>,
     profile_picture_downloads: HashSet<String>,
     profile_picture_download_semaphore: Arc<tokio::sync::Semaphore>,
@@ -269,6 +308,14 @@ impl AppCore {
             tx,
             rt,
             wallet: None,
+            wallet_generation: 0,
+            wallet_work: WalletWorkCoordinator::default(),
+            wallet_foregrounded: false,
+            last_maintenance_completed_at: None,
+            wallet_retry_kind: None,
+            refresh_poll_nonce: 0,
+            refresh_poll_scheduled: false,
+            refresh_poll_attempt: 0,
             profile_picture_downloads: HashSet::new(),
             profile_picture_download_semaphore: new_profile_picture_download_semaphore(),
             profile_info_requests: HashSet::new(),
@@ -314,6 +361,7 @@ impl AppCore {
                 self.state.activity.clear();
                 self.state.wallet.balance_sat = 0;
                 self.state.wallet.pending_receive_sat = 0;
+                self.state.wallet.stuck_receive_sat = 0;
                 self.state.wallet.pending_send_sat = 0;
                 self.state.wallet.pending_refresh_sat = 0;
                 self.open_wallet(
@@ -332,8 +380,12 @@ impl AppCore {
                     self.request_haptic(HapticFeedback::NotificationWarning);
                 }
             }
-            AppAction::SyncWallet => self.sync_wallet(),
-            AppAction::MaintainVtxos => self.maintain_vtxos(),
+            AppAction::SyncWallet => self.request_wallet_work(WalletWorkRequest::user_sync()),
+            AppAction::MaintainVtxos => {
+                self.request_maintenance(WalletWorkRequest::lifecycle(WalletWorkKind::Maintain))
+            }
+            AppAction::Foregrounded => self.foregrounded(),
+            AppAction::Backgrounded => self.backgrounded(),
             AppAction::RefreshPrice => self.refresh_price(),
             AppAction::SetPriceCurrency { currency } => self.set_price_currency(currency),
             AppAction::SelectNetwork { network } => self.select_network(network),
@@ -611,12 +663,18 @@ impl AppCore {
             AppAction::ClearRevealedNostrSecret => self.state.revealed_nostr_secret = None,
             AppAction::RequestHaptic { feedback } => self.request_haptic(feedback),
         }
+        self.maybe_start_queued_wallet_work();
+        self.reconcile_refresh_poll();
     }
 
     fn handle_async(&mut self, msg: AsyncMsg) {
+        if self.is_stale_wallet_async(&msg) {
+            return;
+        }
         self.clear_busy_for_async(&msg);
         match msg {
             AsyncMsg::WalletReady {
+                generation: _,
                 wallet,
                 mnemonic,
                 recovery_notice,
@@ -640,7 +698,8 @@ impl AppCore {
                 self.state.router.screen_stack.clear();
                 self.ensure_wallet_derived_nostr_key();
                 self.ensure_lightning_address();
-                self.maintain_vtxos();
+                self.request_wallet_work(WalletWorkRequest::lifecycle(WalletWorkKind::Load));
+                self.request_maintenance(WalletWorkRequest::lifecycle(WalletWorkKind::Maintain));
                 self.claim_pending_lightning_receives();
                 if let Some(notice) = recovery_notice {
                     self.state.toast = Some(notice.message);
@@ -651,22 +710,27 @@ impl AppCore {
                     });
                 }
             }
-            AsyncMsg::WalletSynced {
-                balance_sat,
-                pending_receive_sat,
-                pending_send_sat,
-                pending_refresh_sat,
-                maintenance_checked: _,
-                activity,
+            AsyncMsg::WalletOpenFailed {
+                generation: _,
+                message,
             } => {
-                self.state.wallet.balance_sat = balance_sat;
-                self.state.wallet.pending_receive_sat = pending_receive_sat;
-                self.state.wallet.pending_send_sat = pending_send_sat;
-                self.state.wallet.pending_refresh_sat = pending_refresh_sat;
-                self.state.wallet.last_sync = Some(now_label());
-                self.state.activity = activity;
-                self.prefetch_activity_profile_pictures();
-                self.scan_zap_receipts();
+                self.state.busy.bootstrapping = false;
+                self.state.busy.opening_wallet = false;
+                if matches!(self.state.setup, SetupState::NeedsSetup) {
+                    self.state.setup = SetupState::Error {
+                        message: message.clone(),
+                    };
+                }
+                self.state.toast = Some(message);
+                self.request_haptic(HapticFeedback::NotificationError);
+            }
+            AsyncMsg::WalletWorkFinished {
+                generation,
+                operation_id,
+                result,
+            } => self.finish_wallet_work(generation, operation_id, result),
+            AsyncMsg::WalletRefreshPollDue { generation, nonce } => {
+                self.handle_refresh_poll_due(generation, nonce)
             }
             AsyncMsg::ArkAddress(address) => {
                 self.state.receive.ark_address = Some(address);
@@ -857,7 +921,7 @@ impl AppCore {
                 self.zap_receipts = receipts;
                 self.save_app_data();
                 self.prefetch_profile_pictures(contact_ids);
-                self.sync_wallet();
+                self.refresh_activity_metadata();
             }
             AsyncMsg::Seed(seed) => {
                 self.state.recovery_phrase = Some((*seed).clone());
@@ -891,7 +955,7 @@ impl AppCore {
                 self.state.toast = Some("Nostr contacts refreshed from Primal.".to_string());
                 self.save_app_data();
                 self.prefetch_profile_pictures(contact_ids);
-                self.sync_wallet();
+                self.refresh_activity_metadata();
             }
             AsyncMsg::PrimalContactsLoaded {
                 records,
@@ -909,7 +973,7 @@ impl AppCore {
                 }
                 self.save_app_data();
                 self.prefetch_profile_pictures(contact_ids);
-                self.sync_wallet();
+                self.refresh_activity_metadata();
             }
             AsyncMsg::NostrSearchLoaded { query, contacts } => {
                 if self.state.send.search_query.trim() == query {
@@ -1026,6 +1090,8 @@ impl AppCore {
                 self.request_haptic(HapticFeedback::NotificationError);
             }
         }
+        self.maybe_start_queued_wallet_work();
+        self.reconcile_refresh_poll();
     }
 
     fn clear_busy_for_async(&mut self, msg: &AsyncMsg) {
@@ -1034,17 +1100,9 @@ impl AppCore {
                 self.state.busy.bootstrapping = false;
                 self.state.busy.opening_wallet = false;
             }
-            AsyncMsg::WalletSynced {
-                maintenance_checked,
-                ..
-            } => {
-                if *maintenance_checked {
-                    self.state.busy.syncing_wallet = false;
-                    self.state.busy.maintaining_vtxos = false;
-                } else if !self.state.busy.maintaining_vtxos {
-                    self.state.busy.syncing_wallet = false;
-                }
-            }
+            AsyncMsg::WalletOpenFailed { .. }
+            | AsyncMsg::WalletWorkFinished { .. }
+            | AsyncMsg::WalletRefreshPollDue { .. } => {}
             AsyncMsg::ArkAddress(_)
             | AsyncMsg::ReceiveRequest { .. }
             | AsyncMsg::LightningInvoice { .. } => {
@@ -1063,7 +1121,17 @@ impl AppCore {
             AsyncMsg::NostrProfileLoaded { .. }
             | AsyncMsg::NostrContactsLoaded(_)
             | AsyncMsg::PrimalContactsLoaded { .. } => self.state.busy.refreshing_contacts = false,
-            AsyncMsg::Error(_) => self.state.busy = BusyState::default(),
+            AsyncMsg::Error(_) => {
+                let bootstrapping = self.state.busy.bootstrapping;
+                let opening_wallet = self.state.busy.opening_wallet;
+                let syncing_wallet = self.state.busy.syncing_wallet;
+                let maintaining_vtxos = self.state.busy.maintaining_vtxos;
+                self.state.busy = BusyState::default();
+                self.state.busy.bootstrapping = bootstrapping;
+                self.state.busy.opening_wallet = opening_wallet;
+                self.state.busy.syncing_wallet = syncing_wallet;
+                self.state.busy.maintaining_vtxos = maintaining_vtxos;
+            }
             AsyncMsg::ArkReceiveConfirmed { .. }
             | AsyncMsg::LightningReceiveStatus { .. }
             | AsyncMsg::LightningReceiveClaimed { .. }
@@ -1121,78 +1189,350 @@ impl AppCore {
     }
 
     fn sync_wallet(&mut self) {
+        self.request_wallet_work(WalletWorkRequest::data_changed(WalletWorkKind::Sync));
+    }
+
+    fn maintain_vtxos(&mut self) {
+        self.request_maintenance(WalletWorkRequest::data_changed(WalletWorkKind::Maintain));
+    }
+
+    fn foregrounded(&mut self) {
+        self.wallet_foregrounded = true;
+        self.cancel_refresh_poll(true);
+        let maintenance_due = self
+            .last_maintenance_completed_at
+            .is_none_or(|last| last.elapsed() >= FOREGROUND_MAINTENANCE_INTERVAL);
+        if maintenance_due {
+            self.request_maintenance(WalletWorkRequest::lifecycle(WalletWorkKind::Maintain));
+        } else {
+            self.request_wallet_work(WalletWorkRequest::lifecycle(WalletWorkKind::Sync));
+        }
+    }
+
+    fn backgrounded(&mut self) {
+        self.wallet_foregrounded = false;
+        self.cancel_refresh_poll(true);
+    }
+
+    fn request_maintenance(&mut self, request: WalletWorkRequest) {
+        if !request.ensure_after_current
+            && self
+                .wallet_work
+                .in_flight()
+                .is_some_and(|token| token.kind >= request.kind)
+        {
+            let _ = self.wallet_work.request(self.wallet_generation, request);
+            self.refresh_wallet_busy_state();
+            return;
+        }
+
+        if self.state.busy.sending_payment {
+            self.wallet_work.defer(request);
+            self.refresh_wallet_busy_state();
+            return;
+        }
+
+        if self.send_screen_blocks_maintenance() {
+            self.wallet_work.defer(request);
+            self.refresh_wallet_busy_state();
+            return;
+        }
+
+        self.request_wallet_work(request);
+    }
+
+    fn request_wallet_work(&mut self, request: WalletWorkRequest) {
+        if self.wallet.is_none() {
+            return;
+        }
+        if self.state.busy.sending_payment {
+            self.wallet_work.defer(request);
+            self.refresh_wallet_busy_state();
+            return;
+        }
+        if self.send_screen_blocks_maintenance()
+            && (request.kind == WalletWorkKind::Maintain
+                || self
+                    .wallet_work
+                    .queued()
+                    .is_some_and(|queued| queued.kind == WalletWorkKind::Maintain))
+        {
+            self.wallet_work.defer(request);
+            self.refresh_wallet_busy_state();
+            return;
+        }
+
+        self.cancel_refresh_poll(false);
+        let token = self.wallet_work.request(self.wallet_generation, request);
+        self.refresh_wallet_busy_state();
+        if let Some(token) = token {
+            self.spawn_wallet_work(token);
+        }
+    }
+
+    fn maybe_start_queued_wallet_work(&mut self) {
+        if self.wallet.is_none() || self.state.busy.sending_payment {
+            return;
+        }
+        if self.wallet_work.queued().is_some_and(|request| {
+            request.kind == WalletWorkKind::Maintain && self.send_screen_blocks_maintenance()
+        }) {
+            return;
+        }
+
+        let token = self.wallet_work.start_queued(self.wallet_generation);
+        self.refresh_wallet_busy_state();
+        if let Some(token) = token {
+            self.cancel_refresh_poll(false);
+            self.spawn_wallet_work(token);
+        }
+    }
+
+    fn spawn_wallet_work(&self, token: WalletWorkToken) {
         let Some(wallet) = self.wallet.clone() else {
             return;
         };
-        self.state.busy.syncing_wallet = true;
         let tx = self.tx.clone();
         let contacts = self.state.nostr.contacts.clone();
         let lightning_address = self.state.lightning_address.clone();
         let payment_annotations = self.payment_annotations.clone();
         let zap_receipts = self.zap_receipts.clone();
         self.rt.spawn(async move {
-            let result = async {
-                wallet.sync().await;
+            let work = async {
+                match token.kind {
+                    WalletWorkKind::Load => {}
+                    WalletWorkKind::Sync => {
+                        wallet.sync().await;
+                        wallet
+                            .progress_pending_rounds(None)
+                            .await
+                            .context("pending round reconciliation failed")?;
+                    }
+                    WalletWorkKind::Maintain => wallet.maintenance_delegated().await?,
+                }
+
                 wallet_synced_msg(
                     &wallet,
                     &contacts,
                     &lightning_address,
                     &payment_annotations,
                     &zap_receipts,
-                    false,
                 )
                 .await
-            }
-            .await
-            .unwrap_or_else(|e| AsyncMsg::Error(format!("Sync failed: {e:#}")));
-            let _ = tx.send(CoreMsg::Async(result));
+            };
+            let result = match tokio::time::timeout(WALLET_WORK_TIMEOUT, work).await {
+                Ok(Ok(snapshot)) => Ok(snapshot),
+                Ok(Err(error)) => Err(format!("{error:#}")),
+                Err(_) => Err(format!(
+                    "Wallet {} timed out after {} seconds.",
+                    match token.kind {
+                        WalletWorkKind::Load => "load",
+                        WalletWorkKind::Sync => "sync",
+                        WalletWorkKind::Maintain => "maintenance",
+                    },
+                    WALLET_WORK_TIMEOUT.as_secs(),
+                )),
+            };
+            let _ = tx.send(CoreMsg::Async(AsyncMsg::WalletWorkFinished {
+                generation: token.generation,
+                operation_id: token.id,
+                result,
+            }));
         });
     }
 
-    fn maintain_vtxos(&mut self) {
-        let Some(wallet) = self.wallet.clone() else {
+    fn finish_wallet_work(
+        &mut self,
+        generation: u64,
+        operation_id: u64,
+        result: Result<WalletSnapshot, String>,
+    ) {
+        let Some(token) = self.wallet_work.finish(generation, operation_id) else {
             return;
         };
-        if self.state.busy.maintaining_vtxos || self.state.busy.sending_payment {
-            return;
+        self.refresh_wallet_busy_state();
+
+        match result {
+            Ok(snapshot) => {
+                if token.kind == WalletWorkKind::Maintain {
+                    self.last_maintenance_completed_at = Some(Instant::now());
+                }
+                if self
+                    .wallet_retry_kind
+                    .is_some_and(|retry_kind| token.kind >= retry_kind)
+                {
+                    self.wallet_retry_kind = None;
+                }
+                if self.wallet_retry_kind.is_none() {
+                    self.state.wallet.sync_error = None;
+                }
+                self.apply_wallet_snapshot(snapshot);
+            }
+            Err(message) => {
+                self.wallet_retry_kind = Some(
+                    self.wallet_retry_kind
+                        .map_or(token.kind, |kind| kind.max(token.kind)),
+                );
+                self.state.wallet.sync_error = Some(match token.kind {
+                    WalletWorkKind::Load => {
+                        "Wallet state failed to load. It will retry automatically.".to_string()
+                    }
+                    WalletWorkKind::Sync => {
+                        "Wallet sync failed. It will retry automatically.".to_string()
+                    }
+                    WalletWorkKind::Maintain => {
+                        "Wallet maintenance failed. It will retry automatically.".to_string()
+                    }
+                });
+                if token.report_errors {
+                    self.state.toast = Some(match token.kind {
+                        WalletWorkKind::Load => format!("Wallet load failed: {message}"),
+                        WalletWorkKind::Sync => format!("Sync failed: {message}"),
+                        WalletWorkKind::Maintain => {
+                            format!("Wallet maintenance failed: {message}")
+                        }
+                    });
+                    self.request_haptic(HapticFeedback::NotificationError);
+                }
+            }
         }
-        if self
-            .state
+    }
+
+    fn apply_wallet_snapshot(&mut self, snapshot: WalletSnapshot) {
+        self.state.wallet.balance_sat = snapshot.balance_sat;
+        self.state.wallet.pending_receive_sat = snapshot.pending_receive_sat;
+        self.state.wallet.stuck_receive_sat = snapshot.stuck_receive_sat;
+        self.state.wallet.pending_send_sat = snapshot.pending_send_sat;
+        self.state.wallet.pending_refresh_sat = snapshot.pending_refresh_sat;
+        self.state.wallet.last_sync = Some(now_label());
+        self.state.activity = snapshot.activity;
+        self.prefetch_activity_profile_pictures();
+        self.scan_zap_receipts();
+    }
+
+    fn refresh_activity_metadata(&mut self) {
+        apply_activity_metadata(
+            &mut self.state.activity,
+            &self.state.nostr.contacts,
+            &self.payment_annotations,
+            &self.zap_receipts,
+        );
+    }
+
+    fn refresh_wallet_busy_state(&mut self) {
+        let in_flight = self.wallet_work.in_flight();
+        self.state.busy.syncing_wallet = in_flight.is_some();
+        self.state.busy.maintaining_vtxos =
+            in_flight.is_some_and(|token| token.kind == WalletWorkKind::Maintain);
+    }
+
+    fn send_screen_blocks_maintenance(&self) -> bool {
+        self.state
             .router
             .screen_stack
             .iter()
             .any(|screen| matches!(screen, Screen::Send))
             && self.state.send.phase != SendPhase::Success
+    }
+
+    pub(super) fn ensure_wallet_idle_for_payment(&mut self) -> bool {
+        if self
+            .wallet_work
+            .in_flight()
+            .is_none_or(|token| !token.report_errors)
         {
-            self.sync_wallet();
+            return true;
+        }
+        self.state.toast =
+            Some("Wallet is updating. Try the payment again in a moment.".to_string());
+        self.request_haptic(HapticFeedback::NotificationWarning);
+        false
+    }
+
+    fn is_stale_wallet_async(&self, msg: &AsyncMsg) -> bool {
+        let generation = match msg {
+            AsyncMsg::WalletReady { generation, .. }
+            | AsyncMsg::WalletOpenFailed { generation, .. }
+            | AsyncMsg::WalletWorkFinished { generation, .. }
+            | AsyncMsg::WalletRefreshPollDue { generation, .. } => Some(*generation),
+            _ => None,
+        };
+        generation.is_some_and(|generation| generation != self.wallet_generation)
+    }
+
+    fn handle_refresh_poll_due(&mut self, generation: u64, nonce: u64) {
+        if generation != self.wallet_generation
+            || nonce != self.refresh_poll_nonce
+            || !self.refresh_poll_scheduled
+        {
+            return;
+        }
+        self.refresh_poll_scheduled = false;
+        if !self.wallet_foregrounded {
             return;
         }
 
-        self.state.busy.syncing_wallet = true;
-        self.state.busy.maintaining_vtxos = true;
-        let tx = self.tx.clone();
-        let contacts = self.state.nostr.contacts.clone();
-        let lightning_address = self.state.lightning_address.clone();
-        let payment_annotations = self.payment_annotations.clone();
-        let zap_receipts = self.zap_receipts.clone();
-        self.rt.spawn(async move {
-            let result = async {
-                wallet.maintenance_delegated().await?;
+        let kind = self.wallet_retry_kind.unwrap_or(WalletWorkKind::Sync);
+        let request = WalletWorkRequest::lifecycle(kind);
+        if kind == WalletWorkKind::Maintain {
+            self.request_maintenance(request);
+        } else {
+            self.request_wallet_work(request);
+        }
+    }
 
-                wallet_synced_msg(
-                    &wallet,
-                    &contacts,
-                    &lightning_address,
-                    &payment_annotations,
-                    &zap_receipts,
-                    true,
-                )
-                .await
+    fn reconcile_refresh_poll(&mut self) {
+        let needs_poll =
+            self.state.wallet.pending_refresh_sat > 0 || self.wallet_retry_kind.is_some();
+        if !self.wallet_foregrounded || !needs_poll {
+            if !needs_poll {
+                self.cancel_refresh_poll(true);
             }
-            .await
-            .unwrap_or_else(|e| AsyncMsg::Error(format!("VTXO refresh check failed: {e:#}")));
-            let _ = tx.send(CoreMsg::Async(result));
+            return;
+        }
+        if self.wallet_work.has_work()
+            || self.refresh_poll_scheduled
+            || self.refresh_poll_attempt >= MAX_REFRESH_POLL_ATTEMPTS
+        {
+            return;
+        }
+
+        let delay = refresh_poll_delay(self.refresh_poll_attempt);
+        self.refresh_poll_attempt = self.refresh_poll_attempt.saturating_add(1);
+        self.refresh_poll_nonce = self.refresh_poll_nonce.wrapping_add(1);
+        let nonce = self.refresh_poll_nonce;
+        let generation = self.wallet_generation;
+        let tx = self.tx.clone();
+        self.refresh_poll_scheduled = true;
+        self.rt.spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(CoreMsg::Async(AsyncMsg::WalletRefreshPollDue {
+                generation,
+                nonce,
+            }));
         });
+    }
+
+    fn cancel_refresh_poll(&mut self, reset_attempts: bool) {
+        if self.refresh_poll_scheduled {
+            self.refresh_poll_nonce = self.refresh_poll_nonce.wrapping_add(1);
+            self.refresh_poll_scheduled = false;
+        }
+        if reset_attempts {
+            self.refresh_poll_attempt = 0;
+        }
+    }
+
+    pub(super) fn invalidate_wallet_session(&mut self) -> u64 {
+        self.wallet_generation = self.wallet_generation.wrapping_add(1).max(1);
+        self.wallet = None;
+        self.wallet_work.reset();
+        self.last_maintenance_completed_at = None;
+        self.wallet_retry_kind = None;
+        self.state.wallet.sync_error = None;
+        self.cancel_refresh_poll(true);
+        self.refresh_wallet_busy_state();
+        self.wallet_generation
     }
 
     fn create_ark_address(&mut self) {
@@ -2853,12 +3193,10 @@ mod tests {
         state.lightning_address.backing_ark_address = backing_ark_address;
         state.refresh_derived();
         let lightning_address = state.lightning_address;
-        let synced = wallet_synced_msg(&wallet, &[], &lightning_address, &[], &receipts, false)
+        let synced = wallet_synced_msg(&wallet, &[], &lightning_address, &[], &receipts)
             .await
             .expect("synced activity");
-        let AsyncMsg::WalletSynced { mut activity, .. } = synced else {
-            panic!("expected wallet synced");
-        };
+        let mut activity = synced.activity;
         for item in activity
             .iter_mut()
             .filter(|item| item.amount_sat > 0 && item.payment_amount_sat.unsigned_abs() == 1_000)

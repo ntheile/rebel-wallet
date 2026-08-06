@@ -231,12 +231,16 @@ pub struct WalletState {
     pub pending_receive_sat: u64,
     pub pending_receive_display: String,
     pub pending_receive_fiat_display: Option<String>,
+    pub stuck_receive_sat: u64,
+    pub stuck_receive_display: String,
+    pub stuck_receive_fiat_display: Option<String>,
     pub pending_send_sat: u64,
     pub pending_send_display: String,
     pub pending_send_fiat_display: Option<String>,
     pub pending_refresh_sat: u64,
     pub pending_refresh_display: String,
     pub pending_refresh_fiat_display: Option<String>,
+    pub sync_error: Option<String>,
     pub last_sync: Option<String>,
 }
 
@@ -486,12 +490,16 @@ impl AppState {
                 pending_receive_sat: 0,
                 pending_receive_display: format_sats(0),
                 pending_receive_fiat_display: None,
+                stuck_receive_sat: 0,
+                stuck_receive_display: format_sats(0),
+                stuck_receive_fiat_display: None,
                 pending_send_sat: 0,
                 pending_send_display: format_sats(0),
                 pending_send_fiat_display: None,
                 pending_refresh_sat: 0,
                 pending_refresh_display: format_sats(0),
                 pending_refresh_fiat_display: None,
+                sync_error: None,
                 last_sync: None,
             },
             receive: ReceiveState {
@@ -591,6 +599,7 @@ impl AppState {
         self.wallet.price_currency_name = self.wallet.price_currency.display_name().to_string();
         self.wallet.balance_display = format_sats(self.wallet.balance_sat);
         self.wallet.pending_receive_display = format_sats(self.wallet.pending_receive_sat);
+        self.wallet.stuck_receive_display = format_sats(self.wallet.stuck_receive_sat);
         self.wallet.pending_send_display = format_sats(self.wallet.pending_send_sat);
         self.wallet.pending_refresh_display = format_sats(self.wallet.pending_refresh_sat);
         self.wallet.balance_fiat_display = format_fiat_sats(
@@ -600,6 +609,11 @@ impl AppState {
         );
         self.wallet.pending_receive_fiat_display = format_fiat_sats(
             self.wallet.pending_receive_sat,
+            self.wallet.btc_price,
+            &self.wallet.price_currency,
+        );
+        self.wallet.stuck_receive_fiat_display = format_fiat_sats(
+            self.wallet.stuck_receive_sat,
             self.wallet.btc_price,
             &self.wallet.price_currency,
         );
@@ -933,6 +947,24 @@ mod tests {
             state.send.error_text.as_deref(),
             Some("Insufficient balance for this send.")
         );
+    }
+
+    #[test]
+    fn background_wallet_work_does_not_disable_send_submission() {
+        let mut state = AppState::initial();
+        state.wallet.balance_sat = 1_000;
+        state.send.destination = "lightning:lnbc1example".to_string();
+        state.refresh_derived();
+        assert!(state.send.can_submit);
+
+        state.busy.syncing_wallet = true;
+        state.refresh_derived();
+        assert!(state.send.can_submit);
+
+        state.busy.syncing_wallet = false;
+        state.busy.maintaining_vtxos = true;
+        state.refresh_derived();
+        assert!(state.send.can_submit);
     }
 
     #[test]

@@ -31,7 +31,8 @@ impl AppCore {
         }
     }
 
-    pub(super) fn open_wallet(&self, mnemonic: Zeroizing<String>, mode: WalletOpenMode) {
+    pub(super) fn open_wallet(&mut self, mnemonic: Zeroizing<String>, mode: WalletOpenMode) {
+        let generation = self.invalidate_wallet_session();
         let tx = self.tx.clone();
         let data_dir = self.data_dir.clone();
         let server_config = ServerConfig::from_wallet(&self.state.wallet);
@@ -45,18 +46,22 @@ impl AppCore {
             .await;
             let msg = match result {
                 Ok((opened, mnemonic)) => AsyncMsg::WalletReady {
+                    generation,
                     wallet: opened.wallet,
                     mnemonic,
                     recovery_notice: opened.recovery_notice,
                 },
-                Err(e) => AsyncMsg::Error(format!("Wallet setup failed: {e:#}")),
+                Err(e) => AsyncMsg::WalletOpenFailed {
+                    generation,
+                    message: format!("Wallet setup failed: {e:#}"),
+                },
             };
             let _ = tx.send(CoreMsg::Async(msg));
         });
     }
 
     pub(super) fn delete_wallet(&mut self) {
-        self.wallet = None;
+        self.invalidate_wallet_session();
 
         // Remove local data first. Only delete the secrets once the data they
         // unlock is confirmed gone, so a failed cleanup cannot orphan the
@@ -122,7 +127,6 @@ impl AppCore {
 
         if wallet_server_changed {
             if let Some(seed) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
-                self.wallet = None;
                 self.state.busy.opening_wallet = true;
                 self.open_wallet(Zeroizing::new(seed), WalletOpenMode::OpenOrCreate);
                 self.state.toast = Some("Network changed. Reconnecting wallet.".to_string());

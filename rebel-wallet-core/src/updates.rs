@@ -31,20 +31,35 @@ pub(crate) enum CoreMsg {
     Async(AsyncMsg),
 }
 
+pub(crate) struct WalletSnapshot {
+    pub(crate) balance_sat: u64,
+    pub(crate) pending_receive_sat: u64,
+    pub(crate) stuck_receive_sat: u64,
+    pub(crate) pending_send_sat: u64,
+    pub(crate) pending_refresh_sat: u64,
+    pub(crate) activity: Vec<ActivityItem>,
+}
+
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AsyncMsg {
     WalletReady {
+        generation: u64,
         wallet: Wallet,
         mnemonic: Zeroizing<String>,
         recovery_notice: Option<WalletRecoveryNotice>,
     },
-    WalletSynced {
-        balance_sat: u64,
-        pending_receive_sat: u64,
-        pending_send_sat: u64,
-        pending_refresh_sat: u64,
-        maintenance_checked: bool,
-        activity: Vec<ActivityItem>,
+    WalletOpenFailed {
+        generation: u64,
+        message: String,
+    },
+    WalletWorkFinished {
+        generation: u64,
+        operation_id: u64,
+        result: Result<WalletSnapshot, String>,
+    },
+    WalletRefreshPollDue {
+        generation: u64,
+        nonce: u64,
     },
     ArkAddress(String),
     ReceiveRequest {

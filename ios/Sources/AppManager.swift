@@ -109,7 +109,7 @@ final class AppManager: AppReconciler {
     }
 
     private func waitForWalletSync(startingRev: UInt64? = nil) async {
-        let timeout = Date().addingTimeInterval(60)
+        let timeout = Date().addingTimeInterval(100)
         var observedSync = state.busy.syncingWallet
 
         while Date() < timeout {
