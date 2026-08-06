@@ -1920,6 +1920,10 @@ public struct WalletState: Equatable, Hashable {
     public var pendingSendSat: UInt64
     public var pendingSendDisplay: String
     public var pendingSendFiatDisplay: String?
+    /**
+     * Funds committed to a round funding transaction and temporarily
+     * unavailable. Queued delegated refreshes are deliberately excluded.
+     */
     public var pendingRefreshSat: UInt64
     public var pendingRefreshDisplay: String
     public var pendingRefreshFiatDisplay: String?
@@ -1928,7 +1932,11 @@ public struct WalletState: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(network: WalletNetwork, networkName: String, defaultServerAddress: String, defaultEsploraAddress: String, serverAddress: String, esploraAddress: String, priceCurrency: PriceCurrency, priceCurrencyCode: String, priceCurrencyName: String, btcPrice: Double?, balanceSat: UInt64, balanceDisplay: String, balanceFiatDisplay: String?, pendingReceiveSat: UInt64, pendingReceiveDisplay: String, pendingReceiveFiatDisplay: String?, stuckReceiveSat: UInt64, stuckReceiveDisplay: String, stuckReceiveFiatDisplay: String?, pendingSendSat: UInt64, pendingSendDisplay: String, pendingSendFiatDisplay: String?, pendingRefreshSat: UInt64, pendingRefreshDisplay: String, pendingRefreshFiatDisplay: String?, syncError: String?, lastSync: String?) {
+    public init(network: WalletNetwork, networkName: String, defaultServerAddress: String, defaultEsploraAddress: String, serverAddress: String, esploraAddress: String, priceCurrency: PriceCurrency, priceCurrencyCode: String, priceCurrencyName: String, btcPrice: Double?, balanceSat: UInt64, balanceDisplay: String, balanceFiatDisplay: String?, pendingReceiveSat: UInt64, pendingReceiveDisplay: String, pendingReceiveFiatDisplay: String?, stuckReceiveSat: UInt64, stuckReceiveDisplay: String, stuckReceiveFiatDisplay: String?, pendingSendSat: UInt64, pendingSendDisplay: String, pendingSendFiatDisplay: String?,
+        /**
+         * Funds committed to a round funding transaction and temporarily
+         * unavailable. Queued delegated refreshes are deliberately excluded.
+         */pendingRefreshSat: UInt64, pendingRefreshDisplay: String, pendingRefreshFiatDisplay: String?, syncError: String?, lastSync: String?) {
         self.network = network
         self.networkName = networkName
         self.defaultServerAddress = defaultServerAddress
@@ -2432,9 +2440,9 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 73: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
         )
         
-        case 72: return .foregrounded
+        case 74: return .foregrounded
 
-        case 73: return .backgrounded
+        case 75: return .backgrounded
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -2787,11 +2795,11 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
 
         case .foregrounded:
-            writeInt(&buf, Int32(72))
+            writeInt(&buf, Int32(74))
 
 
         case .backgrounded:
-            writeInt(&buf, Int32(73))
+            writeInt(&buf, Int32(75))
 
         }
     }
