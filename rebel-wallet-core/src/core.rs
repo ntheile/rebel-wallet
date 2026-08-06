@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Context;
+use bark::actions::lightning::receive::{LightningReceiveState, Progress as ReceiveProgress};
 use bark::ark::lightning::{PaymentHash, Preimage};
 use bark::ark::vtxo::Full;
 use bark::ark::{Vtxo, VtxoPolicy};
@@ -169,7 +170,13 @@ fn lightning_details_from_vtxo(vtxo: &Vtxo<Full>) -> MovementLightningDetails {
         VtxoPolicy::ServerHtlcSend(policy) => {
             details.payment_hash = Some(policy.payment_hash.to_string());
         }
+        VtxoPolicy::ServerHtlcSend_v0(policy) => {
+            details.payment_hash = Some(policy.payment_hash.to_string());
+        }
         VtxoPolicy::ServerHtlcRecv(policy) => {
+            details.payment_hash = Some(policy.payment_hash.to_string());
+        }
+        VtxoPolicy::ServerHtlcRecv_v0(policy) => {
             details.payment_hash = Some(policy.payment_hash.to_string());
         }
         VtxoPolicy::Pubkey(_) => {}
@@ -609,7 +616,11 @@ impl AppCore {
     fn handle_async(&mut self, msg: AsyncMsg) {
         self.clear_busy_for_async(&msg);
         match msg {
-            AsyncMsg::WalletReady { wallet, mnemonic } => {
+            AsyncMsg::WalletReady {
+                wallet,
+                mnemonic,
+                recovery_notice,
+            } => {
                 if !self.save_wallet_seed(mnemonic.as_str()) {
                     let message = "Could not save the recovery phrase to the Keychain. \
                                    The wallet is not safely stored. Delete the wallet and \
@@ -631,6 +642,14 @@ impl AppCore {
                 self.ensure_lightning_address();
                 self.maintain_vtxos();
                 self.claim_pending_lightning_receives();
+                if let Some(notice) = recovery_notice {
+                    self.state.toast = Some(notice.message);
+                    self.request_haptic(if notice.warning {
+                        HapticFeedback::NotificationWarning
+                    } else {
+                        HapticFeedback::NotificationSuccess
+                    });
+                }
             }
             AsyncMsg::WalletSynced {
                 balance_sat,
@@ -1335,11 +1354,7 @@ impl AppCore {
             };
             let claimable: Vec<_> = pending
                 .into_iter()
-                .filter(|receive| {
-                    receive.preimage_revealed_at.is_none()
-                        && receive.finished_at.is_none()
-                        && !receive.htlc_vtxos.is_empty()
-                })
+                .filter(|receive| matches!(&receive.progress, ReceiveProgress::HtlcsReady(_)))
                 .collect();
             if claimable.is_empty() {
                 let _ = tx.send(CoreMsg::Async(AsyncMsg::LightningReceivesClaimed {
@@ -1349,14 +1364,24 @@ impl AppCore {
             }
             let mut claimed = vec![];
             for receive in claimable {
-                let payment_hash: PaymentHash = receive.invoice.into();
-                if let Ok(Ok(receive)) = tokio::time::timeout(
+                let payment_hash = receive.payment_hash;
+                if let Ok(Ok(state)) = tokio::time::timeout(
                     Duration::from_secs(30),
-                    wallet.try_claim_lightning_receive(payment_hash, false, None),
+                    wallet.try_claim_lightning_receive(payment_hash, false),
                 )
                 .await
                 {
-                    if receive.preimage_revealed_at.is_some() || receive.finished_at.is_some() {
+                    if matches!(
+                        state,
+                        LightningReceiveState::Settled(_)
+                            | LightningReceiveState::InProgress(
+                                bark::actions::lightning::receive::LightningReceive {
+                                    progress: ReceiveProgress::PreimageRevealed(_)
+                                        | ReceiveProgress::Delivering(_),
+                                    ..
+                                }
+                            )
+                    ) {
                         claimed.push(payment_hash.to_string());
                     }
                 }
@@ -1379,7 +1404,7 @@ impl AppCore {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             match wallet
-                .bolt11_invoice(Amount::from_sat(amount_sat), memo)
+                .bolt11_invoice(Amount::from_sat(amount_sat), memo, None)
                 .await
             {
                 Ok(invoice) => {
@@ -2688,7 +2713,8 @@ mod tests {
             ServerConfig::for_network(WalletNetwork::Mainnet),
         )
         .await
-        .expect("open wallet");
+        .expect("open wallet")
+        .wallet;
         wallet.sync().await;
 
         let keys = derive_nostr_keys_from_mnemonic(&mnemonic.to_string()).expect("nostr keys");
@@ -2799,8 +2825,14 @@ mod tests {
                     VtxoPolicy::ServerHtlcSend(policy) => {
                         Some(("server_htlc_send", policy.payment_hash.to_string()))
                     }
+                    VtxoPolicy::ServerHtlcSend_v0(policy) => {
+                        Some(("server_htlc_send_v0", policy.payment_hash.to_string()))
+                    }
                     VtxoPolicy::ServerHtlcRecv(policy) => {
                         Some(("server_htlc_recv", policy.payment_hash.to_string()))
+                    }
+                    VtxoPolicy::ServerHtlcRecv_v0(policy) => {
+                        Some(("server_htlc_recv_v0", policy.payment_hash.to_string()))
                     }
                     VtxoPolicy::Pubkey(_) => None,
                 };

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use anyhow::Context;
 use bark::lock_manager::memory::MemoryLockManager;
@@ -23,12 +23,92 @@ pub(crate) enum WalletOpenMode {
     Replace,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WalletRecoveryNotice {
+    pub(crate) message: String,
+    pub(crate) warning: bool,
+}
+
+pub(crate) struct OpenedBarkWallet {
+    pub(crate) wallet: Wallet,
+    pub(crate) recovery_notice: Option<WalletRecoveryNotice>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct WalletRecoverySummary {
+    recovered_vtxos: usize,
+    recovered_sat: u64,
+    accounted_vtxos: usize,
+    unresolved_vtxos: usize,
+}
+
+impl WalletRecoverySummary {
+    fn notice(self) -> WalletRecoveryNotice {
+        let recovered = format!(
+            "recovered {} {} ({})",
+            self.recovered_vtxos,
+            pluralize_vtxo(self.recovered_vtxos),
+            crate::state::format_sats(self.recovered_sat),
+        );
+
+        if self.unresolved_vtxos > 0 {
+            let accounted = if self.accounted_vtxos == 0 {
+                String::new()
+            } else {
+                format!(
+                    "; {} {} already spent or exited",
+                    self.accounted_vtxos,
+                    pluralize_vtxo(self.accounted_vtxos),
+                )
+            };
+            WalletRecoveryNotice {
+                message: format!(
+                    "Wallet recovery incomplete: {recovered}{accounted}; {} {} could not be verified. Retry restore; funds may be missing.",
+                    self.unresolved_vtxos,
+                    pluralize_vtxo(self.unresolved_vtxos),
+                ),
+                warning: true,
+            }
+        } else {
+            let accounted = if self.accounted_vtxos == 0 {
+                String::new()
+            } else {
+                format!(
+                    "; {} {} already spent or exited",
+                    self.accounted_vtxos,
+                    pluralize_vtxo(self.accounted_vtxos),
+                )
+            };
+            WalletRecoveryNotice {
+                message: format!("Wallet recovery complete: {recovered}{accounted}."),
+                warning: false,
+            }
+        }
+    }
+}
+
+fn pluralize_vtxo(count: usize) -> &'static str {
+    if count == 1 {
+        "VTXO"
+    } else {
+        "VTXOs"
+    }
+}
+
+fn failed_recovery_notice() -> WalletRecoveryNotice {
+    WalletRecoveryNotice {
+        message: "Wallet recovery failed before a report was available. Retry restore; funds may be missing."
+            .to_string(),
+        warning: true,
+    }
+}
+
 pub(crate) async fn open_bark_wallet(
     data_dir: PathBuf,
     mnemonic: &Mnemonic,
     mode: WalletOpenMode,
     server_config: ServerConfig,
-) -> anyhow::Result<Wallet> {
+) -> anyhow::Result<OpenedBarkWallet> {
     std::fs::create_dir_all(&data_dir)?;
     let network = server_config.network.bitcoin_network();
     let db_path = data_dir.join(server_config.network.db_file_name());
@@ -47,11 +127,15 @@ pub(crate) async fn open_bark_wallet(
     let lock_manager = Box::new(MemoryLockManager::new());
     let seed = WalletSeed::new_from_mnemonic(network, mnemonic);
 
-    // Create/Replace force a fresh wallet (Replace already wiped the database
-    // files above); OpenOrCreate/Restore open an existing wallet or create one.
-    if matches!(mode, WalletOpenMode::Create | WalletOpenMode::Replace) {
+    // A newly created wallet should not scan the seed mailbox. Replacement
+    // wallets must be created by Wallet::open so Bark knows to run recovery.
+    if matches!(mode, WalletOpenMode::Create) {
         Wallet::create(network, &seed, &config, &*db, &*lock_manager, false).await?;
     }
+
+    let recovery_expected =
+        !matches!(mode, WalletOpenMode::Create) && db.read_properties().await?.is_none();
+    let (recovery_tx, recovery_rx) = mpsc::sync_channel(1);
 
     let args = OpenWalletArgs {
         run_daemon: false,
@@ -59,9 +143,27 @@ pub(crate) async fn open_bark_wallet(
         lock_manager: Some(lock_manager),
         create_if_not_exists: true,
         create_without_server: false,
+        on_recovery_finished: Some(Box::new(move |report| {
+            let summary = WalletRecoverySummary {
+                recovered_vtxos: report.recovered().len(),
+                recovered_sat: report.recovered().total_amount().to_sat(),
+                accounted_vtxos: report.skipped().len() + report.exited().len(),
+                unresolved_vtxos: report.failed().len() + report.foreign().len(),
+            };
+            let _ = recovery_tx.send(summary.notice());
+        })),
         ..Default::default()
     };
-    Wallet::open(network, seed, config, args).await
+    let wallet = Wallet::open(network, seed, config, args).await?;
+    let recovery_notice = recovery_expected.then(|| {
+        recovery_rx
+            .try_recv()
+            .unwrap_or_else(|_| failed_recovery_notice())
+    });
+    Ok(OpenedBarkWallet {
+        wallet,
+        recovery_notice,
+    })
 }
 
 pub(crate) fn remove_wallet_database_files(db_path: &Path) -> anyhow::Result<()> {
@@ -76,4 +178,51 @@ pub(crate) fn remove_wallet_database_files(db_path: &Path) -> anyhow::Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{failed_recovery_notice, WalletRecoverySummary};
+
+    #[test]
+    fn complete_recovery_notice_summarizes_recovered_and_accounted_vtxos() {
+        let notice = WalletRecoverySummary {
+            recovered_vtxos: 1,
+            recovered_sat: 12_345,
+            accounted_vtxos: 2,
+            unresolved_vtxos: 0,
+        }
+        .notice();
+
+        assert_eq!(
+            notice.message,
+            "Wallet recovery complete: recovered 1 VTXO (12,345 sats); 2 VTXOs already spent or exited."
+        );
+        assert!(!notice.warning);
+    }
+
+    #[test]
+    fn incomplete_recovery_notice_warns_that_funds_may_be_missing() {
+        let notice = WalletRecoverySummary {
+            recovered_vtxos: 2,
+            recovered_sat: 50_000,
+            accounted_vtxos: 1,
+            unresolved_vtxos: 3,
+        }
+        .notice();
+
+        assert_eq!(
+            notice.message,
+            "Wallet recovery incomplete: recovered 2 VTXOs (50,000 sats); 1 VTXO already spent or exited; 3 VTXOs could not be verified. Retry restore; funds may be missing."
+        );
+        assert!(notice.warning);
+    }
+
+    #[test]
+    fn missing_recovery_report_is_a_warning() {
+        let notice = failed_recovery_notice();
+
+        assert!(notice.message.contains("funds may be missing"));
+        assert!(notice.warning);
+    }
 }

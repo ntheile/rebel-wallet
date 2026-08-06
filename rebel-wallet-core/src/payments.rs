@@ -2,6 +2,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
+use bark::actions::lightning::receive::{LightningReceiveState, Progress as ReceiveProgress};
 use bark::ark::lightning::{Offer, OfferAmount, PaymentHash};
 use bark::ark::Address as ArkAddress;
 use bark::lightning_invoice::Bolt11Invoice;
@@ -434,9 +435,9 @@ pub(crate) async fn monitor_lightning_receive(
         }
 
         let mut should_stop = false;
-        match wallet.lightning_receive_status(payment_hash).await {
-            Ok(Some(receive)) => {
-                let (status, paid) = receive_status(&receive);
+        match wallet.lightning_receive_state(payment_hash).await {
+            Ok(state) => {
+                let (status, paid) = receive_status(&state);
                 send_receive_status_if_changed(
                     &tx,
                     &payment_hash_text,
@@ -454,21 +455,25 @@ pub(crate) async fn monitor_lightning_receive(
                         &payment_hash_text,
                         &mut last_status,
                         &mut last_paid,
-                        if receive.htlc_vtxos.is_empty() {
-                            "waiting"
-                        } else {
+                        if matches!(
+                            &state,
+                            LightningReceiveState::InProgress(receive)
+                                if matches!(&receive.progress, ReceiveProgress::HtlcsReady(_))
+                        ) {
                             "claiming"
+                        } else {
+                            "waiting"
                         },
                         false,
                     );
 
-                    if let Ok(Ok(receive)) = tokio::time::timeout(
+                    if let Ok(Ok(state)) = tokio::time::timeout(
                         Duration::from_secs(10),
-                        wallet.try_claim_lightning_receive(payment_hash, false, None),
+                        wallet.try_claim_lightning_receive(payment_hash, false),
                     )
                     .await
                     {
-                        let (status, paid) = receive_status(&receive);
+                        let (status, paid) = receive_status(&state);
                         send_receive_status_if_changed(
                             &tx,
                             &payment_hash_text,
@@ -480,16 +485,6 @@ pub(crate) async fn monitor_lightning_receive(
                         should_stop = paid;
                     }
                 }
-            }
-            Ok(None) => {
-                send_receive_status_if_changed(
-                    &tx,
-                    &payment_hash_text,
-                    &mut last_status,
-                    &mut last_paid,
-                    "waiting",
-                    false,
-                );
             }
             Err(e) => {
                 // A transient status-check failure (e.g. a network blip) should
@@ -511,13 +506,14 @@ pub(crate) async fn monitor_lightning_receive(
     }
 }
 
-fn receive_status(receive: &bark::persist::models::LightningReceive) -> (&'static str, bool) {
-    if receive.preimage_revealed_at.is_some() || receive.finished_at.is_some() {
-        ("paid", true)
-    } else if receive.htlc_vtxos.is_empty() {
-        ("waiting", false)
-    } else {
-        ("claimable", false)
+fn receive_status(receive: &LightningReceiveState) -> (&'static str, bool) {
+    match receive {
+        LightningReceiveState::Settled(_) => ("paid", true),
+        LightningReceiveState::InProgress(receive) => match &receive.progress {
+            ReceiveProgress::AwaitingPayment => ("waiting", false),
+            ReceiveProgress::HtlcsReady(_) => ("claimable", false),
+            ReceiveProgress::PreimageRevealed(_) | ReceiveProgress::Delivering(_) => ("paid", true),
+        },
     }
 }
 

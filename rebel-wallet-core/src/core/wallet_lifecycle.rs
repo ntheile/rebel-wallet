@@ -39,12 +39,16 @@ impl AppCore {
             let result = async {
                 let mnemonic =
                     Mnemonic::from_str(mnemonic.as_str()).context("invalid recovery phrase")?;
-                let wallet = open_bark_wallet(data_dir, &mnemonic, mode, server_config).await?;
-                Ok::<_, anyhow::Error>((wallet, Zeroizing::new(mnemonic.to_string())))
+                let opened = open_bark_wallet(data_dir, &mnemonic, mode, server_config).await?;
+                Ok::<_, anyhow::Error>((opened, Zeroizing::new(mnemonic.to_string())))
             }
             .await;
             let msg = match result {
-                Ok((wallet, mnemonic)) => AsyncMsg::WalletReady { wallet, mnemonic },
+                Ok((opened, mnemonic)) => AsyncMsg::WalletReady {
+                    wallet: opened.wallet,
+                    mnemonic,
+                    recovery_notice: opened.recovery_notice,
+                },
                 Err(e) => AsyncMsg::Error(format!("Wallet setup failed: {e:#}")),
             };
             let _ = tx.send(CoreMsg::Async(msg));

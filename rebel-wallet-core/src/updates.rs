@@ -3,6 +3,7 @@ use zeroize::Zeroizing;
 
 use crate::nostr_support::FetchedProfileContact;
 use crate::persistence::ZapReceiptRecord;
+use crate::wallet::WalletRecoveryNotice;
 use crate::{
     ActivityItem, AppAction, AppState, NostrMessage, NostrState, PriceCurrency, SendDestinationKind,
 };
@@ -35,6 +36,7 @@ pub(crate) enum AsyncMsg {
     WalletReady {
         wallet: Wallet,
         mnemonic: Zeroizing<String>,
+        recovery_notice: Option<WalletRecoveryNotice>,
     },
     WalletSynced {
         balance_sat: u64,
