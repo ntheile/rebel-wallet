@@ -36,7 +36,13 @@ pub(crate) struct WalletSnapshot {
     pub(crate) pending_receive_sat: u64,
     pub(crate) stuck_receive_sat: u64,
     pub(crate) pending_send_sat: u64,
-    pub(crate) pending_refresh_sat: u64,
+    /// Amount committed to a round funding transaction and no longer spendable.
+    /// `None` preserves the last known value when Bark could not resolve every
+    /// pending round's current server status.
+    pub(crate) pending_refresh_sat: Option<u64>,
+    /// Includes queued delegated rounds whose inputs are still spendable. This
+    /// drives reconciliation polling but is intentionally not rendered as busy.
+    pub(crate) has_pending_rounds: bool,
     pub(crate) activity: Vec<ActivityItem>,
 }
 

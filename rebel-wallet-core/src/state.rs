@@ -237,6 +237,8 @@ pub struct WalletState {
     pub pending_send_sat: u64,
     pub pending_send_display: String,
     pub pending_send_fiat_display: Option<String>,
+    /// Funds committed to a round funding transaction and temporarily
+    /// unavailable. Queued delegated refreshes are deliberately excluded.
     pub pending_refresh_sat: u64,
     pub pending_refresh_display: String,
     pub pending_refresh_fiat_display: Option<String>,

@@ -95,9 +95,6 @@ impl AppCore {
             eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
             return;
         }
-        if !self.ensure_wallet_idle_for_payment() {
-            return;
-        }
         let destination = self.state.send.destination.trim().to_string();
         if destination.is_empty() {
             self.state.toast = Some("Enter a destination first.".to_string());
@@ -443,9 +440,6 @@ impl AppCore {
             eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
             return;
         }
-        if !self.ensure_wallet_idle_for_payment() {
-            return;
-        }
         if let Some(amount_sat) = amount_sat.filter(|amount| *amount > 0) {
             if amount_sat > self.state.wallet.balance_sat {
                 self.state.toast =
@@ -718,9 +712,6 @@ impl AppCore {
     pub(super) fn pay_ark_address(&mut self, address: String, amount_sat: u64) {
         if self.payment_already_sending() {
             eprintln!("Ignoring duplicate payment dispatch: a payment is already sending.");
-            return;
-        }
-        if !self.ensure_wallet_idle_for_payment() {
             return;
         }
         if amount_sat == 0 {

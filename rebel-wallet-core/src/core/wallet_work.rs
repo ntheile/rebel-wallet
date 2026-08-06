@@ -2,7 +2,6 @@ use std::time::Duration;
 
 pub(super) const WALLET_WORK_TIMEOUT: Duration = Duration::from_secs(90);
 pub(super) const FOREGROUND_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(5 * 60);
-pub(super) const MAX_REFRESH_POLL_ATTEMPTS: u8 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum WalletWorkKind {

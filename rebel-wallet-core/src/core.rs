@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -12,6 +12,8 @@ use bark::ark::vtxo::Full;
 use bark::ark::{Vtxo, VtxoPolicy};
 use bark::lightning_invoice::Bolt11Invoice;
 use bark::movement::{Movement, PaymentMethod as BarkPaymentMethod};
+use bark::persist::models::RoundStateId;
+use bark::round::RoundStatus;
 use bark::Wallet;
 use bip39::Mnemonic;
 use bitcoin::{
@@ -62,7 +64,7 @@ mod wallet_work;
 
 use wallet_work::{
     refresh_poll_delay, WalletWorkCoordinator, WalletWorkKind, WalletWorkRequest, WalletWorkToken,
-    FOREGROUND_MAINTENANCE_INTERVAL, MAX_REFRESH_POLL_ATTEMPTS, WALLET_WORK_TIMEOUT,
+    FOREGROUND_MAINTENANCE_INTERVAL, WALLET_WORK_TIMEOUT,
 };
 
 const WALLET_SEED_KEY: &str = "wallet_seed";
@@ -93,6 +95,33 @@ fn derive_nostr_keys_from_mnemonic(mnemonic: &str) -> anyhow::Result<Keys> {
     Keys::parse(secret_hex.as_str()).context("derived invalid Nostr key")
 }
 
+fn committed_round_balance(
+    pending_rounds: impl IntoIterator<Item = (RoundStateId, u64)>,
+    statuses: &HashMap<RoundStateId, RoundStatus>,
+) -> Option<u64> {
+    let mut committed_sat = 0u64;
+    for (id, amount_sat) in pending_rounds {
+        let status = statuses.get(&id)?;
+        if matches!(status, RoundStatus::Unconfirmed { .. }) {
+            committed_sat = committed_sat.saturating_add(amount_sat);
+        }
+    }
+    Some(committed_sat)
+}
+
+async fn committed_pending_round_balance(wallet: &Wallet) -> anyhow::Result<Option<u64>> {
+    let pending = wallet.pending_round_states().await?;
+    if pending.is_empty() {
+        return Ok(Some(0));
+    }
+    let pending = pending
+        .iter()
+        .map(|round| (round.id(), round.state().pending_balance().to_sat()))
+        .collect::<Vec<_>>();
+    let statuses = wallet.sync_pending_rounds().await?;
+    Ok(committed_round_balance(pending, &statuses))
+}
+
 async fn wallet_synced_msg(
     wallet: &Wallet,
     contacts: &[Contact],
@@ -100,6 +129,10 @@ async fn wallet_synced_msg(
     payment_annotations: &[PaymentAnnotation],
     zap_receipts: &[ZapReceiptRecord],
 ) -> anyhow::Result<WalletSnapshot> {
+    // A delegated participation remains cancelable-by-spend while Bark reports
+    // Pending. Once it is Unconfirmed, the server has assigned it to a funding
+    // transaction and the input VTXOs have reached the point of no return.
+    let pending_refresh_sat = committed_pending_round_balance(wallet).await?;
     let balance = wallet.balance().await.context("balance failed")?;
     // Bark's aggregate claimable balance includes both HTLCs that can still be
     // claimed off-chain and HTLCs whose preimage was already revealed. Split
@@ -152,7 +185,8 @@ async fn wallet_synced_msg(
         pending_receive_sat,
         stuck_receive_sat,
         pending_send_sat: balance.pending_lightning_send.to_sat(),
-        pending_refresh_sat: balance.pending_in_round.to_sat(),
+        pending_refresh_sat,
+        has_pending_rounds: balance.pending_in_round.to_sat() > 0,
         activity,
     })
 }
@@ -274,6 +308,7 @@ struct AppCore {
     wallet_foregrounded: bool,
     last_maintenance_completed_at: Option<Instant>,
     wallet_retry_kind: Option<WalletWorkKind>,
+    has_pending_rounds: bool,
     refresh_poll_nonce: u64,
     refresh_poll_scheduled: bool,
     refresh_poll_attempt: u8,
@@ -313,6 +348,7 @@ impl AppCore {
             wallet_foregrounded: false,
             last_maintenance_completed_at: None,
             wallet_retry_kind: None,
+            has_pending_rounds: false,
             refresh_poll_nonce: 0,
             refresh_poll_scheduled: false,
             refresh_poll_attempt: 0,
@@ -364,6 +400,7 @@ impl AppCore {
                 self.state.wallet.stuck_receive_sat = 0;
                 self.state.wallet.pending_send_sat = 0;
                 self.state.wallet.pending_refresh_sat = 0;
+                self.has_pending_rounds = false;
                 self.open_wallet(
                     Zeroizing::new(mnemonic.trim().to_string()),
                     WalletOpenMode::Replace,
@@ -1403,7 +1440,10 @@ impl AppCore {
         self.state.wallet.pending_receive_sat = snapshot.pending_receive_sat;
         self.state.wallet.stuck_receive_sat = snapshot.stuck_receive_sat;
         self.state.wallet.pending_send_sat = snapshot.pending_send_sat;
-        self.state.wallet.pending_refresh_sat = snapshot.pending_refresh_sat;
+        if let Some(pending_refresh_sat) = snapshot.pending_refresh_sat {
+            self.state.wallet.pending_refresh_sat = pending_refresh_sat;
+        }
+        self.has_pending_rounds = snapshot.has_pending_rounds;
         self.state.wallet.last_sync = Some(now_label());
         self.state.activity = snapshot.activity;
         self.prefetch_activity_profile_pictures();
@@ -1433,20 +1473,6 @@ impl AppCore {
             .iter()
             .any(|screen| matches!(screen, Screen::Send))
             && self.state.send.phase != SendPhase::Success
-    }
-
-    pub(super) fn ensure_wallet_idle_for_payment(&mut self) -> bool {
-        if self
-            .wallet_work
-            .in_flight()
-            .is_none_or(|token| !token.report_errors)
-        {
-            return true;
-        }
-        self.state.toast =
-            Some("Wallet is updating. Try the payment again in a moment.".to_string());
-        self.request_haptic(HapticFeedback::NotificationWarning);
-        false
     }
 
     fn is_stale_wallet_async(&self, msg: &AsyncMsg) -> bool {
@@ -1482,18 +1508,14 @@ impl AppCore {
     }
 
     fn reconcile_refresh_poll(&mut self) {
-        let needs_poll =
-            self.state.wallet.pending_refresh_sat > 0 || self.wallet_retry_kind.is_some();
+        let needs_poll = self.has_pending_rounds || self.wallet_retry_kind.is_some();
         if !self.wallet_foregrounded || !needs_poll {
             if !needs_poll {
                 self.cancel_refresh_poll(true);
             }
             return;
         }
-        if self.wallet_work.has_work()
-            || self.refresh_poll_scheduled
-            || self.refresh_poll_attempt >= MAX_REFRESH_POLL_ATTEMPTS
-        {
+        if self.wallet_work.has_work() || self.refresh_poll_scheduled {
             return;
         }
 
@@ -1529,6 +1551,7 @@ impl AppCore {
         self.wallet_work.reset();
         self.last_maintenance_completed_at = None;
         self.wallet_retry_kind = None;
+        self.has_pending_rounds = false;
         self.state.wallet.sync_error = None;
         self.cancel_refresh_poll(true);
         self.refresh_wallet_busy_state();
@@ -2490,6 +2513,38 @@ mod tests {
         assert!(!send_screen_removed(&[], &[Screen::Send]));
         assert!(!send_screen_removed(&[Screen::Send], &[Screen::Send]));
         assert!(!send_screen_removed(&[Screen::Receive], &[]));
+    }
+
+    #[test]
+    fn only_unconfirmed_rounds_are_reported_as_committed() {
+        use bitcoin::hashes::Hash as _;
+
+        let pending_id = RoundStateId(1);
+        let committed_id = RoundStateId(2);
+        let statuses = HashMap::from([
+            (pending_id, RoundStatus::Pending),
+            (
+                committed_id,
+                RoundStatus::Unconfirmed {
+                    funding_txid: bitcoin::Txid::all_zeros(),
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            committed_round_balance([(pending_id, 21_000), (committed_id, 34_000)], &statuses),
+            Some(34_000)
+        );
+    }
+
+    #[test]
+    fn unresolved_round_status_preserves_last_committed_balance() {
+        let pending_id = RoundStateId(1);
+
+        assert_eq!(
+            committed_round_balance([(pending_id, 21_000)], &HashMap::new()),
+            None
+        );
     }
 
     #[test]
