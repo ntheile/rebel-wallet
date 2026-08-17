@@ -8,6 +8,10 @@ use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
 use crate::{state, ActivityIconKind, ActivityItem, Contact};
 
 const ARK_RECEIVE_COALESCE_WINDOW_SECS: u64 = 30;
+// A zap receipt is published when its invoice is paid, so a receipt matched by
+// amount alone must also land close in time to the payment; anything further
+// out is treated as a coincidental amount collision.
+const ZAP_RECEIPT_AMOUNT_MATCH_WINDOW_SECS: u64 = 60;
 
 pub(crate) fn activity_from_movement(
     movement: Movement,
@@ -395,7 +399,11 @@ pub(crate) fn zap_receipt_match_score(
         .as_ref()
         .is_some_and(|value| !value.is_empty());
     if item.method_display == "Lightning address" && is_lnurl_zap {
-        return Some((2, u64::MAX.saturating_sub(receipt.created_at)));
+        let time_distance = receipt.created_at.abs_diff(item.completed_at_unix);
+        if time_distance > ZAP_RECEIPT_AMOUNT_MATCH_WINDOW_SECS {
+            return None;
+        }
+        return Some((2, time_distance));
     }
     None
 }

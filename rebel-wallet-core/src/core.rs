@@ -2783,6 +2783,25 @@ mod tests {
     }
 
     #[test]
+    fn does_not_match_stale_zap_receipt_to_lightning_address_activity_by_amount() {
+        let receipt = ZapReceiptRecord {
+            event_id: "zap-stale".to_string(),
+            sender_pubkey: "sender".to_string(),
+            recipient_pubkey: "recipient".to_string(),
+            invoice: None,
+            payment_hash: None,
+            amount_msat: Some(1_000_000),
+            lnurl: Some("lnurl1test".to_string()),
+            comment: None,
+            created_at: 1_781_055_500,
+        };
+        let mut item = test_activity_item("Lightning address", 1_000, 1_000);
+        item.completed_at_unix = 1_781_055_500 + 61;
+
+        assert!(best_zap_receipt_for_activity(&[receipt], &item).is_none());
+    }
+
+    #[test]
     fn does_not_match_non_lightning_address_activity_by_amount_only() {
         let receipt = ZapReceiptRecord {
             event_id: "zap-1".to_string(),
@@ -2844,6 +2863,7 @@ mod tests {
             created_at: 1_781_055_980,
         };
         let mut item = test_activity_item("Lightning address", 1_000, 1_000);
+        item.completed_at_unix = 1_781_055_100;
         item.lightning_payment_hash = Some("payment-hash".to_string());
         let receipts = vec![older, closer];
 
@@ -2863,7 +2883,7 @@ mod tests {
             amount_msat: Some(1_000_000),
             lnurl: None,
             comment: None,
-            created_at: 1_705_622_583,
+            created_at: 1_781_055_500,
         };
         let expected = ZapReceiptRecord {
             event_id: "zap-expected".to_string(),
@@ -2874,9 +2894,10 @@ mod tests {
             amount_msat: Some(1_000_000),
             lnurl: Some("lnurl1test".to_string()),
             comment: None,
-            created_at: 1_701_463_372,
+            created_at: 1_781_055_490,
         };
-        let item = test_activity_item("Lightning address", 1_000, 1_000);
+        let mut item = test_activity_item("Lightning address", 1_000, 1_000);
+        item.completed_at_unix = 1_781_055_500;
         let receipts = vec![wrong, expected];
 
         let receipt = best_zap_receipt_for_activity(&receipts, &item).unwrap();
@@ -2963,8 +2984,10 @@ mod tests {
         };
         let mut first = test_activity_item("Lightning address", 1_000, 1_000);
         first.id = "activity-1".to_string();
+        first.completed_at_unix = 1_781_055_500;
         let mut second = test_activity_item("Lightning address", 1_000, 1_000);
         second.id = "activity-2".to_string();
+        second.completed_at_unix = 1_781_055_510;
 
         let assignments = zap_receipt_activity_assignments(&[receipt], &[first, second]);
 
@@ -2982,7 +3005,7 @@ mod tests {
             amount_msat: Some(1_000_000),
             lnurl: Some("lnurl1test".to_string()),
             comment: None,
-            created_at: 1_781_055_100,
+            created_at: 1_781_055_460,
         };
         let newer = ZapReceiptRecord {
             event_id: "zap-newer".to_string(),
@@ -2995,7 +3018,8 @@ mod tests {
             comment: None,
             created_at: 1_781_055_500,
         };
-        let item = test_activity_item("Lightning address", 1_000, 1_000);
+        let mut item = test_activity_item("Lightning address", 1_000, 1_000);
+        item.completed_at_unix = 1_781_055_500;
 
         let assignments = zap_receipt_activity_assignments(&[older, newer], &[item]);
 
