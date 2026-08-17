@@ -13,8 +13,29 @@ IOS_MIN_VERSION="17.0"
 export CARGO_NET_RETRY=10
 export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git
 
+# Retry a command with backoff; network calls to crates.io/static.rust-lang.org
+# flake on Xcode Cloud runners (connection resets).
+retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    if "$@"; then
+      return 0
+    fi
+    echo "Attempt $attempt failed: $*; retrying..." >&2
+    sleep $((attempt * 10))
+  done
+  "$@"
+}
+
+install_rustup() {
+  # Pin the toolchain explicitly so a stale ~/.rustup/settings.toml on the
+  # runner can't select a different default.
+  curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 2 https://sh.rustup.rs |
+    sh -s -- -y --profile minimal --default-toolchain stable
+}
+
 if ! command -v cargo >/dev/null 2>&1; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+  retry install_rustup
   # shellcheck disable=SC1090
   source "$HOME/.cargo/env"
 fi
@@ -30,7 +51,7 @@ fi
 
 export PROTOC="$(command -v protoc)"
 
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+retry rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
 DEV_DIR="$(xcode-select -p)"
 TOOLCHAIN_BIN="$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"
@@ -57,24 +78,8 @@ build_rust_lib() {
     cargo build -p "$CORE_CRATE" --lib --target "$target" --release
 }
 
-retry_build_rust_lib() {
-  local target="$1"
-  local sdk="$2"
-  local min_flag="$3"
-
-  for attempt in 1 2 3; do
-    if build_rust_lib "$target" "$sdk" "$min_flag"; then
-      return 0
-    fi
-    echo "Rust build for $target failed on attempt $attempt; retrying..." >&2
-    sleep $((attempt * 10))
-  done
-
-  build_rust_lib "$target" "$sdk" "$min_flag"
-}
-
-retry_build_rust_lib "aarch64-apple-ios" "$IOS_SDK" "-miphoneos-version-min=$IOS_MIN_VERSION"
-retry_build_rust_lib "aarch64-apple-ios-sim" "$SIM_SDK" "-mios-simulator-version-min=$IOS_MIN_VERSION"
+retry build_rust_lib "aarch64-apple-ios" "$IOS_SDK" "-miphoneos-version-min=$IOS_MIN_VERSION"
+retry build_rust_lib "aarch64-apple-ios-sim" "$SIM_SDK" "-mios-simulator-version-min=$IOS_MIN_VERSION"
 
 rm -rf "ios/Frameworks/$XCF_NAME.xcframework" staging
 mkdir -p staging/headers
