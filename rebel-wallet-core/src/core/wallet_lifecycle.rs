@@ -297,6 +297,8 @@ impl AppCore {
                 self.zap_receipts = data.zap_receipts;
                 self.state.nwc.connections = data.nwc_connections;
                 self.hydrate_nwc_connection_uris();
+                self.hydrate_nwc_icon_urls();
+                self.prefetch_nwc_icons();
             }
             Err(e) => {
                 self.state.toast = Some(format!("Could not load local app data: {e}"));
@@ -337,7 +339,7 @@ impl AppCore {
             })
             .unwrap_or_else(|| self.state.lightning_address.custom_name.clone());
         let mut nwc_connections = self.state.nwc.connections.clone();
-        super::redact_nwc_connection_secrets(&mut nwc_connections);
+        super::redact_migrated_nwc_connection_secrets(&mut nwc_connections);
 
         let data = PersistedAppData {
             nostr,

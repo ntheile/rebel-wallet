@@ -376,8 +376,8 @@ struct NetworkView: View {
                 Button {
                     manager.dispatch(.selectNetwork(
                         network: selectedNetwork,
-                        serverAddress: selectedNetwork == .regtest ? regtestServerAddress : nil,
-                        esploraAddress: selectedNetwork == .regtest ? regtestEsploraAddress : nil
+                        serverAddress: selectedNetwork == .regtest ? regtestServerAddress.trimmedServerAddress : nil,
+                        esploraAddress: selectedNetwork == .regtest ? regtestEsploraAddress.trimmedServerAddress : nil
                     ))
                     manager.dispatch(.popScreen)
                 } label: {

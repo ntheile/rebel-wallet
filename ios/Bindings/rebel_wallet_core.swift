@@ -1631,6 +1631,7 @@ public struct NwaRequestState: Equatable, Hashable {
     public var clientPubkey: String
     public var displayName: String
     public var iconUrl: String?
+    public var iconDisplayUrl: String?
     public var requestingAppDescription: String?
     public var callbackTargetDescription: String
     public var relay: String
@@ -1641,11 +1642,12 @@ public struct NwaRequestState: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, clientPubkey: String, displayName: String, iconUrl: String?, requestingAppDescription: String?, callbackTargetDescription: String, relay: String, budgetSat: UInt64, budgetInterval: NwcBudgetInterval, permissions: [NwcPermission], expiresAt: UInt64?) {
+    public init(id: String, clientPubkey: String, displayName: String, iconUrl: String?, iconDisplayUrl: String?, requestingAppDescription: String?, callbackTargetDescription: String, relay: String, budgetSat: UInt64, budgetInterval: NwcBudgetInterval, permissions: [NwcPermission], expiresAt: UInt64?) {
         self.id = id
         self.clientPubkey = clientPubkey
         self.displayName = displayName
         self.iconUrl = iconUrl
+        self.iconDisplayUrl = iconDisplayUrl
         self.requestingAppDescription = requestingAppDescription
         self.callbackTargetDescription = callbackTargetDescription
         self.relay = relay
@@ -1675,6 +1677,7 @@ public struct FfiConverterTypeNwaRequestState: FfiConverterRustBuffer {
                 clientPubkey: FfiConverterString.read(from: &buf), 
                 displayName: FfiConverterString.read(from: &buf), 
                 iconUrl: FfiConverterOptionString.read(from: &buf), 
+                iconDisplayUrl: FfiConverterOptionString.read(from: &buf),
                 requestingAppDescription: FfiConverterOptionString.read(from: &buf), 
                 callbackTargetDescription: FfiConverterString.read(from: &buf), 
                 relay: FfiConverterString.read(from: &buf), 
@@ -1690,6 +1693,7 @@ public struct FfiConverterTypeNwaRequestState: FfiConverterRustBuffer {
         FfiConverterString.write(value.clientPubkey, into: &buf)
         FfiConverterString.write(value.displayName, into: &buf)
         FfiConverterOptionString.write(value.iconUrl, into: &buf)
+        FfiConverterOptionString.write(value.iconDisplayUrl, into: &buf)
         FfiConverterOptionString.write(value.requestingAppDescription, into: &buf)
         FfiConverterString.write(value.callbackTargetDescription, into: &buf)
         FfiConverterString.write(value.relay, into: &buf)
@@ -1782,6 +1786,7 @@ public struct NwcConnection: Equatable, Hashable {
     public var id: String
     public var name: String
     public var iconUrl: String?
+    public var iconDisplayUrl: String?
     public var relay: String
     public var uri: String
     public var walletManagedSecret: Bool
@@ -1805,10 +1810,11 @@ public struct NwcConnection: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, name: String, iconUrl: String?, relay: String, uri: String, walletManagedSecret: Bool, servicePubkey: String, clientPubkey: String, budgetSat: UInt64, spentSat: UInt64, budgetDisplay: String, spentDisplay: String, budgetInterval: NwcBudgetInterval, budgetIntervalDisplay: String, permissions: [NwcPermission], permissionsConfigured: Bool, allowGetBalance: Bool, allowPayInvoice: Bool, createdAt: UInt64, lastUsedAt: UInt64?, expiresAt: UInt64?, budgetPeriodStartedAt: UInt64, pendingInfoEventRelays: [String]) {
+    public init(id: String, name: String, iconUrl: String?, iconDisplayUrl: String?, relay: String, uri: String, walletManagedSecret: Bool, servicePubkey: String, clientPubkey: String, budgetSat: UInt64, spentSat: UInt64, budgetDisplay: String, spentDisplay: String, budgetInterval: NwcBudgetInterval, budgetIntervalDisplay: String, permissions: [NwcPermission], permissionsConfigured: Bool, allowGetBalance: Bool, allowPayInvoice: Bool, createdAt: UInt64, lastUsedAt: UInt64?, expiresAt: UInt64?, budgetPeriodStartedAt: UInt64, pendingInfoEventRelays: [String]) {
         self.id = id
         self.name = name
         self.iconUrl = iconUrl
+        self.iconDisplayUrl = iconDisplayUrl
         self.relay = relay
         self.uri = uri
         self.walletManagedSecret = walletManagedSecret
@@ -1850,6 +1856,7 @@ public struct FfiConverterTypeNwcConnection: FfiConverterRustBuffer {
                 id: FfiConverterString.read(from: &buf), 
                 name: FfiConverterString.read(from: &buf), 
                 iconUrl: FfiConverterOptionString.read(from: &buf), 
+                iconDisplayUrl: FfiConverterOptionString.read(from: &buf),
                 relay: FfiConverterString.read(from: &buf), 
                 uri: FfiConverterString.read(from: &buf), 
                 walletManagedSecret: FfiConverterBool.read(from: &buf), 
@@ -1877,6 +1884,7 @@ public struct FfiConverterTypeNwcConnection: FfiConverterRustBuffer {
         FfiConverterString.write(value.id, into: &buf)
         FfiConverterString.write(value.name, into: &buf)
         FfiConverterOptionString.write(value.iconUrl, into: &buf)
+        FfiConverterOptionString.write(value.iconDisplayUrl, into: &buf)
         FfiConverterString.write(value.relay, into: &buf)
         FfiConverterString.write(value.uri, into: &buf)
         FfiConverterBool.write(value.walletManagedSecret, into: &buf)

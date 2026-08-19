@@ -125,6 +125,7 @@ impl NwaRequest {
                 client_pubkey,
                 display_name,
                 icon_url,
+                icon_display_url: None,
                 requesting_app_description,
                 callback_target_description,
                 relay,

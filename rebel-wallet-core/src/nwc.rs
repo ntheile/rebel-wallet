@@ -32,6 +32,7 @@ use crate::{NwcBudgetInterval, NwcConnection, NwcPermission, NwcWakeRequest, Wal
 
 const NWC_EXTENSION_PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
 const NWC_EXTENSION_PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const NWC_MAILBOX_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(31);
 const NWC_EXTENSION_TOTAL_BUDGET: Duration = Duration::from_secs(26);
 const NWC_EXTENSION_RELAY_LINGER: Duration = Duration::from_millis(500);
 const NWC_EXTENSION_MIN_LINGER_BUDGET: Duration = Duration::from_millis(250);
@@ -564,11 +565,12 @@ async fn response_for_request(
             ),
         },
         RequestParams::PayInvoice(params) => {
-            match pay_invoice_response(params, context, connection).await {
-                Ok((response, amount_sat, updated_connections, timings)) => (
+            let outcome = pay_invoice_response(params, context, connection).await;
+            match outcome.result {
+                Ok((response, amount_sat, timings)) => (
                     response,
                     amount_sat,
-                    Some(updated_connections),
+                    Some(outcome.updated_connections),
                     Some(timings),
                 ),
                 Err(e) => (
@@ -578,7 +580,7 @@ async fn response_for_request(
                         &format!("Could not pay invoice: {e:#}"),
                     ),
                     0,
-                    None,
+                    Some(outcome.updated_connections),
                     None,
                 ),
             }
@@ -795,134 +797,174 @@ async fn pay_invoice_response(
     params: &nostr::nips::nip47::PayInvoiceRequest,
     context: &NwcServiceContext,
     connection: &NwcConnection,
-) -> anyhow::Result<(Response, u64, Vec<NwcConnection>, String)> {
+) -> PayInvoiceOutcome {
     let pay_started_at = Instant::now();
-    let mut renewed_connection = connection.clone();
-    renew_budget_if_due(&mut renewed_connection, crate::time::now_unix());
-    let wallet_open_started_at = Instant::now();
-    let wallet = open_wallet_for_extension(context).await?;
-    let wallet_open_ms = wallet_open_started_at.elapsed().as_millis();
-    let invoice_validation_started_at = Instant::now();
-    let invoice = Bolt11Invoice::from_str(&params.invoice).context("invalid Lightning invoice")?;
-    let amount_sat = pay_invoice_amount_sat(&invoice, params.amount)?;
-    enforce_budget(&renewed_connection, amount_sat)?;
-    let payment_hash: PaymentHash = (*invoice.payment_hash()).into();
-
-    let user_amount = params
-        .amount
-        .map(msats_to_exact_sats)
-        .transpose()
-        .context("Rebel Wallet only supports whole-sat NWC payment amounts")?
-        .filter(|amount| *amount > 0)
-        .map(Amount::from_sat);
-    let invoice_validation_ms = invoice_validation_started_at.elapsed().as_millis();
-
-    // The full app keeps Bark's mailbox stream alive. The NSE opens a short-lived
-    // wallet, so mirror that behavior while paying to receive the preimage as soon
-    // as the Ark server finishes instead of relying only on status polling.
-    let mailbox_shutdown = CancellationToken::new();
-    let mailbox_task = {
-        let wallet = wallet.clone();
-        let shutdown = mailbox_shutdown.clone();
-        tokio::spawn(async move {
-            wallet
-                .subscribe_process_mailbox_messages(None, shutdown)
-                .await
-        })
-    };
-    let payment_attempt: anyhow::Result<PayInvoiceAttempt> = async {
-        let initial_state_started_at = Instant::now();
-        let initial_state = wallet
-            .lightning_send_state(payment_hash)
-            .await
-            .context("could not read invoice state")?;
-        let initial_state_ms = initial_state_started_at.elapsed().as_millis();
-        let (initial_state_name, payment_start_ms, settlement) = match initial_state {
-            LightningSendState::Paid(paid) => (
-                "paid",
-                0,
-                PaidInvoiceWait {
-                    preimage: paid.preimage.to_string(),
-                    elapsed_ms: 0,
-                    checks: 0,
-                    check_io_ms: 0,
-                },
-            ),
-            LightningSendState::InProgress(_) => (
-                "in_progress",
-                0,
-                wait_for_paid_invoice(&wallet, payment_hash).await?,
-            ),
-            LightningSendState::Unknown => {
-                let payment_start_started_at = Instant::now();
-                wallet
-                    .pay_lightning_invoice(invoice.clone(), user_amount, false)
-                    .await
-                    .context("Bark payment failed")?;
-                let payment_start_ms = payment_start_started_at.elapsed().as_millis();
-                (
-                    "unknown",
-                    payment_start_ms,
-                    wait_for_paid_invoice(&wallet, payment_hash).await?,
-                )
-            }
-        };
-
-        Ok(PayInvoiceAttempt {
-            initial_state_name,
-            initial_state_ms,
-            payment_start_ms,
-            settlement,
-        })
-    }
-    .await;
-    let mailbox_status = if mailbox_task.is_finished() {
-        "stopped"
-    } else {
-        "active"
-    };
-    mailbox_shutdown.cancel();
-    mailbox_task.abort();
-    let _ = mailbox_task.await;
-    let payment_attempt = payment_attempt?;
-    let settlement = payment_attempt.settlement;
-    let preimage = settlement.preimage;
-
     let mut updated_connections = context.connections.clone();
-    if let Some(updated) = updated_connections
+    let Some(renewed_connection) = updated_connections
         .iter_mut()
         .find(|candidate| candidate.id == connection.id)
-    {
-        updated.spent_sat = renewed_connection.spent_sat.saturating_add(amount_sat);
-        updated.spent_display = crate::state::format_sats(updated.spent_sat);
-        updated.budget_period_started_at = renewed_connection.budget_period_started_at;
-        updated.last_used_at = Some(crate::time::now_unix());
+    else {
+        return PayInvoiceOutcome {
+            result: Err(anyhow!("NWC connection disappeared before payment")),
+            updated_connections,
+        };
+    };
+    renew_budget_if_due(renewed_connection, crate::time::now_unix());
+    let renewed_connection = renewed_connection.clone();
+
+    let payment_result: anyhow::Result<(Response, u64, String, bool)> = async {
+        let wallet_open_started_at = Instant::now();
+        let wallet = open_wallet_for_extension(context).await?;
+        let wallet_open_ms = wallet_open_started_at.elapsed().as_millis();
+        let invoice_validation_started_at = Instant::now();
+        let invoice =
+            Bolt11Invoice::from_str(&params.invoice).context("invalid Lightning invoice")?;
+        let amount_sat = pay_invoice_amount_sat(&invoice, params.amount)?;
+        let payment_hash: PaymentHash = (*invoice.payment_hash()).into();
+
+        let user_amount = params
+            .amount
+            .map(msats_to_exact_sats)
+            .transpose()
+            .context("Rebel Wallet only supports whole-sat NWC payment amounts")?
+            .filter(|amount| *amount > 0)
+            .map(Amount::from_sat);
+        let invoice_validation_ms = invoice_validation_started_at.elapsed().as_millis();
+
+        // The full app keeps Bark's mailbox stream alive. The NSE opens a short-lived
+        // wallet, so mirror that behavior while paying to receive the preimage as soon
+        // as the Ark server finishes instead of relying only on status polling.
+        let mailbox_shutdown = CancellationToken::new();
+        let mut mailbox_task = {
+            let wallet = wallet.clone();
+            let shutdown = mailbox_shutdown.clone();
+            tokio::spawn(async move {
+                wallet
+                    .subscribe_process_mailbox_messages(None, shutdown)
+                    .await
+            })
+        };
+        let payment_attempt: anyhow::Result<PayInvoiceAttempt> = async {
+            let initial_state_started_at = Instant::now();
+            let initial_state = wallet
+                .lightning_send_state(payment_hash)
+                .await
+                .context("could not read invoice state")?;
+            let initial_state_ms = initial_state_started_at.elapsed().as_millis();
+            let (initial_state_name, payment_start_ms, settlement, charge_budget) =
+                match initial_state {
+                    LightningSendState::Paid(paid) => (
+                        "paid",
+                        0,
+                        PaidInvoiceWait {
+                            preimage: paid.preimage.to_string(),
+                            elapsed_ms: 0,
+                            checks: 0,
+                            check_io_ms: 0,
+                        },
+                        false,
+                    ),
+                    LightningSendState::InProgress(_) => {
+                        enforce_budget(&renewed_connection, amount_sat)?;
+                        (
+                            "in_progress",
+                            0,
+                            wait_for_paid_invoice(&wallet, payment_hash).await?,
+                            true,
+                        )
+                    }
+                    LightningSendState::Unknown => {
+                        enforce_budget(&renewed_connection, amount_sat)?;
+                        let payment_start_started_at = Instant::now();
+                        wallet
+                            .pay_lightning_invoice(invoice.clone(), user_amount, false)
+                            .await
+                            .context("Bark payment failed")?;
+                        let payment_start_ms = payment_start_started_at.elapsed().as_millis();
+                        (
+                            "unknown",
+                            payment_start_ms,
+                            wait_for_paid_invoice(&wallet, payment_hash).await?,
+                            true,
+                        )
+                    }
+                };
+
+            Ok(PayInvoiceAttempt {
+                initial_state_name,
+                initial_state_ms,
+                payment_start_ms,
+                settlement,
+                charge_budget,
+            })
+        }
+        .await;
+        let mailbox_was_finished = mailbox_task.is_finished();
+        mailbox_shutdown.cancel();
+        let mailbox_status = match tokio::time::timeout(
+            NWC_MAILBOX_SHUTDOWN_TIMEOUT,
+            &mut mailbox_task,
+        )
+        .await
+        {
+            Ok(_) if mailbox_was_finished => "stopped",
+            Ok(_) => "cancelled",
+            Err(_) => {
+                mailbox_task.abort();
+                let _ = mailbox_task.await;
+                "aborted"
+            }
+        };
+        let payment_attempt = payment_attempt?;
+        let settlement = payment_attempt.settlement;
+        let preimage = settlement.preimage;
+
+        let timings = format!(
+            "pay_phases wallet_open_ms={wallet_open_ms} invoice_validation_ms={invoice_validation_ms} initial_state={} initial_state_ms={} payment_start_ms={} settlement_ms={} settlement_checks={} settlement_check_io_ms={} mailbox={mailbox_status} pay_total_ms={}",
+            payment_attempt.initial_state_name,
+            payment_attempt.initial_state_ms,
+            payment_attempt.payment_start_ms,
+            settlement.elapsed_ms,
+            settlement.checks,
+            settlement.check_io_ms,
+            pay_started_at.elapsed().as_millis()
+        );
+
+        Ok((
+            Response {
+                result_type: Method::PayInvoice,
+                error: None,
+                result: Some(ResponseResult::PayInvoice(PayInvoiceResponse {
+                    preimage,
+                    fees_paid: None,
+                })),
+            },
+            amount_sat,
+            timings,
+            payment_attempt.charge_budget,
+        ))
     }
+    .await;
 
-    let timings = format!(
-        "pay_phases wallet_open_ms={wallet_open_ms} invoice_validation_ms={invoice_validation_ms} initial_state={} initial_state_ms={} payment_start_ms={} settlement_ms={} settlement_checks={} settlement_check_io_ms={} mailbox={mailbox_status} pay_total_ms={}",
-        payment_attempt.initial_state_name,
-        payment_attempt.initial_state_ms,
-        payment_attempt.payment_start_ms,
-        settlement.elapsed_ms,
-        settlement.checks,
-        settlement.check_io_ms,
-        pay_started_at.elapsed().as_millis()
-    );
+    let result = payment_result.map(|(response, amount_sat, timings, charge_budget)| {
+        if let Some(updated) = updated_connections
+            .iter_mut()
+            .find(|candidate| candidate.id == connection.id)
+        {
+            apply_successful_payment_accounting(
+                updated,
+                amount_sat,
+                charge_budget,
+                crate::time::now_unix(),
+            );
+        }
+        (response, amount_sat, timings)
+    });
 
-    Ok((
-        Response {
-            result_type: Method::PayInvoice,
-            error: None,
-            result: Some(ResponseResult::PayInvoice(PayInvoiceResponse {
-                preimage,
-                fees_paid: None,
-            })),
-        },
-        amount_sat,
+    PayInvoiceOutcome {
+        result,
         updated_connections,
-        timings,
-    ))
+    }
 }
 
 async fn sync_wallet_for_nwc(wallet: &bark::Wallet) {
@@ -1159,6 +1201,12 @@ struct PayInvoiceAttempt {
     initial_state_ms: u128,
     payment_start_ms: u128,
     settlement: PaidInvoiceWait,
+    charge_budget: bool,
+}
+
+struct PayInvoiceOutcome {
+    result: anyhow::Result<(Response, u64, String)>,
+    updated_connections: Vec<NwcConnection>,
 }
 
 async fn wait_for_paid_invoice(
@@ -1290,6 +1338,19 @@ fn renew_budget_if_due(connection: &mut NwcConnection, now: u64) {
         period_started_at.saturating_add(completed_periods.saturating_mul(period_seconds));
     connection.spent_sat = 0;
     connection.spent_display = crate::state::format_sats(0);
+}
+
+fn apply_successful_payment_accounting(
+    connection: &mut NwcConnection,
+    amount_sat: u64,
+    charge_budget: bool,
+    now: u64,
+) {
+    if charge_budget {
+        connection.spent_sat = connection.spent_sat.saturating_add(amount_sat);
+        connection.spent_display = crate::state::format_sats(connection.spent_sat);
+    }
+    connection.last_used_at = Some(now);
 }
 
 fn snapshot_json_from_context(
@@ -1444,6 +1505,7 @@ mod tests {
             id: "test".to_string(),
             name: "Test".to_string(),
             icon_url: None,
+            icon_display_url: None,
             relay: "wss://relay.example.com".to_string(),
             uri: String::new(),
             wallet_managed_secret: false,
@@ -1531,5 +1593,16 @@ mod tests {
 
         assert_eq!(connection.spent_sat, 500);
         assert_eq!(connection.budget_period_started_at, 1_000);
+    }
+
+    #[test]
+    fn already_paid_invoice_does_not_charge_budget_again() {
+        let mut connection = test_connection(NwcBudgetInterval::Daily);
+
+        apply_successful_payment_accounting(&mut connection, 250, false, 2_000);
+
+        assert_eq!(connection.spent_sat, 500);
+        assert_eq!(connection.spent_display, "500 sats");
+        assert_eq!(connection.last_used_at, Some(2_000));
     }
 }

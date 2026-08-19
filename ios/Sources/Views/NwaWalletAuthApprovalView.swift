@@ -58,7 +58,7 @@ struct NwaWalletAuthApprovalView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 16) {
-                        NwcConnectionVisualization(externalAppIconURL: request.iconUrl)
+                        NwcConnectionVisualization(externalAppIconURL: request.iconDisplayUrl)
                             .frame(maxWidth: .infinity)
 
                         VStack(alignment: .leading, spacing: 16) {

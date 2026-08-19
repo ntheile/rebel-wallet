@@ -177,6 +177,12 @@ pub(crate) enum AsyncMsg {
         pubkey: String,
         remote_url: String,
     },
+    NwcIconCached {
+        remote_url: String,
+    },
+    NwcIconCacheFailed {
+        remote_url: String,
+    },
     NostrProfilePictureUploaded(String),
     NostrPublished(String),
     DirectMessagesLoaded(Vec<NostrMessage>),
@@ -203,6 +209,7 @@ pub(crate) enum AsyncMsg {
         callback_url: Option<String>,
     },
     NwaApprovalFailed {
+        client_pubkey: String,
         error: String,
     },
     NwcPushRegistrationFinished {

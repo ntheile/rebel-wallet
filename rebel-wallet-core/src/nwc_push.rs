@@ -1,11 +1,13 @@
 use anyhow::Context;
 use nostr_sdk::prelude::Keys;
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::nostr_support::nostr_http_auth_header;
 use crate::NwcConnection;
 
 const REGISTRATION_ATTEMPTS: usize = 3;
+const REGISTRATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NwcPushConfig {
@@ -57,9 +59,12 @@ impl NwcPushConfig {
             .collect::<Vec<_>>();
         connection_values.sort();
         Some(format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            ready.server_url,
             ready.push_token,
             ready.app_id,
+            ready.environment,
+            ready.install_id,
             connection_values.join("\n")
         ))
     }
@@ -94,11 +99,18 @@ pub(crate) async fn register_connections(
     connections: Vec<NwcConnection>,
     enabled: bool,
 ) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(REGISTRATION_REQUEST_TIMEOUT)
+        .build()
+        .context("failed to build wake registration client")?;
+    let mut failures = Vec::new();
     for connection in connections {
         for relay in relay_values(&connection.relay) {
             let mut last_error = None;
             for attempt in 0..REGISTRATION_ATTEMPTS {
-                match register_connection(&config, &keys, &connection, &relay, enabled).await {
+                match register_connection(&client, &config, &keys, &connection, &relay, enabled)
+                    .await
+                {
                     Ok(()) => {
                         last_error = None;
                         break;
@@ -110,14 +122,22 @@ pub(crate) async fn register_connections(
                 }
             }
             if let Some(error) = last_error {
-                return Err(error);
+                failures.push(format!(
+                    "connection {} relay {relay}: {error:#}",
+                    connection.id
+                ));
             }
         }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(failures.join("; "))
+    }
 }
 
 async fn register_connection(
+    client: &reqwest::Client,
     config: &ReadyNwcPushConfig,
     keys: &Keys,
     connection: &NwcConnection,
@@ -146,7 +166,7 @@ async fn register_connection(
     let body = serde_json::to_vec(&payload).context("failed to encode wake registration")?;
     let auth = nostr_http_auth_header(keys, url.as_str(), "POST", &body)
         .context("failed to sign wake registration")?;
-    let response = reqwest::Client::new()
+    let response = client
         .post(url)
         .header(reqwest::header::AUTHORIZATION, auth)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -203,11 +223,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fingerprint_changes_with_registration_destination_or_installation() {
+        let base = NwcPushConfig {
+            server_url: Some("https://wake.example.com".to_string()),
+            push_token: Some("token".to_string()),
+            app_id: "com.example.wallet".to_string(),
+            environment: "sandbox".to_string(),
+            install_id: "install-a".to_string(),
+        };
+        let connections = [test_connection("a")];
+
+        let mut changed_server = base.clone();
+        changed_server.server_url = Some("https://other.example.com".to_string());
+        assert_ne!(
+            base.fingerprint(&connections),
+            changed_server.fingerprint(&connections)
+        );
+
+        let mut changed_environment = base.clone();
+        changed_environment.environment = "production".to_string();
+        assert_ne!(
+            base.fingerprint(&connections),
+            changed_environment.fingerprint(&connections)
+        );
+
+        let mut changed_install = base.clone();
+        changed_install.install_id = "install-b".to_string();
+        assert_ne!(
+            base.fingerprint(&connections),
+            changed_install.fingerprint(&connections)
+        );
+    }
+
     fn test_connection(id: &str) -> NwcConnection {
         NwcConnection {
             id: id.to_string(),
             name: id.to_string(),
             icon_url: None,
+            icon_display_url: None,
             relay: "wss://relay.example.com".to_string(),
             uri: String::new(),
             wallet_managed_secret: false,

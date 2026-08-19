@@ -4,12 +4,20 @@ impl AppCore {
     pub(super) fn open_nwa_request(&mut self, uri: String) {
         match NwaRequest::parse(&uri, now_unix()) {
             Ok(request) => {
+                let icon_url = request.state.icon_url.clone();
                 self.state.nwa.request = Some(request.state.clone());
                 self.state.nwa.approving = false;
                 self.state.nwa.error_message = None;
                 self.state.nwa.callback_pending = false;
                 self.pending_nwa_request = Some(request);
                 self.pending_nwa_callback = None;
+                if let Some(icon_url) = icon_url {
+                    let icon_display_url = self.nwc_icon_display_url(Some(&icon_url));
+                    if let Some(request) = self.state.nwa.request.as_mut() {
+                        request.icon_display_url = icon_display_url;
+                    }
+                    self.prefetch_nwc_icon(icon_url);
+                }
                 if self.state.setup == SetupState::Ready
                     && self.state.router.screen_stack.last() != Some(&Screen::Nwc)
                 {
@@ -84,6 +92,7 @@ impl AppCore {
 
         self.state.nwa.approving = true;
         self.state.nwa.error_message = None;
+        let approval_client_pubkey = connection.client_pubkey.clone();
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let message = match register_connections(
@@ -101,6 +110,7 @@ impl AppCore {
                 Err(error) => {
                     let _ = register_connections(config, keys, vec![connection], false).await;
                     AsyncMsg::NwaApprovalFailed {
+                        client_pubkey: approval_client_pubkey,
                         error: format!("Could not register background NWC wake: {error:#}"),
                     }
                 }
@@ -109,12 +119,32 @@ impl AppCore {
         });
     }
 
+    pub(super) fn finish_nwa_approval_failure(&mut self, client_pubkey: String, error: String) {
+        let failure_matches_pending_request = self
+            .pending_nwa_request
+            .as_ref()
+            .and_then(|request| public_key_from_npub_or_hex(&request.state.client_pubkey).ok())
+            .is_some_and(|pubkey| pubkey.to_hex() == client_pubkey);
+        if failure_matches_pending_request {
+            self.set_nwa_error(&error);
+        }
+    }
+
     pub(super) fn finish_nwa_approval(
         &mut self,
         connection: NwcConnection,
         callback_url: Option<String>,
     ) {
-        if self.pending_nwa_request.is_none() {
+        let approval_matches_pending_request = self
+            .pending_nwa_request
+            .as_ref()
+            .and_then(|request| {
+                public_key_from_npub_or_hex(&request.state.client_pubkey)
+                    .ok()
+                    .map(|pubkey| pubkey.to_hex() == connection.client_pubkey)
+            })
+            .unwrap_or(false);
+        if !approval_matches_pending_request {
             self.unregister_nwc_push_connections(vec![connection]);
             return;
         }

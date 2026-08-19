@@ -51,8 +51,8 @@ use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
 use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
 use crate::price::fetch_bitcoin_price;
 use crate::profile_cache::{
-    clear_profile_cache, clear_profile_picture_dir, ensure_profile_picture_dir,
-    new_profile_picture_download_semaphore, open_profile_cache,
+    clear_profile_cache, clear_profile_picture_dir, ensure_nwc_icon_dir,
+    ensure_profile_picture_dir, new_profile_picture_download_semaphore, open_profile_cache,
     save_own_profile_picture_remote_url, update_cached_picture,
 };
 use crate::time::{now_label, now_unix};
@@ -67,6 +67,7 @@ use crate::{
 
 mod custom_address_flow;
 mod nwa_flow;
+mod nwc_icon_cache;
 mod profile_prefetch;
 mod send_flow;
 mod wallet_lifecycle;
@@ -169,6 +170,14 @@ fn build_nwc_connection_uri(
 fn redact_nwc_connection_secrets(connections: &mut [NwcConnection]) {
     for connection in connections {
         connection.uri.clear();
+    }
+}
+
+fn redact_migrated_nwc_connection_secrets(connections: &mut [NwcConnection]) {
+    for connection in connections {
+        if connection.wallet_managed_secret {
+            connection.uri.clear();
+        }
     }
 }
 
@@ -450,6 +459,7 @@ struct AppCore {
     refresh_poll_attempt: u8,
     profile_db: Option<rusqlite::Connection>,
     profile_picture_downloads: HashSet<String>,
+    nwc_icon_downloads: HashSet<String>,
     profile_picture_download_semaphore: Arc<tokio::sync::Semaphore>,
     profile_info_requests: HashSet<String>,
     payment_annotations: Vec<PaymentAnnotation>,
@@ -477,6 +487,7 @@ impl AppCore {
         rt: Runtime,
     ) -> Self {
         ensure_profile_picture_dir(&cache_dir);
+        ensure_nwc_icon_dir(&cache_dir);
         Self {
             state: AppState::initial(),
             app_data_path: data_dir.join("rebel-app-data.json"),
@@ -497,6 +508,7 @@ impl AppCore {
             refresh_poll_scheduled: false,
             refresh_poll_attempt: 0,
             profile_picture_downloads: HashSet::new(),
+            nwc_icon_downloads: HashSet::new(),
             profile_picture_download_semaphore: new_profile_picture_download_semaphore(),
             profile_info_requests: HashSet::new(),
             payment_annotations: Vec::new(),
@@ -991,6 +1003,7 @@ impl AppCore {
             id: format!("nwc-{client_pubkey}"),
             name: display_name,
             icon_url: None,
+            icon_display_url: None,
             relay: relay_storage.clone(),
             uri: String::new(),
             wallet_managed_secret: true,
@@ -1083,6 +1096,7 @@ impl AppCore {
         Ok(NwcConnection {
             id: format!("nwc-{client_pubkey_hex}"),
             name: display_name,
+            icon_display_url: self.nwc_icon_display_url(icon_url.as_deref()),
             icon_url,
             relay: relay_storage.clone(),
             uri: String::new(),
@@ -1226,7 +1240,9 @@ impl AppCore {
                 }
             }
             connection.wallet_managed_secret = secrets.get_secret(secret_key).is_some();
-            connection.uri.clear();
+            if connection.wallet_managed_secret {
+                connection.uri.clear();
+            }
         }
     }
 
@@ -1708,6 +1724,12 @@ impl AppCore {
                 self.profile_picture_downloads
                     .remove(&profile_picture_download_key(&pubkey, &remote_url));
             }
+            AsyncMsg::NwcIconCached { remote_url } => {
+                self.finish_nwc_icon_cache(remote_url, true);
+            }
+            AsyncMsg::NwcIconCacheFailed { remote_url } => {
+                self.finish_nwc_icon_cache(remote_url, false);
+            }
             AsyncMsg::NostrProfilePictureUploaded(url) => {
                 self.state.nostr.picture = url.clone();
                 self.state.nostr.picture_display_url = url;
@@ -1813,7 +1835,10 @@ impl AppCore {
                 connection,
                 callback_url,
             } => self.finish_nwa_approval(connection, callback_url),
-            AsyncMsg::NwaApprovalFailed { error } => self.set_nwa_error(&error),
+            AsyncMsg::NwaApprovalFailed {
+                client_pubkey,
+                error,
+            } => self.finish_nwa_approval_failure(client_pubkey, error),
             AsyncMsg::NwcPushRegistrationFinished { fingerprint, error } => {
                 self.finish_nwc_push_registration(fingerprint, error)
             }
@@ -1933,6 +1958,8 @@ impl AppCore {
             | AsyncMsg::PrimalProfilesFailed { .. }
             | AsyncMsg::ProfilePictureCached { .. }
             | AsyncMsg::ProfilePictureCacheFailed { .. }
+            | AsyncMsg::NwcIconCached { .. }
+            | AsyncMsg::NwcIconCacheFailed { .. }
             | AsyncMsg::PriceUpdated { .. }
             | AsyncMsg::PriceFailed => {}
         }
@@ -1991,6 +2018,9 @@ impl AppCore {
     fn foregrounded(&mut self) {
         self.wallet_foregrounded = true;
         self.cancel_refresh_poll(true);
+        self.publish_pending_nwc_info_events();
+        self.sync_nwc_push_registrations();
+        self.prefetch_nwc_icons();
         let maintenance_due = self
             .last_maintenance_completed_at
             .is_none_or(|last| last.elapsed() >= FOREGROUND_MAINTENANCE_INTERVAL);
@@ -3257,6 +3287,7 @@ mod tests {
             id: "test".to_string(),
             name: "Test".to_string(),
             icon_url: None,
+            icon_display_url: None,
             relay: "wss://relay.example.com".to_string(),
             uri: "nostr+walletconnect://secret-bearing-uri".to_string(),
             wallet_managed_secret: true,
@@ -3283,6 +3314,40 @@ mod tests {
 
         assert!(connections[0].uri.is_empty());
         assert!(connections[0].wallet_managed_secret);
+    }
+
+    #[test]
+    fn persistence_keeps_legacy_uri_when_secret_migration_failed() {
+        let mut connection = NwcConnection {
+            id: "legacy".to_string(),
+            name: "Legacy".to_string(),
+            icon_url: None,
+            icon_display_url: None,
+            relay: "wss://relay.example.com".to_string(),
+            uri: "nostr+walletconnect://legacy-secret".to_string(),
+            wallet_managed_secret: false,
+            service_pubkey: String::new(),
+            client_pubkey: String::new(),
+            budget_sat: 0,
+            spent_sat: 0,
+            budget_display: String::new(),
+            spent_display: String::new(),
+            budget_interval: NwcBudgetInterval::Never,
+            budget_interval_display: String::new(),
+            permissions: Vec::new(),
+            permissions_configured: true,
+            allow_get_balance: false,
+            allow_pay_invoice: false,
+            created_at: 0,
+            last_used_at: None,
+            expires_at: None,
+            budget_period_started_at: 0,
+            pending_info_event_relays: Vec::new(),
+        };
+
+        redact_migrated_nwc_connection_secrets(std::slice::from_mut(&mut connection));
+
+        assert_eq!(connection.uri, "nostr+walletconnect://legacy-secret");
     }
 
     #[test]

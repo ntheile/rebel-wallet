@@ -727,7 +727,7 @@ private struct RemoteAppIcon<Placeholder: View>: View {
                 loader.reset()
                 return
             }
-            loader.load(parsed, allowRemote: true)
+            loader.load(parsed)
         }
     }
 }
@@ -905,7 +905,7 @@ private struct NwcConnectionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            NwcSavedConnectionIcon(url: connection.iconUrl, size: 38)
+            NwcSavedConnectionIcon(url: connection.iconDisplayUrl, size: 38)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(connection.name)
@@ -1009,7 +1009,7 @@ private struct NwcConnectionDetailsCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                NwcSavedConnectionIcon(url: connection.iconUrl, size: 42)
+                NwcSavedConnectionIcon(url: connection.iconDisplayUrl, size: 42)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(connection.name)

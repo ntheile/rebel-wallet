@@ -83,7 +83,7 @@ ios-rust:
       -u LIBRARY_PATH -u NIX_LDFLAGS -u NIX_CFLAGS_COMPILE \
       DEVELOPER_DIR="$DEV_DIR" SDKROOT="$SDK" CC="$TOOLCHAIN_BIN/clang" \
       RUSTFLAGS="-C linker=$TOOLCHAIN_BIN/clang -C link-arg=$VFLAG -C link-arg=-isysroot -C link-arg=$SDK" \
-      cargo build -p {{CORE_CRATE}} --lib --target "$TARGET" --release
+      cargo build -p {{CORE_CRATE}} --lib --target "$TARGET" --release --features regtest
   done
 
 # Package static libs into an xcframework.

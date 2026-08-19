@@ -48,6 +48,7 @@ pub struct NwaRequestState {
     pub client_pubkey: String,
     pub display_name: String,
     pub icon_url: Option<String>,
+    pub icon_display_url: Option<String>,
     pub requesting_app_description: Option<String>,
     pub callback_target_description: String,
     pub relay: String,
@@ -78,6 +79,8 @@ pub struct NwcConnection {
     pub name: String,
     #[serde(default)]
     pub icon_url: Option<String>,
+    #[serde(default, skip)]
+    pub icon_display_url: Option<String>,
     pub relay: String,
     pub uri: String,
     #[serde(default)]
@@ -950,18 +953,18 @@ fn supported_price_currencies() -> Vec<CurrencyOption> {
 }
 
 fn supported_networks() -> Vec<NetworkOption> {
-    [
-        WalletNetwork::Mainnet,
-        WalletNetwork::Signet,
-        WalletNetwork::Regtest,
-    ]
-    .into_iter()
-    .map(|network| NetworkOption {
-        name: network.display_name().to_string(),
-        caption: network.caption().to_string(),
-        network,
-    })
-    .collect()
+    let mut networks = vec![WalletNetwork::Mainnet, WalletNetwork::Signet];
+    if cfg!(feature = "regtest") {
+        networks.push(WalletNetwork::Regtest);
+    }
+    networks
+        .into_iter()
+        .map(|network| NetworkOption {
+            name: network.display_name().to_string(),
+            caption: network.caption().to_string(),
+            network,
+        })
+        .collect()
 }
 
 fn should_show_launch_splash(state: &AppState) -> bool {
@@ -1314,7 +1317,10 @@ mod tests {
         let mut state = AppState::initial();
         state.refresh_derived();
 
-        assert_eq!(state.supported_networks.len(), 3);
+        assert_eq!(
+            state.supported_networks.len(),
+            if cfg!(feature = "regtest") { 3 } else { 2 }
+        );
         assert!(state
             .supported_networks
             .iter()
@@ -1323,10 +1329,13 @@ mod tests {
             .supported_networks
             .iter()
             .any(|network| network.network == WalletNetwork::Mainnet));
-        assert!(state
-            .supported_networks
-            .iter()
-            .any(|network| network.network == WalletNetwork::Regtest));
+        assert_eq!(
+            state
+                .supported_networks
+                .iter()
+                .any(|network| network.network == WalletNetwork::Regtest),
+            cfg!(feature = "regtest")
+        );
         assert_eq!(
             WalletNetwork::Signet.db_file_name(),
             "rebel-wallet-signet.sqlite"

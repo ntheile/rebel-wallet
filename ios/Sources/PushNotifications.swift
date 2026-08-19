@@ -1,5 +1,6 @@
 import UIKit
 import UserNotifications
+import os.log
 
 enum PushNotificationEvents {
     static let registrationDidChange = Notification.Name("RebelWalletPushRegistrationDidChange")
@@ -60,7 +61,7 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         NwcPushPlatformContext.cachedDeviceToken = token
         postRegistrationStatus("Registered", deviceToken: token)
-        NSLog("RebelWallet APNs device token: %@", token)
+        os_log("RebelWallet APNs device token: %{private}@", log: .default, type: .debug, token)
     }
 
     func application(
@@ -88,7 +89,13 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
                 message: "Notification tapped event_id=\(wake.eventId) relay=\(wake.relay)"
             )
             NwcWakeInbox.enqueue(wake)
-            NSLog("RebelWallet opened nwc_wake notification event_id=%@ relay=%@", wake.eventId, wake.relay)
+            os_log(
+                "RebelWallet opened nwc_wake notification event_id=%{private}@ relay=%{private}@",
+                log: .default,
+                type: .debug,
+                wake.eventId,
+                wake.relay
+            )
         } else {
             NwcWakeInbox.appendDebug(
                 source: "App",
