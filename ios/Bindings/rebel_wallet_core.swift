@@ -895,6 +895,7 @@ public struct AppState: Equatable, Hashable {
     public var directMessages: [NostrMessage]
     public var activity: [ActivityItem]
     public var recoveryPhrase: String?
+    public var revealedNostrSecret: String?
     public var toast: String?
     public var busy: BusyState
     public var capabilityRequest: CapabilityRequest?
@@ -904,7 +905,7 @@ public struct AppState: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, showLaunchSplash: Bool, router: Router, setup: SetupState, wallet: WalletState, supportedNetworks: [NetworkOption], supportedPriceCurrencies: [CurrencyOption], receive: ReceiveState, send: SendState, lightningAddress: LightningAddressState, nostr: NostrState, directMessages: [NostrMessage], activity: [ActivityItem], recoveryPhrase: String?, toast: String?, busy: BusyState, capabilityRequest: CapabilityRequest?, pushNotifications: PushNotificationState, nwa: NwaState, nwc: NwcState) {
+    public init(rev: UInt64, showLaunchSplash: Bool, router: Router, setup: SetupState, wallet: WalletState, supportedNetworks: [NetworkOption], supportedPriceCurrencies: [CurrencyOption], receive: ReceiveState, send: SendState, lightningAddress: LightningAddressState, nostr: NostrState, directMessages: [NostrMessage], activity: [ActivityItem], recoveryPhrase: String?, revealedNostrSecret: String?, toast: String?, busy: BusyState, capabilityRequest: CapabilityRequest?, pushNotifications: PushNotificationState, nwa: NwaState, nwc: NwcState) {
         self.rev = rev
         self.showLaunchSplash = showLaunchSplash
         self.router = router
@@ -919,6 +920,7 @@ public struct AppState: Equatable, Hashable {
         self.directMessages = directMessages
         self.activity = activity
         self.recoveryPhrase = recoveryPhrase
+        self.revealedNostrSecret = revealedNostrSecret
         self.toast = toast
         self.busy = busy
         self.capabilityRequest = capabilityRequest
@@ -957,6 +959,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 directMessages: FfiConverterSequenceTypeNostrMessage.read(from: &buf), 
                 activity: FfiConverterSequenceTypeActivityItem.read(from: &buf), 
                 recoveryPhrase: FfiConverterOptionString.read(from: &buf), 
+                revealedNostrSecret: FfiConverterOptionString.read(from: &buf), 
                 toast: FfiConverterOptionString.read(from: &buf), 
                 busy: FfiConverterTypeBusyState.read(from: &buf), 
                 capabilityRequest: FfiConverterOptionTypeCapabilityRequest.read(from: &buf), 
@@ -981,6 +984,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterSequenceTypeNostrMessage.write(value.directMessages, into: &buf)
         FfiConverterSequenceTypeActivityItem.write(value.activity, into: &buf)
         FfiConverterOptionString.write(value.recoveryPhrase, into: &buf)
+        FfiConverterOptionString.write(value.revealedNostrSecret, into: &buf)
         FfiConverterOptionString.write(value.toast, into: &buf)
         FfiConverterTypeBusyState.write(value.busy, into: &buf)
         FfiConverterOptionTypeCapabilityRequest.write(value.capabilityRequest, into: &buf)
@@ -1670,7 +1674,7 @@ public struct FfiConverterTypeNwaRequestState: FfiConverterRustBuffer {
                 id: FfiConverterString.read(from: &buf), 
                 clientPubkey: FfiConverterString.read(from: &buf), 
                 displayName: FfiConverterString.read(from: &buf), 
-                iconUrl: FfiConverterOptionString.read(from: &buf),
+                iconUrl: FfiConverterOptionString.read(from: &buf), 
                 requestingAppDescription: FfiConverterOptionString.read(from: &buf), 
                 callbackTargetDescription: FfiConverterString.read(from: &buf), 
                 relay: FfiConverterString.read(from: &buf), 
@@ -1845,7 +1849,7 @@ public struct FfiConverterTypeNwcConnection: FfiConverterRustBuffer {
             try NwcConnection(
                 id: FfiConverterString.read(from: &buf), 
                 name: FfiConverterString.read(from: &buf), 
-                iconUrl: FfiConverterOptionString.read(from: &buf),
+                iconUrl: FfiConverterOptionString.read(from: &buf), 
                 relay: FfiConverterString.read(from: &buf), 
                 uri: FfiConverterString.read(from: &buf), 
                 walletManagedSecret: FfiConverterBool.read(from: &buf), 
@@ -2561,17 +2565,29 @@ public struct WalletState: Equatable, Hashable {
     public var pendingReceiveSat: UInt64
     public var pendingReceiveDisplay: String
     public var pendingReceiveFiatDisplay: String?
+    public var stuckReceiveSat: UInt64
+    public var stuckReceiveDisplay: String
+    public var stuckReceiveFiatDisplay: String?
     public var pendingSendSat: UInt64
     public var pendingSendDisplay: String
     public var pendingSendFiatDisplay: String?
+    /**
+     * Funds committed to a round funding transaction and temporarily
+     * unavailable. Queued delegated refreshes are deliberately excluded.
+     */
     public var pendingRefreshSat: UInt64
     public var pendingRefreshDisplay: String
     public var pendingRefreshFiatDisplay: String?
+    public var syncError: String?
     public var lastSync: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(network: WalletNetwork, networkName: String, defaultServerAddress: String, defaultEsploraAddress: String, serverAddress: String, esploraAddress: String, priceCurrency: PriceCurrency, priceCurrencyCode: String, priceCurrencyName: String, btcPrice: Double?, balanceSat: UInt64, balanceDisplay: String, balanceFiatDisplay: String?, pendingReceiveSat: UInt64, pendingReceiveDisplay: String, pendingReceiveFiatDisplay: String?, pendingSendSat: UInt64, pendingSendDisplay: String, pendingSendFiatDisplay: String?, pendingRefreshSat: UInt64, pendingRefreshDisplay: String, pendingRefreshFiatDisplay: String?, lastSync: String?) {
+    public init(network: WalletNetwork, networkName: String, defaultServerAddress: String, defaultEsploraAddress: String, serverAddress: String, esploraAddress: String, priceCurrency: PriceCurrency, priceCurrencyCode: String, priceCurrencyName: String, btcPrice: Double?, balanceSat: UInt64, balanceDisplay: String, balanceFiatDisplay: String?, pendingReceiveSat: UInt64, pendingReceiveDisplay: String, pendingReceiveFiatDisplay: String?, stuckReceiveSat: UInt64, stuckReceiveDisplay: String, stuckReceiveFiatDisplay: String?, pendingSendSat: UInt64, pendingSendDisplay: String, pendingSendFiatDisplay: String?, 
+        /**
+         * Funds committed to a round funding transaction and temporarily
+         * unavailable. Queued delegated refreshes are deliberately excluded.
+         */pendingRefreshSat: UInt64, pendingRefreshDisplay: String, pendingRefreshFiatDisplay: String?, syncError: String?, lastSync: String?) {
         self.network = network
         self.networkName = networkName
         self.defaultServerAddress = defaultServerAddress
@@ -2588,12 +2604,16 @@ public struct WalletState: Equatable, Hashable {
         self.pendingReceiveSat = pendingReceiveSat
         self.pendingReceiveDisplay = pendingReceiveDisplay
         self.pendingReceiveFiatDisplay = pendingReceiveFiatDisplay
+        self.stuckReceiveSat = stuckReceiveSat
+        self.stuckReceiveDisplay = stuckReceiveDisplay
+        self.stuckReceiveFiatDisplay = stuckReceiveFiatDisplay
         self.pendingSendSat = pendingSendSat
         self.pendingSendDisplay = pendingSendDisplay
         self.pendingSendFiatDisplay = pendingSendFiatDisplay
         self.pendingRefreshSat = pendingRefreshSat
         self.pendingRefreshDisplay = pendingRefreshDisplay
         self.pendingRefreshFiatDisplay = pendingRefreshFiatDisplay
+        self.syncError = syncError
         self.lastSync = lastSync
     }
 
@@ -2629,12 +2649,16 @@ public struct FfiConverterTypeWalletState: FfiConverterRustBuffer {
                 pendingReceiveSat: FfiConverterUInt64.read(from: &buf), 
                 pendingReceiveDisplay: FfiConverterString.read(from: &buf), 
                 pendingReceiveFiatDisplay: FfiConverterOptionString.read(from: &buf), 
+                stuckReceiveSat: FfiConverterUInt64.read(from: &buf), 
+                stuckReceiveDisplay: FfiConverterString.read(from: &buf), 
+                stuckReceiveFiatDisplay: FfiConverterOptionString.read(from: &buf), 
                 pendingSendSat: FfiConverterUInt64.read(from: &buf), 
                 pendingSendDisplay: FfiConverterString.read(from: &buf), 
                 pendingSendFiatDisplay: FfiConverterOptionString.read(from: &buf), 
                 pendingRefreshSat: FfiConverterUInt64.read(from: &buf), 
                 pendingRefreshDisplay: FfiConverterString.read(from: &buf), 
                 pendingRefreshFiatDisplay: FfiConverterOptionString.read(from: &buf), 
+                syncError: FfiConverterOptionString.read(from: &buf), 
                 lastSync: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -2656,12 +2680,16 @@ public struct FfiConverterTypeWalletState: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.pendingReceiveSat, into: &buf)
         FfiConverterString.write(value.pendingReceiveDisplay, into: &buf)
         FfiConverterOptionString.write(value.pendingReceiveFiatDisplay, into: &buf)
+        FfiConverterUInt64.write(value.stuckReceiveSat, into: &buf)
+        FfiConverterString.write(value.stuckReceiveDisplay, into: &buf)
+        FfiConverterOptionString.write(value.stuckReceiveFiatDisplay, into: &buf)
         FfiConverterUInt64.write(value.pendingSendSat, into: &buf)
         FfiConverterString.write(value.pendingSendDisplay, into: &buf)
         FfiConverterOptionString.write(value.pendingSendFiatDisplay, into: &buf)
         FfiConverterUInt64.write(value.pendingRefreshSat, into: &buf)
         FfiConverterString.write(value.pendingRefreshDisplay, into: &buf)
         FfiConverterOptionString.write(value.pendingRefreshFiatDisplay, into: &buf)
+        FfiConverterOptionString.write(value.syncError, into: &buf)
         FfiConverterOptionString.write(value.lastSync, into: &buf)
     }
 }
@@ -2874,8 +2902,12 @@ public enum AppAction: Equatable, Hashable {
     case sendDirectMessage(contactId: String, message: String
     )
     case clearToast
+    case clearRecoveryPhrase
+    case clearRevealedNostrSecret
     case requestHaptic(feedback: HapticFeedback
     )
+    case foregrounded
+    case backgrounded
 
 
 
@@ -3098,8 +3130,16 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case 80: return .clearToast
         
-        case 81: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
+        case 81: return .clearRecoveryPhrase
+        
+        case 82: return .clearRevealedNostrSecret
+        
+        case 83: return .requestHaptic(feedback: try FfiConverterTypeHapticFeedback.read(from: &buf)
         )
+        
+        case 84: return .foregrounded
+        
+        case 85: return .backgrounded
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -3501,10 +3541,26 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(80))
         
         
-        case let .requestHaptic(feedback):
+        case .clearRecoveryPhrase:
             writeInt(&buf, Int32(81))
+        
+        
+        case .clearRevealedNostrSecret:
+            writeInt(&buf, Int32(82))
+        
+        
+        case let .requestHaptic(feedback):
+            writeInt(&buf, Int32(83))
             FfiConverterTypeHapticFeedback.write(feedback, into: &buf)
             
+        
+        case .foregrounded:
+            writeInt(&buf, Int32(84))
+        
+        
+        case .backgrounded:
+            writeInt(&buf, Int32(85))
+        
         }
     }
 }
@@ -4478,12 +4534,12 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         )
         
         case 13: return .nwcWakeLogs
-
+        
         case 14: return .nwcWakeStatus
-
+        
         case 15: return .nwcConnectionDetail(connectionId: try FfiConverterString.read(from: &buf)
         )
-
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -4540,19 +4596,19 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
             writeInt(&buf, Int32(12))
             FfiConverterString.write(contactId, into: &buf)
             
-
+        
         case .nwcWakeLogs:
             writeInt(&buf, Int32(13))
-
-
+        
+        
         case .nwcWakeStatus:
             writeInt(&buf, Int32(14))
-
-
+        
+        
         case let .nwcConnectionDetail(connectionId):
             writeInt(&buf, Int32(15))
             FfiConverterString.write(connectionId, into: &buf)
-
+            
         }
     }
 }
@@ -4846,7 +4902,7 @@ public struct FfiConverterTypeWalletNetwork: FfiConverterRustBuffer {
         case 2: return .signet
         
         case 3: return .regtest
-
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -4862,10 +4918,10 @@ public struct FfiConverterTypeWalletNetwork: FfiConverterRustBuffer {
         case .signet:
             writeInt(&buf, Int32(2))
         
-
+        
         case .regtest:
             writeInt(&buf, Int32(3))
-
+        
         }
     }
 }

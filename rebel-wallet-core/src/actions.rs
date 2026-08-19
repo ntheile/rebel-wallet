@@ -198,7 +198,11 @@ pub enum AppAction {
         message: String,
     },
     ClearToast,
+    ClearRecoveryPhrase,
+    ClearRevealedNostrSecret,
     RequestHaptic {
         feedback: HapticFeedback,
     },
+    Foregrounded,
+    Backgrounded,
 }

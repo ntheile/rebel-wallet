@@ -515,6 +515,20 @@ struct BalancePanel: View {
                 StatPill(title: "Claimable", value: wallet.pendingReceiveDisplay, caption: wallet.pendingReceiveFiatDisplay)
                 StatPill(title: "Sending", value: wallet.pendingSendDisplay, caption: wallet.pendingSendFiatDisplay)
             }
+            if wallet.stuckReceiveSat > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("\(wallet.stuckReceiveDisplay) stuck — a Lightning receive could not be claimed")
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let syncError = wallet.syncError {
+                Label(syncError, systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if let lastSync = wallet.lastSync {
                 Text("Last sync \(lastSync)")
                     .font(.caption)

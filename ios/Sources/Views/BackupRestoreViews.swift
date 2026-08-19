@@ -8,6 +8,7 @@ struct BackupView: View {
     @State private var checkedSecure = false
     @State private var checkedResponsibility = false
     @State private var checkedPrivate = false
+    @State private var authRequested = false
 
     private var words: [String] {
         (manager.state.recoveryPhrase ?? "")
@@ -64,9 +65,16 @@ struct BackupView: View {
         .background(pageBackground)
         .foregroundStyle(primaryText)
         .onAppear {
-            if manager.state.recoveryPhrase == nil {
-                manager.dispatch(.showSeed)
+            guard manager.state.recoveryPhrase == nil, !authRequested else { return }
+            authRequested = true
+            Task {
+                if await DeviceAuth.authenticate(localizedReason: "Authenticate to reveal your recovery phrase.") {
+                    manager.dispatch(.showSeed)
+                }
             }
+        }
+        .onDisappear {
+            manager.dispatch(.clearRecoveryPhrase)
         }
     }
 }
@@ -256,7 +264,10 @@ struct SeedWordsPanel: View {
                 }
 
                 Button {
-                    UIPasteboard.general.string = words.joined(separator: " ")
+                    UIPasteboard.general.setItems(
+                        [[UIPasteboard.typeAutomatic: words.joined(separator: " ")]],
+                        options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)]
+                    )
                     onHaptic(.impactLight)
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {

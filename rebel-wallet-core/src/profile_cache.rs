@@ -10,6 +10,8 @@ use crate::{Contact, NostrState};
 
 const MAX_PROFILE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PROFILE_IMAGE_DIMENSION: u32 = 400;
+const MAX_DECODED_IMAGE_DIMENSION: u32 = 4096;
+const MAX_DECODED_IMAGE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CONCURRENT_PROFILE_IMAGE_DOWNLOADS: usize = 4;
 const PROFILE_IMAGE_JPEG_QUALITY: u8 = 85;
 
@@ -377,7 +379,14 @@ fn resize_profile_picture_to_jpeg(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
 }
 
 pub(crate) fn normalize_profile_picture_to_jpeg(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let img = image::load_from_memory(bytes)?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODED_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODED_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODED_IMAGE_ALLOC_BYTES);
+
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    reader.limits(limits);
+    let img = reader.decode()?;
     let img = if img.width() > MAX_PROFILE_IMAGE_DIMENSION
         || img.height() > MAX_PROFILE_IMAGE_DIMENSION
     {
@@ -430,6 +439,36 @@ mod tests {
         bytes
     }
 
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc: u32 = 0xffff_ffff;
+        for &byte in bytes {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    fn png_header_only_bytes(width: u32, height: u32) -> Vec<u8> {
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(b"IHDR");
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        let crc = crc32(&ihdr);
+
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(&ihdr);
+        bytes.extend_from_slice(&crc.to_be_bytes());
+        bytes
+    }
+
     fn webp_bytes(width: u32, height: u32) -> Vec<u8> {
         let mut img = image::RgbImage::new(width, height);
         for (x, y, pixel) in img.enumerate_pixels_mut() {
@@ -471,6 +510,13 @@ mod tests {
 
         assert!(output.len() > 2);
         assert_eq!(&output[..2], &[0xff, 0xd8]);
+    }
+
+    #[test]
+    fn oversized_png_header_is_rejected() {
+        let bytes = png_header_only_bytes(100_000, 100_000);
+        assert!(bytes.len() < 1024);
+        assert!(normalize_profile_picture_to_jpeg(&bytes).is_err());
     }
 
     #[test]

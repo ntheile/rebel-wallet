@@ -9,7 +9,7 @@ mod send;
 
 pub(crate) use send::sort_contacts_by_name_npub;
 
-#[derive(uniffi::Record, Clone, Debug)]
+#[derive(uniffi::Record, Clone)]
 pub struct AppState {
     pub rev: u64,
     pub show_launch_splash: bool,
@@ -25,6 +25,7 @@ pub struct AppState {
     pub direct_messages: Vec<NostrMessage>,
     pub activity: Vec<ActivityItem>,
     pub recovery_phrase: Option<String>,
+    pub revealed_nostr_secret: Option<String>,
     pub toast: Option<String>,
     pub busy: BusyState,
     pub capability_request: Option<CapabilityRequest>,
@@ -410,12 +411,18 @@ pub struct WalletState {
     pub pending_receive_sat: u64,
     pub pending_receive_display: String,
     pub pending_receive_fiat_display: Option<String>,
+    pub stuck_receive_sat: u64,
+    pub stuck_receive_display: String,
+    pub stuck_receive_fiat_display: Option<String>,
     pub pending_send_sat: u64,
     pub pending_send_display: String,
     pub pending_send_fiat_display: Option<String>,
+    /// Funds committed to a round funding transaction and temporarily
+    /// unavailable. Queued delegated refreshes are deliberately excluded.
     pub pending_refresh_sat: u64,
     pub pending_refresh_display: String,
     pub pending_refresh_fiat_display: Option<String>,
+    pub sync_error: Option<String>,
     pub last_sync: Option<String>,
 }
 
@@ -602,6 +609,40 @@ pub enum ActivityIconKind {
     Received,
 }
 
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("rev", &self.rev)
+            .field("show_launch_splash", &self.show_launch_splash)
+            .field("router", &self.router)
+            .field("setup", &self.setup)
+            .field("wallet", &self.wallet)
+            .field("supported_networks", &self.supported_networks)
+            .field(
+                "supported_price_currencies",
+                &self.supported_price_currencies,
+            )
+            .field("receive", &self.receive)
+            .field("send", &self.send)
+            .field("lightning_address", &self.lightning_address)
+            .field("nostr", &self.nostr)
+            .field("direct_messages", &self.direct_messages)
+            .field("activity", &self.activity)
+            .field(
+                "recovery_phrase",
+                &self.recovery_phrase.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "revealed_nostr_secret",
+                &self.revealed_nostr_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("toast", &self.toast)
+            .field("busy", &self.busy)
+            .field("capability_request", &self.capability_request)
+            .finish()
+    }
+}
+
 impl AppState {
     pub(crate) fn initial() -> Self {
         let network = WalletNetwork::default();
@@ -631,12 +672,16 @@ impl AppState {
                 pending_receive_sat: 0,
                 pending_receive_display: format_sats(0),
                 pending_receive_fiat_display: None,
+                stuck_receive_sat: 0,
+                stuck_receive_display: format_sats(0),
+                stuck_receive_fiat_display: None,
                 pending_send_sat: 0,
                 pending_send_display: format_sats(0),
                 pending_send_fiat_display: None,
                 pending_refresh_sat: 0,
                 pending_refresh_display: format_sats(0),
                 pending_refresh_fiat_display: None,
+                sync_error: None,
                 last_sync: None,
             },
             receive: ReceiveState {
@@ -718,6 +763,7 @@ impl AppState {
             direct_messages: vec![],
             activity: vec![],
             recovery_phrase: None,
+            revealed_nostr_secret: None,
             toast: None,
             busy: BusyState::default(),
             capability_request: None,
@@ -752,6 +798,7 @@ impl AppState {
         self.wallet.price_currency_name = self.wallet.price_currency.display_name().to_string();
         self.wallet.balance_display = format_sats(self.wallet.balance_sat);
         self.wallet.pending_receive_display = format_sats(self.wallet.pending_receive_sat);
+        self.wallet.stuck_receive_display = format_sats(self.wallet.stuck_receive_sat);
         self.wallet.pending_send_display = format_sats(self.wallet.pending_send_sat);
         self.wallet.pending_refresh_display = format_sats(self.wallet.pending_refresh_sat);
         self.wallet.balance_fiat_display = format_fiat_sats(
@@ -761,6 +808,11 @@ impl AppState {
         );
         self.wallet.pending_receive_fiat_display = format_fiat_sats(
             self.wallet.pending_receive_sat,
+            self.wallet.btc_price,
+            &self.wallet.price_currency,
+        );
+        self.wallet.stuck_receive_fiat_display = format_fiat_sats(
+            self.wallet.stuck_receive_sat,
             self.wallet.btc_price,
             &self.wallet.price_currency,
         );
@@ -1111,6 +1163,24 @@ mod tests {
     }
 
     #[test]
+    fn background_wallet_work_does_not_disable_send_submission() {
+        let mut state = AppState::initial();
+        state.wallet.balance_sat = 1_000;
+        state.send.destination = "lightning:lnbc1example".to_string();
+        state.refresh_derived();
+        assert!(state.send.can_submit);
+
+        state.busy.syncing_wallet = true;
+        state.refresh_derived();
+        assert!(state.send.can_submit);
+
+        state.busy.syncing_wallet = false;
+        state.busy.maintaining_vtxos = true;
+        state.refresh_derived();
+        assert!(state.send.can_submit);
+    }
+
+    #[test]
     fn hides_zap_when_not_available() {
         let mut state = AppState::initial();
         state.send.destination = "lnbc1example".to_string();
@@ -1203,6 +1273,20 @@ mod tests {
         assert_eq!(state.receive.receive_request, None);
         assert_eq!(state.receive.amount_sat, 0);
         assert_eq!(state.receive.memo, "");
+    }
+
+    #[test]
+    fn debug_redacts_recovery_phrase() {
+        let mut state = AppState::initial();
+        assert!(format!("{state:?}").contains("recovery_phrase: None"));
+
+        state.recovery_phrase = Some("abandon abandon abandon".to_string());
+        state.revealed_nostr_secret = Some("nsec1verysecret".to_string());
+        let debug = format!("{state:?}");
+        assert!(!debug.contains("abandon"));
+        assert!(!debug.contains("nsec1verysecret"));
+        assert!(debug.contains("recovery_phrase: Some(\"<redacted>\")"));
+        assert!(debug.contains("revealed_nostr_secret: Some(\"<redacted>\")"));
     }
 
     #[test]

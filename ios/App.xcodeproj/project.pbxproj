@@ -39,6 +39,7 @@
 		B757D13B7C830FB1E21C287A /* SendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC5043C96A336BFDB3828A80 /* SendView.swift */; };
 		B9CCB02C6244FD9FA6DB98EA /* NwaCallbackOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DCF4ADAA275B48D3BA1A458 /* NwaCallbackOpener.swift */; };
 		CE9095245DC4CDF7215A797E /* UIKitPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9755A3599BFF7CE9D4C2B1BA /* UIKitPresentation.swift */; };
+		CED21125310A750295A4780F /* DeviceAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D863AEFB2673876DB1D78CD /* DeviceAuth.swift */; };
 		D096C657DFB51D8FC3F689AE /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6865C8CFB78CE40B67FA1DB2 /* ProfileView.swift */; };
 		D4D47575C3B6FFA1C555EF10 /* CommonComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 747F6D6E419A7475169ACED6 /* CommonComponents.swift */; };
 		E621BAA395FB93293F83B59E /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AF276A85A4339254182EB73 /* SetupView.swift */; };
@@ -88,6 +89,7 @@
 		503FC468B99283614CA26E34 /* LightningAddressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightningAddressView.swift; sourceTree = "<group>"; };
 		509EAF54E660C3D06373EA44 /* NotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotificationService.entitlements; sourceTree = "<group>"; };
 		50CB043DA11A34DF9BD92812 /* NwcConnectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwcConnectionsView.swift; sourceTree = "<group>"; };
+		5D863AEFB2673876DB1D78CD /* DeviceAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceAuth.swift; sourceTree = "<group>"; };
 		60A0551DCC45FC270B470B96 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6865C8CFB78CE40B67FA1DB2 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		6AF276A85A4339254182EB73 /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
@@ -197,6 +199,7 @@
 		8EB165A1A41A6C1DBA2779EF /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				5D863AEFB2673876DB1D78CD /* DeviceAuth.swift */,
 				EA0C4BD0B40C39BFEC75E99F /* ProfileImageLoader.swift */,
 			);
 			path = Services;
@@ -383,6 +386,7 @@
 				430B05A25E1EBA780E5F7A16 /* ContactDetailView.swift in Sources */,
 				EC041799A677360DB6FB8799 /* ContactsView.swift in Sources */,
 				11A29977382725FC272B253A /* ContentView.swift in Sources */,
+				CED21125310A750295A4780F /* DeviceAuth.swift in Sources */,
 				B5AAD623F82BE3B1BDB58880 /* DisplayText.swift in Sources */,
 				737B461EAB6B2553322AF574 /* Haptics.swift in Sources */,
 				AC5F9605CCFD3CE1158502B0 /* LaunchSplashView.swift in Sources */,

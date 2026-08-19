@@ -1,7 +1,9 @@
 use bark::Wallet;
+use zeroize::Zeroizing;
 
 use crate::nostr_support::FetchedProfileContact;
 use crate::persistence::ZapReceiptRecord;
+use crate::wallet::WalletRecoveryNotice;
 use crate::{
     ActivityItem, AppAction, AppState, NostrMessage, NostrState, NwcConnection,
     NwcProcessedWakeRequest, PriceCurrency, SendDestinationKind,
@@ -42,19 +44,41 @@ pub(crate) enum CoreMsg {
     Async(AsyncMsg),
 }
 
+pub(crate) struct WalletSnapshot {
+    pub(crate) balance_sat: u64,
+    pub(crate) pending_receive_sat: u64,
+    pub(crate) stuck_receive_sat: u64,
+    pub(crate) pending_send_sat: u64,
+    /// Amount committed to a round funding transaction and no longer spendable.
+    /// `None` preserves the last known value when Bark could not resolve every
+    /// pending round's current server status.
+    pub(crate) pending_refresh_sat: Option<u64>,
+    /// Includes queued delegated rounds whose inputs are still spendable. This
+    /// drives reconciliation polling but is intentionally not rendered as busy.
+    pub(crate) has_pending_rounds: bool,
+    pub(crate) activity: Vec<ActivityItem>,
+}
+
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AsyncMsg {
     WalletReady {
+        generation: u64,
         wallet: Wallet,
-        mnemonic: String,
+        mnemonic: Zeroizing<String>,
+        recovery_notice: Option<WalletRecoveryNotice>,
     },
-    WalletSynced {
-        balance_sat: u64,
-        pending_receive_sat: u64,
-        pending_send_sat: u64,
-        pending_refresh_sat: u64,
-        maintenance_checked: bool,
-        activity: Vec<ActivityItem>,
+    WalletOpenFailed {
+        generation: u64,
+        message: String,
+    },
+    WalletWorkFinished {
+        generation: u64,
+        operation_id: u64,
+        result: Result<WalletSnapshot, String>,
+    },
+    WalletRefreshPollDue {
+        generation: u64,
+        nonce: u64,
     },
     ArkAddress(String),
     ReceiveRequest {
@@ -125,7 +149,7 @@ pub(crate) enum AsyncMsg {
         receipts: Vec<ZapReceiptRecord>,
         records: Vec<FetchedProfileContact>,
     },
-    Seed(String),
+    Seed(Zeroizing<String>),
     NostrProfileLoaded {
         nostr: NostrState,
         profile: Option<FetchedProfileContact>,

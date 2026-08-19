@@ -32,6 +32,7 @@ struct RebelWalletApp: App {
                 }
                 .onAppear {
                     easterEgg.start()
+                    manager?.dispatch(.foregrounded)
                 }
                 .onDisappear {
                     easterEgg.stop()
@@ -41,7 +42,7 @@ struct RebelWalletApp: App {
                     switch phase {
                     case .active:
                         manager.drainQueuedNwcWakeRequests()
-                        manager.dispatch(.maintainVtxos)
+                        manager.dispatch(.foregrounded)
                         // Re-attempt claiming an in-flight Lightning receive in case
                         // the payment landed while the app was suspended.
                         manager.dispatch(.resumeReceiveMonitor)
@@ -51,6 +52,7 @@ struct RebelWalletApp: App {
                         manager.dispatch(.claimPendingLightningReceives)
                         manager.endReceiveBackgroundTask()
                     case .background:
+                        manager.dispatch(.backgrounded)
                         // Keep the core running briefly so an in-flight Lightning
                         // receive can still be claimed while backgrounded.
                         manager.beginReceiveBackgroundTaskIfNeeded()

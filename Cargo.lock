@@ -73,8 +73,8 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "ark-lib"
-version = "0.2.5"
-source = "git+https://gitlab.com/benthecarman/bark.git?rev=b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c#b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c"
+version = "0.6.0"
+source = "git+https://gitlab.com/benthecarman/bark.git?rev=3ec92d287a65195d73463c7f186ed4b1387fbf57#3ec92d287a65195d73463c7f186ed4b1387fbf57"
 dependencies = [
  "async-trait",
  "bark-bitcoin-ext",
@@ -202,14 +202,15 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bark-bitcoin-ext"
-version = "0.2.5"
-source = "git+https://gitlab.com/benthecarman/bark.git?rev=b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c#b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c"
+version = "0.6.0"
+source = "git+https://gitlab.com/benthecarman/bark.git?rev=3ec92d287a65195d73463c7f186ed4b1387fbf57#3ec92d287a65195d73463c7f186ed4b1387fbf57"
 dependencies = [
  "bdk_bitcoind_rpc",
  "bdk_wallet",
  "bitcoin",
  "lazy_static",
  "log",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -217,8 +218,8 @@ dependencies = [
 
 [[package]]
 name = "bark-server-rpc"
-version = "0.2.5"
-source = "git+https://gitlab.com/benthecarman/bark.git?rev=b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c#b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c"
+version = "0.6.0"
+source = "git+https://gitlab.com/benthecarman/bark.git?rev=3ec92d287a65195d73463c7f186ed4b1387fbf57#3ec92d287a65195d73463c7f186ed4b1387fbf57"
 dependencies = [
  "ark-lib",
  "bitcoin",
@@ -235,8 +236,8 @@ dependencies = [
 
 [[package]]
 name = "bark-wallet"
-version = "0.2.5"
-source = "git+https://gitlab.com/benthecarman/bark.git?rev=b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c#b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c"
+version = "0.6.0"
+source = "git+https://gitlab.com/benthecarman/bark.git?rev=3ec92d287a65195d73463c7f186ed4b1387fbf57#3ec92d287a65195d73463c7f186ed4b1387fbf57"
 dependencies = [
  "anyhow",
  "ark-lib",
@@ -275,9 +276,9 @@ dependencies = [
 
 [[package]]
 name = "base58ck"
-version = "0.1.100"
+version = "0.1.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec5dc7e09f7bb15f0062da7c03086d6b71a2c84e0af4fccbbc7d8c6559847816"
+checksum = "365c0acd5b2e8dd0111a46c4faea83fb3cfb6e39a49a7c73a06e090db7b2eff0"
 dependencies = [
  "bitcoin_hashes",
 ]
@@ -358,9 +359,9 @@ dependencies = [
 
 [[package]]
 name = "bdk_wallet"
-version = "3.0.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67f3c4f9526d22374fca5b7ff1d6bf8d921ab56db2dac8df66a2c5561b31d4ef"
+checksum = "1284fb23acc3e3022673712b55f4d5ce7e38aadc2c49bbef830dc3935f0a3289"
 dependencies = [
  "bdk_chain",
  "bitcoin",
@@ -378,9 +379,10 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "bip321"
-version = "0.1.0"
-source = "git+https://gitlab.com/benthecarman/bark.git?rev=b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c#b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c"
+version = "0.4.0"
+source = "git+https://gitlab.com/benthecarman/bark.git?rev=3ec92d287a65195d73463c7f186ed4b1387fbf57#3ec92d287a65195d73463c7f186ed4b1387fbf57"
 dependencies = [
+ "bark-bitcoin-ext",
  "bitcoin",
  "lightning",
  "lightning-invoice",
@@ -403,9 +405,9 @@ dependencies = [
 
 [[package]]
 name = "bitcoin"
-version = "0.32.100"
+version = "0.32.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39581299241111285f3268ba75ddf372746fd041620918b145c1af9d75e91b6c"
+checksum = "bb0ce8bd5baaa0d303a19915a6d93afed161f528654e42da2a7a97d05c59499a"
 dependencies = [
  "base58ck",
  "base64 0.21.7",
@@ -420,25 +422,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitcoin-io"
-version = "0.1.100"
+name = "bitcoin-consensus-encoding"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11301df0b06f22dea7bb1916403fdd88a371031e495c49b8f96931b28189e175"
+checksum = "207311705279250ba465076a1bac4b1ac982855fff73fc5f67e22158ac58cdc9"
+dependencies = [
+ "bitcoin-internals",
+ "hex-conservative 1.2.0",
+ "serde",
+]
+
+[[package]]
+name = "bitcoin-internals"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d573f4cf32996a8dce612e4348cece65a241f1882ed594047c9ba348e8869fa5"
+
+[[package]]
+name = "bitcoin-io"
+version = "0.1.101"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb5de036369d1ac59d3c1819ebc4d850f89466f5401c571a285b6ed564a4cb78"
+dependencies = [
+ "bitcoin-consensus-encoding",
+]
 
 [[package]]
 name = "bitcoin-units"
-version = "0.1.100"
+version = "0.1.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57bad157b78d0d1b22c4cbb6a35a566211fc4d14866a37f2c780652b50f3b845"
+checksum = "9cb95693f371d089a4b5b6fc41c6f3ea6e01ee8c15388335dfac8ea685173b51"
 dependencies = [
+ "bitcoin-consensus-encoding",
  "serde",
 ]
 
 [[package]]
 name = "bitcoin_hashes"
-version = "0.14.100"
+version = "0.14.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9901a56e133a1fc86eeb1113e2591f45f4682451ca893bff494d2f88918e3f"
+checksum = "bca4c7abb40c8817d77403c880988cfd484f23ab2365726afb2f798363e2c4a2"
 dependencies = [
  "bitcoin-io",
  "hex-conservative 0.2.2",
@@ -1312,6 +1335,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-conservative"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35431185f361ccf3ffc58254628af5f1f5d5f28531da2e02e5d6c82bbc282a10"
+dependencies = [
+ "arrayvec",
+]
+
+[[package]]
 name = "hex_lit"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1773,9 +1805,9 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "lnurl-rs"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41eacdd87b675792f7752f3dd0937a00241a504c3956c47f72986490662e1db4"
+checksum = "73a989342d2e9381c85d381898c3a925bad930958acd480fe0221f680c7856eb"
 dependencies = [
  "aes",
  "anyhow",
@@ -2490,6 +2522,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]

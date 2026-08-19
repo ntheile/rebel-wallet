@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use anyhow::Context;
 use bip39::Mnemonic;
+use zeroize::Zeroizing;
 
 use super::custom_address_flow::{
     lightning_address_local_part, pending_custom_lightning_address_matches_name,
@@ -27,46 +28,53 @@ impl AppCore {
         if let Some(mnemonic) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
             self.state.busy.bootstrapping = true;
             self.state.busy.opening_wallet = true;
-            self.open_wallet(mnemonic, WalletOpenMode::OpenOrCreate);
+            self.open_wallet(Zeroizing::new(mnemonic), WalletOpenMode::OpenOrCreate);
         }
     }
 
-    pub(super) fn open_wallet(&self, mnemonic: String, mode: WalletOpenMode) {
+    pub(super) fn open_wallet(&mut self, mnemonic: Zeroizing<String>, mode: WalletOpenMode) {
+        let generation = self.invalidate_wallet_session();
         let tx = self.tx.clone();
         let data_dir = self.data_dir.clone();
         let server_config = ServerConfig::from_wallet(&self.state.wallet);
         self.rt.spawn(async move {
             let result = async {
-                let mnemonic = Mnemonic::from_str(&mnemonic).context("invalid recovery phrase")?;
-                let wallet = open_bark_wallet(data_dir, &mnemonic, mode, server_config).await?;
-                Ok::<_, anyhow::Error>((wallet, mnemonic.to_string()))
+                let mnemonic =
+                    Mnemonic::from_str(mnemonic.as_str()).context("invalid recovery phrase")?;
+                let opened = open_bark_wallet(data_dir, &mnemonic, mode, server_config).await?;
+                Ok::<_, anyhow::Error>((opened, Zeroizing::new(mnemonic.to_string())))
             }
             .await;
             let msg = match result {
-                Ok((wallet, mnemonic)) => AsyncMsg::WalletReady { wallet, mnemonic },
-                Err(e) => AsyncMsg::Error(format!("Wallet setup failed: {e:#}")),
+                Ok((opened, mnemonic)) => AsyncMsg::WalletReady {
+                    generation,
+                    wallet: opened.wallet,
+                    mnemonic,
+                    recovery_notice: opened.recovery_notice,
+                },
+                Err(e) => AsyncMsg::WalletOpenFailed {
+                    generation,
+                    message: format!("Wallet setup failed: {e:#}"),
+                },
             };
             let _ = tx.send(CoreMsg::Async(msg));
         });
     }
 
     pub(super) fn delete_wallet(&mut self) {
-        self.wallet = None;
+        self.invalidate_wallet_session();
 
+        // Remove local data first. Only delete the secrets once the data they
+        // unlock is confirmed gone, so a failed cleanup cannot orphan the
+        // databases behind an already-deleted seed.
         let mut errors = Vec::new();
-        if !self.secrets.delete_secret(WALLET_SEED_KEY.to_string()) {
-            errors.push("wallet seed".to_string());
-        }
-        let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
-        for connection in &self.state.nwc.connections {
-            if !self
-                .secrets
-                .delete_secret(nwc_client_secret_key(&connection.client_pubkey))
-            {
-                errors.push(format!("NWC secret for {}", connection.name));
-            }
-        }
-
+        let nwc_secrets = self
+            .state
+            .nwc
+            .connections
+            .iter()
+            .map(|connection| (connection.client_pubkey.clone(), connection.name.clone()))
+            .collect::<Vec<_>>();
         for network in [
             WalletNetwork::Mainnet,
             WalletNetwork::Signet,
@@ -96,6 +104,21 @@ impl AppCore {
         let mut state = AppState::initial();
         state.show_launch_splash = false;
         self.state = state;
+
+        if errors.is_empty() {
+            if !self.secrets.delete_secret(WALLET_SEED_KEY.to_string()) {
+                errors.push("wallet seed".to_string());
+            }
+            let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
+            for (client_pubkey, name) in nwc_secrets {
+                if !self
+                    .secrets
+                    .delete_secret(nwc_client_secret_key(&client_pubkey))
+                {
+                    errors.push(format!("NWC secret for {name}"));
+                }
+            }
+        }
 
         if errors.is_empty() {
             self.state.toast = Some("Wallet deleted. Start over to create or restore.".to_string());
@@ -160,9 +183,8 @@ impl AppCore {
 
         if wallet_server_changed {
             if let Some(seed) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
-                self.wallet = None;
                 self.state.busy.opening_wallet = true;
-                self.open_wallet(seed, WalletOpenMode::OpenOrCreate);
+                self.open_wallet(Zeroizing::new(seed), WalletOpenMode::OpenOrCreate);
                 self.state.toast = Some("Network changed. Reconnecting wallet.".to_string());
                 self.request_haptic(HapticFeedback::NotificationSuccess);
             } else {

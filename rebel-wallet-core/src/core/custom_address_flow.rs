@@ -9,7 +9,7 @@ use bitcoin::Amount;
 use super::AppCore;
 use crate::custom_address::{
     amount_msats_to_sat, quote_registration, register_address, validate_custom_address_name,
-    verify_registration, RegisterResult, RegisterStatus,
+    verify_registration, verify_registration_invoice, RegisterResult, RegisterStatus,
 };
 use crate::persistence::{PaymentAnnotation, PendingCustomLightningAddress};
 use crate::state::arkzap_domain_for_ark_address;
@@ -53,6 +53,7 @@ async fn register_custom_lightning_address(
     if response.invoice.trim().is_empty() {
         anyhow::bail!("registration response did not include an invoice");
     }
+    verify_registration_invoice(&response.invoice, response.fee_sats)?;
     Ok(registration_update_from_result(
         response, false, false, false, true, None,
     ))
@@ -348,6 +349,12 @@ impl AppCore {
     }
 
     pub(super) fn confirm_lightning_address_registration_payment(&mut self) {
+        if self.state.lightning_address.registration_phase
+            != LightningAddressRegistrationPhase::AwaitingPayment
+        {
+            eprintln!("Ignoring registration payment confirmation: no payment is awaiting.");
+            return;
+        }
         let Some(wallet) = self.wallet.clone() else {
             self.state.toast = Some("Wallet is not ready yet.".to_string());
             self.request_haptic(HapticFeedback::NotificationWarning);
@@ -586,7 +593,20 @@ impl AppCore {
         requires_confirmation: bool,
         warning: Option<String>,
     ) {
-        self.state.lightning_address.custom_name = name;
+        let requested_name = self.state.lightning_address.custom_name.clone();
+        let name_mismatch = active
+            && (name != requested_name
+                || !lightning_address_matches_name(&lightning_address, &requested_name));
+        let warning = if name_mismatch {
+            Some(format!(
+                "The server returned '{name}' but '{requested_name}' was requested. The registration was not activated."
+            ))
+        } else {
+            warning
+        };
+
+        self.state.lightning_address.custom_name =
+            if name_mismatch { requested_name } else { name };
         self.state.lightning_address.registration_address = Some(lightning_address.clone());
         self.state
             .lightning_address
@@ -600,7 +620,7 @@ impl AppCore {
             .lightning_address
             .registration_requires_confirmation = requires_confirmation;
 
-        if active {
+        if active && !name_mismatch {
             self.state.lightning_address.custom_address = Some(lightning_address);
             self.state.lightning_address.registration_phase =
                 LightningAddressRegistrationPhase::Active;

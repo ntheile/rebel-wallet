@@ -2,8 +2,8 @@ use anyhow::Context;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures_util::{SinkExt, StreamExt};
 use nostr_sdk::prelude::{
-    Client as NostrClient, EventBuilder, FinalizeEvent, FromBech32, JsonUtil, Keys, Kind, Metadata,
-    PublicKey as NostrPublicKey, Tag, ToBech32, Url,
+    Client as NostrClient, Event as NostrEvent, EventBuilder, FinalizeEvent, FromBech32, JsonUtil,
+    Keys, Kind, Metadata, PublicKey as NostrPublicKey, Tag, ToBech32, Url,
 };
 use reqwest::multipart;
 use serde::Deserialize;
@@ -21,6 +21,8 @@ pub(crate) const NOSTR_RELAYS: [&str; 3] = [
     "wss://relay.primal.net",
 ];
 const PRIMAL_URL: &str = "wss://cache2.primal.net/v1";
+/// Maximum accepted clock skew for `created_at` on fetched profile events.
+const MAX_FUTURE_CREATED_AT_SECS: u64 = 15 * 60;
 
 pub(crate) async fn nostr_client() -> anyhow::Result<NostrClient> {
     let client = NostrClient::default();
@@ -150,22 +152,20 @@ pub(crate) async fn primal_follow_contacts(
 ) -> anyhow::Result<Vec<FetchedProfileContact>> {
     let pubkey_hex = pubkey.to_hex();
     let events = primal_request(json!(["contact_list", { "pubkey": pubkey_hex }])).await?;
-    let mut latest_contact_list: Option<PrimalEvent> = None;
+    let mut latest_contact_list: Option<NostrEvent> = None;
     let mut metadata_events = Vec::new();
 
     for event in events.into_iter().filter_map(primal_event_from_value) {
-        match event.kind {
-            0 => metadata_events.push(event),
-            3 => {
-                if latest_contact_list
-                    .as_ref()
-                    .map(|current| event.created_at > current.created_at)
-                    .unwrap_or(true)
-                {
-                    latest_contact_list = Some(event);
-                }
+        if event.kind == Kind::Metadata {
+            metadata_events.push(event);
+        } else if event.kind == Kind::ContactList {
+            if latest_contact_list
+                .as_ref()
+                .map(|current| event.created_at.as_secs() > current.created_at.as_secs())
+                .unwrap_or(true)
+            {
+                latest_contact_list = Some(event);
             }
-            _ => {}
         }
     }
 
@@ -176,8 +176,8 @@ pub(crate) async fn primal_follow_contacts(
     let pubkeys = contact_list
         .tags
         .iter()
-        .filter(|tag| tag.first().map(|value| value.as_str()) == Some("p"))
-        .filter_map(|tag| tag.get(1))
+        .filter(|tag| tag.as_slice().first().map(|value| value.as_str()) == Some("p"))
+        .filter_map(|tag| tag.as_slice().get(1))
         .filter_map(|value| NostrPublicKey::from_hex(value).ok())
         .collect::<Vec<_>>();
 
@@ -193,7 +193,7 @@ pub(crate) async fn primal_follow_contacts(
         .await?
         .into_iter()
         .filter_map(primal_event_from_value)
-        .filter(|event| event.kind == 0)
+        .filter(|event| event.kind == Kind::Metadata)
         .collect();
     }
 
@@ -237,13 +237,10 @@ pub(crate) async fn primal_search_profiles(
 
     let mut contacts = Vec::new();
     for event in events.into_iter().filter_map(primal_event_from_value) {
-        if event.kind != 0 {
+        if event.kind != Kind::Metadata {
             continue;
         }
-        let Ok(key) = NostrPublicKey::from_hex(&event.pubkey) else {
-            continue;
-        };
-        let contact = contact_from_primal_profile(key, Some(&event), false);
+        let contact = contact_from_primal_profile(event.pubkey, Some(&event), false);
         if !contacts
             .iter()
             .any(|c: &FetchedProfileContact| c.contact.npub == contact.contact.npub)
@@ -269,7 +266,7 @@ pub(crate) async fn primal_profile_contacts(
     .await?
     .into_iter()
     .filter_map(primal_event_from_value)
-    .filter(|event| event.kind == 0)
+    .filter(|event| event.kind == Kind::Metadata)
     .collect::<Vec<_>>();
 
     let contacts = pubkeys
@@ -342,15 +339,6 @@ async fn primal_request(cache_body: Value) -> anyhow::Result<Vec<Value>> {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct PrimalEvent {
-    pubkey: String,
-    created_at: u64,
-    kind: u64,
-    tags: Vec<Vec<String>>,
-    content: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
 struct PrimalProfile {
     name: Option<String>,
     display_name: Option<String>,
@@ -360,29 +348,48 @@ struct PrimalProfile {
     lud06: Option<String>,
 }
 
-fn primal_event_from_value(value: Value) -> Option<PrimalEvent> {
-    serde_json::from_value(value).ok()
+/// Parses an event from the Primal cache and verifies its id and Schnorr
+/// signature. Events that fail verification are dropped: a malicious cache
+/// server must not be able to forge profile metadata (for example a `lud16`
+/// payment destination) for someone else's pubkey.
+fn primal_event_from_value(value: Value) -> Option<NostrEvent> {
+    let event = serde_json::from_value::<NostrEvent>(value).ok()?;
+    if let Err(e) = event.verify() {
+        eprintln!(
+            "Dropping Primal event {} with invalid id/signature: {e}",
+            event.id.to_hex()
+        );
+        return None;
+    }
+    Some(event)
 }
 
 fn latest_metadata_for_pubkey<'a>(
-    events: &'a [PrimalEvent],
+    events: &'a [NostrEvent],
     pubkey_hex: &str,
-) -> Option<&'a PrimalEvent> {
+) -> Option<&'a NostrEvent> {
+    let max_created_at = now_unix().saturating_add(MAX_FUTURE_CREATED_AT_SECS);
     events
         .iter()
-        .filter(|event| event.pubkey == pubkey_hex && event.kind == 0)
-        .max_by_key(|event| event.created_at)
+        .filter(|event| {
+            event.kind == Kind::Metadata
+                && event.pubkey.to_hex() == pubkey_hex
+                && event.created_at.as_secs() <= max_created_at
+        })
+        .max_by_key(|event| event.created_at.as_secs())
 }
 
 fn contact_from_primal_profile(
     key: NostrPublicKey,
-    event: Option<&PrimalEvent>,
+    event: Option<&NostrEvent>,
     followed: bool,
 ) -> FetchedProfileContact {
     let metadata_json = event
         .map(|event| event.content.clone())
         .unwrap_or_else(|| "{}".to_string());
-    let event_created_at = event.map(|event| event.created_at).unwrap_or_default();
+    let event_created_at = event
+        .map(|event| event.created_at.as_secs())
+        .unwrap_or_default();
     profile_contact_from_metadata_json(key, metadata_json, event_created_at, followed)
 }
 
@@ -621,6 +628,7 @@ fn is_valid_lightning_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr_sdk::prelude::Timestamp;
 
     fn contact(npub: &str, name: &str, followed: bool, last_used: u64) -> Contact {
         Contact {
@@ -808,5 +816,65 @@ mod tests {
         assert!(nostr.lud16.is_empty());
         assert!(nostr.nip05.is_empty());
         assert!(nostr.deleted);
+    }
+
+    fn signed_metadata_event(keys: &Keys, created_at: Timestamp) -> NostrEvent {
+        let metadata = Metadata::new().name("alice").lud16("alice@example.com");
+        EventBuilder::metadata(&metadata)
+            .custom_created_at(created_at)
+            .finalize(keys)
+            .unwrap()
+    }
+
+    #[test]
+    fn primal_event_from_value_accepts_valid_signed_event() {
+        let keys = Keys::generate();
+        let event = signed_metadata_event(&keys, Timestamp::from_secs(now_unix()));
+        let value = serde_json::to_value(&event).unwrap();
+
+        let parsed = primal_event_from_value(value).expect("valid event must verify");
+
+        assert_eq!(parsed.kind, Kind::Metadata);
+        assert_eq!(parsed.pubkey, keys.public_key());
+    }
+
+    #[test]
+    fn primal_event_from_value_rejects_tampered_event() {
+        let keys = Keys::generate();
+        let event = signed_metadata_event(&keys, Timestamp::from_secs(now_unix()));
+        let mut value = serde_json::to_value(&event).unwrap();
+        // Forge the payment destination after the event was signed.
+        value["content"] = json!({"name": "alice", "lud16": "attacker@evil.com"});
+
+        assert!(primal_event_from_value(value).is_none());
+    }
+
+    #[test]
+    fn primal_event_from_value_rejects_forged_pubkey_event() {
+        let keys = Keys::generate();
+        let event = signed_metadata_event(&keys, Timestamp::from_secs(now_unix()));
+        let mut value = serde_json::to_value(&event).unwrap();
+        // Claim the event belongs to someone else without re-signing.
+        value["pubkey"] = json!(Keys::generate().public_key().to_hex());
+
+        assert!(primal_event_from_value(value).is_none());
+    }
+
+    #[test]
+    fn latest_metadata_for_pubkey_ignores_future_dated_events() {
+        let keys = Keys::generate();
+        let pubkey_hex = keys.public_key().to_hex();
+        let current = signed_metadata_event(&keys, Timestamp::from_secs(now_unix()));
+        let current_created_at = current.created_at.as_secs();
+        let future = signed_metadata_event(
+            &keys,
+            Timestamp::from_secs(now_unix() + MAX_FUTURE_CREATED_AT_SECS + 60),
+        );
+        let events = vec![future, current];
+
+        let latest = latest_metadata_for_pubkey(&events, &pubkey_hex)
+            .expect("current event must be selected");
+
+        assert_eq!(latest.created_at.as_secs(), current_created_at);
     }
 }

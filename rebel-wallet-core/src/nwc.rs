@@ -5,10 +5,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
 use bark::actions::lightning::pay::LightningSendState;
+use bark::actions::lightning::receive::{
+    LightningReceive, LightningReceiveState, Progress as ReceiveProgress,
+};
 use bark::ark::lightning::PaymentHash;
 use bark::lightning_invoice::Bolt11Invoice;
 use bark::movement::{Movement, MovementStatus};
-use bark::persist::models::LightningReceive;
+use bark::persist::models::SettledLightningReceive;
 use bip39::Mnemonic;
 use bitcoin::Amount;
 use nostr::nips::nip47::{
@@ -639,16 +642,12 @@ async fn lookup_invoice_response(
     let wallet = open_wallet_for_extension(context).await?;
     sync_wallet_for_nwc(&wallet).await;
 
-    if let Some(receive) = wallet
-        .lightning_receive_status(payment_hash)
-        .await
-        .context("Bark could not read Lightning receive state")?
-    {
+    if let Ok(receive) = wallet.lightning_receive_state(payment_hash).await {
         return Ok(Response {
             result_type: Method::LookupInvoice,
             error: None,
             result: Some(ResponseResult::LookupInvoice(
-                transaction_from_lightning_receive(&receive),
+                transaction_from_lightning_receive_state(&receive),
             )),
         });
     }
@@ -767,7 +766,11 @@ async fn make_invoice_response(
         anyhow::bail!("invoice amount must be greater than zero");
     }
     let invoice = wallet
-        .bolt11_invoice(Amount::from_sat(amount_sat), params.description.clone())
+        .bolt11_invoice(
+            Amount::from_sat(amount_sat),
+            params.description.clone(),
+            None,
+        )
         .await
         .context("Bark could not create a Lightning invoice")?;
     let payment_hash = invoice.payment_hash().to_string();
@@ -978,24 +981,18 @@ fn transaction_from_movement(movement: &Movement) -> Option<LookupInvoiceRespons
 
 fn transaction_from_lightning_receive(receive: &LightningReceive) -> LookupInvoiceResponse {
     let created_at = Timestamp::from_secs(receive.invoice.duration_since_epoch().as_secs());
-    let settled_at = receive
-        .finished_at
-        .or(receive.preimage_revealed_at)
-        .map(timestamp_from_chrono);
+    let preimage_revealed = matches!(
+        receive.progress,
+        ReceiveProgress::PreimageRevealed(_) | ReceiveProgress::Delivering(_)
+    );
 
     LookupInvoiceResponse {
         transaction_type: Some(TransactionType::Incoming),
-        state: Some(if receive.finished_at.is_some() {
-            TransactionState::Settled
-        } else {
-            TransactionState::Pending
-        }),
+        state: Some(TransactionState::Pending),
         invoice: Some(receive.invoice.to_string()),
         description: None,
         description_hash: None,
-        preimage: receive
-            .preimage_revealed_at
-            .map(|_| receive.payment_preimage.to_string()),
+        preimage: preimage_revealed.then(|| receive.payment_preimage.to_string()),
         payment_hash: receive.payment_hash.to_string(),
         amount: receive.invoice.amount_milli_satoshis().unwrap_or(0),
         fees_paid: 0,
@@ -1004,8 +1001,42 @@ fn transaction_from_lightning_receive(receive: &LightningReceive) -> LookupInvoi
             .invoice
             .expires_at()
             .map(|expiry| Timestamp::from_secs(expiry.as_secs())),
-        settled_at,
+        settled_at: None,
         metadata: None,
+    }
+}
+
+fn transaction_from_settled_lightning_receive(
+    receive: &SettledLightningReceive,
+) -> LookupInvoiceResponse {
+    LookupInvoiceResponse {
+        transaction_type: Some(TransactionType::Incoming),
+        state: Some(TransactionState::Settled),
+        invoice: Some(receive.invoice.to_string()),
+        description: None,
+        description_hash: None,
+        preimage: Some(receive.preimage.to_string()),
+        payment_hash: receive.payment_hash.to_string(),
+        amount: receive.amount.to_sat().saturating_mul(1_000),
+        fees_paid: 0,
+        created_at: Timestamp::from_secs(receive.invoice.duration_since_epoch().as_secs()),
+        expires_at: receive
+            .invoice
+            .expires_at()
+            .map(|expiry| Timestamp::from_secs(expiry.as_secs())),
+        settled_at: Some(timestamp_from_chrono(receive.settled_at)),
+        metadata: None,
+    }
+}
+
+fn transaction_from_lightning_receive_state(
+    receive: &LightningReceiveState,
+) -> LookupInvoiceResponse {
+    match receive {
+        LightningReceiveState::InProgress(receive) => transaction_from_lightning_receive(receive),
+        LightningReceiveState::Settled(receive) => {
+            transaction_from_settled_lightning_receive(receive)
+        }
     }
 }
 
@@ -1193,6 +1224,7 @@ async fn open_wallet_for_extension(context: &NwcServiceContext) -> anyhow::Resul
         ServerConfig::for_network(context.network),
     )
     .await
+    .map(|opened| opened.wallet)
 }
 
 fn pay_invoice_amount_sat(

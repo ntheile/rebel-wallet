@@ -9,7 +9,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
-bark = { package = "bark-wallet", git = "https://gitlab.com/benthecarman/bark.git", rev = "b14ae5bca19fef94d5d6f9db1f025e3c07db2e8c", default-features = false, features = ["sqlite-bundled", "native", "tls-webpki-roots", "rand"] }
+bark = { package = "bark-wallet", git = "https://gitlab.com/benthecarman/bark.git", rev = "3ec92d287a65195d73463c7f186ed4b1387fbf57", default-features = false, features = ["sqlite-bundled", "native", "tls-webpki-roots", "rand"] }
 bech32 = "0.11"
 bip39 = { version = "2", features = ["rand"] }
 bitcoin = "0.32"
@@ -31,6 +31,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", default-features = false }
 uniffi = "0.31.0"
+zeroize = "1"
 
 [dev-dependencies]
 tempfile = "3"

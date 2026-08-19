@@ -41,6 +41,8 @@
 	<string>Dark</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Rebel Wallet uses the camera to scan payment QR codes.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Rebel Wallet uses Face ID to confirm it is you before revealing wallet secrets.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Rebel Wallet connects to locally hosted Regtest ASP and Esplora servers.</string>
 	<key>NSAppTransportSecurity</key>

@@ -1,4 +1,7 @@
+use std::str::FromStr;
+
 use anyhow::{anyhow, bail, Context};
+use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -228,6 +231,22 @@ pub(crate) fn amount_msats_to_sat(amount_msats: u64) -> anyhow::Result<u64> {
     Ok(amount_msats / 1_000)
 }
 
+pub(crate) fn verify_registration_invoice(invoice: &str, fee_sats: u64) -> anyhow::Result<()> {
+    let invoice = Bolt11Invoice::from_str(invoice.trim())
+        .context("registration invoice could not be parsed")?;
+    let expected_msats = fee_sats
+        .checked_mul(1_000)
+        .context("registration fee is too large")?;
+    match invoice.amount_milli_satoshis() {
+        Some(amount_msats) if amount_msats == expected_msats => Ok(()),
+        Some(amount_msats) => bail!(
+            "registration invoice amount mismatch: fee is {fee_sats} sats but invoice is {} sats",
+            amount_msats / 1_000
+        ),
+        None => bail!("registration invoice did not include an amount"),
+    }
+}
+
 pub(crate) fn validate_custom_address_name(name: &str) -> Option<String> {
     let name = name.trim();
     if name.is_empty() {
@@ -258,7 +277,44 @@ pub(crate) fn validate_custom_address_name(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{amount_msats_to_sat, validate_custom_address_name};
+    use bitcoin::hashes::{sha256, Hash};
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+    use secp256k1::{Secp256k1, SecretKey};
+
+    use super::{amount_msats_to_sat, validate_custom_address_name, verify_registration_invoice};
+
+    fn test_invoice(amount_msats: u64) -> String {
+        let private_key = SecretKey::from_slice(&[42u8; 32]).expect("secret key");
+        let payment_hash = sha256::Hash::from_slice(&[0u8; 32]).expect("payment hash");
+        InvoiceBuilder::new(Currency::Bitcoin)
+            .description("custom address registration".to_string())
+            .payment_hash(payment_hash)
+            .payment_secret(PaymentSecret([7u8; 32]))
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(144)
+            .amount_milli_satoshis(amount_msats)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
+            .expect("invoice")
+            .to_string()
+    }
+
+    #[test]
+    fn verifies_registration_invoice_amount() {
+        assert!(verify_registration_invoice(&test_invoice(10_000_000), 10_000).is_ok());
+    }
+
+    #[test]
+    fn rejects_registration_invoice_amount_mismatch() {
+        let error = verify_registration_invoice(&test_invoice(20_000_000), 10_000)
+            .expect_err("mismatched amount must fail");
+        assert!(error.to_string().contains("amount mismatch"));
+    }
+
+    #[test]
+    fn rejects_unparseable_registration_invoice() {
+        assert!(verify_registration_invoice("lnbc1invoice", 10_000).is_err());
+        assert!(verify_registration_invoice("", 10_000).is_err());
+    }
 
     #[test]
     fn validates_custom_address_names() {
