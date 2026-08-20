@@ -1,12 +1,13 @@
 use bark::Wallet;
+use nwc_mobile::WakeDisposition;
 use zeroize::Zeroizing;
 
 use crate::nostr_support::FetchedProfileContact;
 use crate::persistence::ZapReceiptRecord;
 use crate::wallet::WalletRecoveryNotice;
 use crate::{
-    ActivityItem, AppAction, AppState, NostrMessage, NostrState, NwcConnection,
-    NwcProcessedWakeRequest, PriceCurrency, SendDestinationKind,
+    ActivityItem, AppAction, AppState, NostrMessage, NostrState, NwcConnection, NwcWakeRequest,
+    PriceCurrency, SendDestinationKind,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -187,13 +188,19 @@ pub(crate) enum AsyncMsg {
     NostrPublished(String),
     DirectMessagesLoaded(Vec<NostrMessage>),
     DirectMessageSent(NostrMessage),
-    NwcWakeRequestProcessed {
-        processed: NwcProcessedWakeRequest,
-        updated_connections: Option<Vec<NwcConnection>>,
+    NwcWakeEngineFinished {
+        generation: u64,
+        request: NwcWakeRequest,
+        disposition: WakeDisposition,
     },
     NwcWakeRequestFailed {
+        generation: u64,
         event_id: String,
         error: String,
+    },
+    NwcWakeRetryDue {
+        generation: u64,
+        event_id: String,
     },
     NwcInfoEventPublished {
         client_pubkey: String,
