@@ -10,6 +10,7 @@ use super::custom_address_flow::{
 };
 use super::{nwc_client_secret_key, AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
 use crate::custom_address::amount_msats_to_sat;
+use crate::nwc_mobile_adapter::{nwc_ledger_path, open_nwc_ledger};
 use crate::persistence::{PersistedAppData, PersistedPriceCurrency, ServerConfig};
 use crate::profile_cache::{
     hydrate_contact_picture, hydrate_own_profile_picture, sanitize_persisted_contact_pictures,
@@ -85,6 +86,11 @@ impl AppCore {
                 errors.push(format!("{e:#}"));
             }
         }
+        self.nwc_ledger = None;
+        let nwc_database_path = nwc_ledger_path(&self.data_dir);
+        if let Err(error) = remove_wallet_database_files(&nwc_database_path) {
+            errors.push(format!("{error:#}"));
+        }
 
         match std::fs::remove_file(&self.app_data_path) {
             Ok(()) => {}
@@ -104,6 +110,12 @@ impl AppCore {
         let mut state = AppState::initial();
         state.show_launch_splash = false;
         self.state = state;
+
+        self.nwc_ledger = open_nwc_ledger(&self.data_dir).ok();
+        self.nwc_registry_ready = self.nwc_ledger.is_some();
+        if self.nwc_ledger.is_none() {
+            errors.push("NWC authorization storage".to_string());
+        }
 
         if errors.is_empty() {
             if !self.secrets.delete_secret(WALLET_SEED_KEY.to_string()) {
@@ -296,6 +308,7 @@ impl AppCore {
                 self.payment_annotations = data.payment_annotations;
                 self.zap_receipts = data.zap_receipts;
                 self.state.nwc.connections = data.nwc_connections;
+                self.migrate_nwc_connections();
                 self.hydrate_nwc_connection_uris();
                 self.hydrate_nwc_icon_urls();
                 self.prefetch_nwc_icons();

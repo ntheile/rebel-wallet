@@ -40,7 +40,11 @@ const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Opens the one cross-process ledger shared by the app and its NSE.
 pub(crate) fn open_nwc_ledger(data_dir: &Path) -> Result<WakeLedger, nwc_mobile::LedgerError> {
-    WakeLedger::open(data_dir.join(NWC_LEDGER_FILE))
+    WakeLedger::open(nwc_ledger_path(data_dir))
+}
+
+pub(crate) fn nwc_ledger_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(NWC_LEDGER_FILE)
 }
 
 /// Loads the wallet-service secret from the platform secret store on demand.
