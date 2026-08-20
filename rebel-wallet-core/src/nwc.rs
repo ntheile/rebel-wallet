@@ -62,11 +62,8 @@ pub(crate) struct NwcServiceContext {
 #[derive(Clone, Debug)]
 pub(crate) struct NwcProcessedWake {
     pub(crate) wake: NwcWakeRequest,
-    pub(crate) client_pubkey: String,
     pub(crate) method: String,
     pub(crate) status: String,
-    pub(crate) amount_sat: u64,
-    pub(crate) processed_at: u64,
     pub(crate) updated_connections: Option<Vec<NwcConnection>>,
     pub(crate) updated_snapshot_json: Option<String>,
     pub(crate) processed_event_ids: Vec<String>,
@@ -177,22 +174,6 @@ async fn process_nwc_event_with_extension_policy(
     process_nwc_request_event_inner(wake, event, context, Some(extension_deadline)).await
 }
 
-pub(crate) async fn process_nwc_wake_request(
-    wake: NwcWakeRequest,
-    context: NwcServiceContext,
-) -> anyhow::Result<NwcProcessedWake> {
-    let event = fetch_nwc_request_event(&wake).await?;
-    process_nwc_request_event(wake, event, context).await
-}
-
-pub(crate) async fn process_nwc_request_event(
-    wake: NwcWakeRequest,
-    event: Event,
-    context: NwcServiceContext,
-) -> anyhow::Result<NwcProcessedWake> {
-    process_nwc_request_event_inner(wake, event, context, None).await
-}
-
 async fn process_nwc_request_event_inner(
     wake: NwcWakeRequest,
     event: Event,
@@ -239,7 +220,7 @@ async fn process_nwc_request_event_with_client(
     let request_auth_ms = request_started_at.elapsed().as_millis();
     let method = request.method.as_str().to_string();
     let response_started_at = Instant::now();
-    let (response, amount_sat, updated_connections, request_timings) =
+    let (response, _amount_sat, updated_connections, request_timings) =
         response_for_request(&request, &context, connection).await;
     let request_handler_ms = response_started_at.elapsed().as_millis();
     let response_build_started_at = Instant::now();
@@ -266,13 +247,10 @@ async fn process_nwc_request_event_with_client(
     let processed_event_id = wake.event_id.clone();
     Ok(NwcProcessedWake {
         wake,
-        client_pubkey: event.pubkey.to_hex(),
         method,
         status: format!(
             "request_auth_ms={request_auth_ms}; request_handler_ms={request_handler_ms}{request_timings}; response_build_ms={response_build_ms}; relay_publish_ms={relay_publish_ms}"
         ),
-        amount_sat,
-        processed_at: crate::time::now_unix(),
         updated_connections,
         updated_snapshot_json,
         processed_event_ids: vec![processed_event_id],

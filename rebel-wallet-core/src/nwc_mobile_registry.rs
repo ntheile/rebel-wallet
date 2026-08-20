@@ -157,7 +157,9 @@ impl TryFrom<&NwcConnection> for RegistryConnection {
             BudgetPolicy::new(
                 connection.budget_sat,
                 budget_interval(connection.budget_interval),
-                FeePolicy::ExcludeForCompatibility,
+                FeePolicy::CountTowardBudget {
+                    maximum_fee_sat: maximum_nwc_fee_sat(connection.budget_sat),
+                },
             ),
         );
         Ok(Self {
@@ -195,6 +197,14 @@ const fn budget_interval(interval: NwcBudgetInterval) -> BudgetInterval {
         NwcBudgetInterval::Monthly => BudgetInterval::Monthly,
         NwcBudgetInterval::Yearly => BudgetInterval::Yearly,
     }
+}
+
+fn maximum_nwc_fee_sat(budget_sat: u64) -> u64 {
+    if budget_sat == 0 {
+        return 0;
+    }
+    let proportional = budget_sat / 20;
+    proportional.clamp(10, 1_000).min(budget_sat)
 }
 
 #[cfg(test)]
@@ -249,6 +259,12 @@ mod tests {
         assert_eq!(active.created_at(), UnixTimestamp::from_secs(100));
         assert_eq!(active.expires_at(), Some(UnixTimestamp::from_secs(300)));
         assert!(active.policy().allows(NwcMethod::PayInvoice));
+        assert_eq!(
+            active.policy().budget().fee_policy(),
+            FeePolicy::CountTowardBudget {
+                maximum_fee_sat: 50
+            }
+        );
         assert_eq!(connections.len(), 1);
     }
 
@@ -286,5 +302,13 @@ mod tests {
         legacy.relay = "wss://relay.example.com/nwc/".to_string();
         let specification = RegistryConnection::try_from(&legacy).expect("connection");
         assert_eq!(specification.relays[0].as_str(), legacy.relay);
+    }
+
+    #[test]
+    fn fee_cap_is_bounded_and_never_exceeds_the_connection_budget() {
+        assert_eq!(maximum_nwc_fee_sat(0), 0);
+        assert_eq!(maximum_nwc_fee_sat(5), 5);
+        assert_eq!(maximum_nwc_fee_sat(1_000), 50);
+        assert_eq!(maximum_nwc_fee_sat(100_000), 1_000);
     }
 }
