@@ -15,6 +15,7 @@ mod nwa;
 mod nwc;
 #[allow(dead_code)] // Constructed by the wake-engine integration in the next stacked PR.
 mod nwc_mobile_adapter;
+mod nwc_mobile_registry;
 mod nwc_push;
 mod payments;
 mod persistence;

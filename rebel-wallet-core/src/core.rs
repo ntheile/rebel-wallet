@@ -27,6 +27,7 @@ use nostr_sdk::prelude::{
     FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, RelayUrl, SecretKey as NostrSecretKey,
     Tag, ToBech32,
 };
+use nwc_mobile::WakeLedger;
 use tokio::runtime::Runtime;
 use zeroize::Zeroizing;
 
@@ -45,6 +46,12 @@ use crate::nwa::NwaRequest;
 use crate::nwc::{
     process_nwc_wake_request as process_nwc_wake_request_event, publish_nwc_info_event,
     publish_targeted_nwc_info_event, validate_wallet_service_pubkey, NwcServiceContext,
+};
+use crate::nwc_mobile_adapter::open_nwc_ledger;
+use crate::nwc_mobile_registry::{
+    insert_connection as insert_nwc_registry_connection,
+    migrate_connections as migrate_nwc_registry_connections,
+    tombstone_connection as tombstone_nwc_registry_connection,
 };
 use crate::nwc_push::{register_connections, NwcPushConfig};
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
@@ -188,7 +195,7 @@ fn nwc_relay_values(value: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|relay| !relay.is_empty())
         .filter_map(|relay| {
-            let normalized = relay.trim_end_matches('/').to_string();
+            let normalized = relay.to_string();
             if seen.insert(normalized.clone()) {
                 Some(normalized)
             } else {
@@ -208,6 +215,8 @@ fn parse_nwc_relay_urls(value: &str, fallback: &str) -> anyhow::Result<Vec<Relay
 
     let mut relays = Vec::new();
     for relay in relay_values {
+        nwc_mobile::SecureRelayUrl::parse(&relay)
+            .with_context(|| format!("invalid or insecure NWC relay {relay}"))?;
         relays.push(RelayUrl::parse(&relay).with_context(|| format!("invalid NWC relay {relay}"))?);
     }
 
@@ -466,6 +475,8 @@ struct AppCore {
     zap_receipts: Vec<ZapReceiptRecord>,
     nwc_in_flight_wake_requests: HashSet<String>,
     nwc_in_flight_info_events: HashSet<String>,
+    nwc_ledger: Option<WakeLedger>,
+    nwc_registry_ready: bool,
     pending_nwa_request: Option<NwaRequest>,
     pending_nwa_callback: Option<String>,
     nwc_push_config: NwcPushConfig,
@@ -488,6 +499,8 @@ impl AppCore {
     ) -> Self {
         ensure_profile_picture_dir(&cache_dir);
         ensure_nwc_icon_dir(&cache_dir);
+        let nwc_ledger = open_nwc_ledger(&data_dir).ok();
+        let nwc_registry_ready = nwc_ledger.is_some();
         Self {
             state: AppState::initial(),
             app_data_path: data_dir.join("rebel-app-data.json"),
@@ -515,6 +528,8 @@ impl AppCore {
             zap_receipts: Vec::new(),
             nwc_in_flight_wake_requests: HashSet::new(),
             nwc_in_flight_info_events: HashSet::new(),
+            nwc_ledger,
+            nwc_registry_ready,
             pending_nwa_request: None,
             pending_nwa_callback: None,
             nwc_push_config: NwcPushConfig::default(),
@@ -934,6 +949,34 @@ impl AppCore {
         self.reconcile_refresh_poll();
     }
 
+    fn migrate_nwc_connections(&mut self) {
+        self.nwc_registry_ready = false;
+        let Some(ledger) = self.nwc_ledger.as_ref() else {
+            self.state.nwc.last_wake_status =
+                "NWC authorization storage is unavailable".to_string();
+            return;
+        };
+        match migrate_nwc_registry_connections(ledger, &mut self.state.nwc.connections, now_unix())
+        {
+            Ok(result) => {
+                self.nwc_registry_ready = true;
+                let removed = !result.revoked_client_pubkeys.is_empty();
+                for client_pubkey in result.revoked_client_pubkeys {
+                    let _ = self
+                        .secrets
+                        .delete_secret(nwc_client_secret_key(&client_pubkey));
+                }
+                if removed {
+                    self.save_app_data();
+                }
+            }
+            Err(error) => {
+                self.state.nwc.last_wake_status =
+                    format!("NWC authorization migration failed: {error:#}");
+            }
+        }
+    }
+
     fn create_nwc_connection(
         &mut self,
         name: String,
@@ -942,6 +985,11 @@ impl AppCore {
         budget_interval: NwcBudgetInterval,
         permissions: Vec<NwcPermission>,
     ) {
+        if !self.nwc_registry_ready {
+            self.state.toast = Some("NWC authorization storage is unavailable.".to_string());
+            self.request_haptic(HapticFeedback::NotificationError);
+            return;
+        }
         if !self.ensure_wallet_derived_nostr_key() {
             self.state.toast = Some("Create or open the wallet before adding NWC.".to_string());
             self.request_haptic(HapticFeedback::NotificationWarning);
@@ -999,7 +1047,7 @@ impl AppCore {
         let allow_get_balance = permissions.contains(&NwcPermission::GetBalance);
         let allow_pay_invoice = permissions.contains(&NwcPermission::PayInvoice);
 
-        self.state.nwc.connections.push(NwcConnection {
+        let connection = NwcConnection {
             id: format!("nwc-{client_pubkey}"),
             name: display_name,
             icon_url: None,
@@ -1024,7 +1072,23 @@ impl AppCore {
             expires_at: None,
             budget_period_started_at: created_at,
             pending_info_event_relays,
-        });
+        };
+        let registry_result = self
+            .nwc_ledger
+            .as_ref()
+            .context("NWC authorization storage is unavailable")
+            .and_then(|ledger| {
+                insert_nwc_registry_connection(ledger, &connection, created_at).map(|_| ())
+            });
+        if let Err(error) = registry_result {
+            let _ = self
+                .secrets
+                .delete_secret(nwc_client_secret_key(&connection.client_pubkey));
+            self.state.toast = Some(format!("Could not create NWC connection: {error:#}"));
+            self.request_haptic(HapticFeedback::NotificationError);
+            return;
+        }
+        self.state.nwc.connections.push(connection);
         self.state.nwc.default_relay = relay_storage;
         self.state.toast = Some("NWC string created.".to_string());
         self.request_haptic(HapticFeedback::NotificationSuccess);
@@ -1130,6 +1194,23 @@ impl AppCore {
             .filter(|connection| connection.id == id)
             .cloned()
             .collect::<Vec<_>>();
+        if deleted_connections.is_empty() {
+            return;
+        }
+        let revocation_result = self
+            .nwc_ledger
+            .as_ref()
+            .context("NWC authorization storage is unavailable")
+            .and_then(|ledger| {
+                deleted_connections.iter().try_for_each(|connection| {
+                    tombstone_nwc_registry_connection(ledger, connection, now_unix())
+                })
+            });
+        if let Err(error) = revocation_result {
+            self.state.toast = Some(format!("Could not revoke NWC connection: {error:#}"));
+            self.request_haptic(HapticFeedback::NotificationError);
+            return;
+        }
         let deleted_client_pubkeys = self
             .state
             .nwc
@@ -1286,6 +1367,11 @@ impl AppCore {
     }
 
     fn process_pending_nwc_wake_requests(&mut self) {
+        if !self.nwc_registry_ready {
+            self.state.nwc.last_wake_status =
+                "NWC wake queued: authorization storage is unavailable".to_string();
+            return;
+        }
         let Some(request) = self
             .state
             .nwc
@@ -3279,6 +3365,27 @@ mod tests {
             .unwrap()
             .as_secret_bytes(),
         );
+    }
+
+    #[test]
+    fn pending_wake_processing_fails_closed_until_registry_is_ready() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.nwc_registry_ready = false;
+        core.state.nwc.pending_wake_requests.push(NwcWakeRequest {
+            relay: "wss://relay.example.com".to_string(),
+            event_id: "event".to_string(),
+            wallet_service_pubkey: "wallet".to_string(),
+            received_at: 100,
+        });
+
+        core.process_pending_nwc_wake_requests();
+
+        assert!(core.nwc_in_flight_wake_requests.is_empty());
+        assert!(core
+            .state
+            .nwc
+            .last_wake_status
+            .contains("authorization storage is unavailable"));
     }
 
     #[test]

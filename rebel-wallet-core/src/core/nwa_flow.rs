@@ -148,6 +148,32 @@ impl AppCore {
             self.unregister_nwc_push_connections(vec![connection]);
             return;
         }
+        if !self.nwc_registry_ready {
+            self.unregister_nwc_push_connections(vec![connection]);
+            self.set_nwa_error("NWC authorization storage is unavailable.");
+            return;
+        }
+        let now = now_unix();
+        if connection
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= now)
+        {
+            self.unregister_nwc_push_connections(vec![connection]);
+            self.set_nwa_error("The Nostr Wallet Auth request expired during approval.");
+            return;
+        }
+        let registry_result = self
+            .nwc_ledger
+            .as_ref()
+            .context("NWC authorization storage is unavailable")
+            .and_then(|ledger| {
+                insert_nwc_registry_connection(ledger, &connection, now).map(|_| ())
+            });
+        if let Err(error) = registry_result {
+            self.unregister_nwc_push_connections(vec![connection]);
+            self.set_nwa_error(&format!("Could not persist NWC authorization: {error:#}"));
+            return;
+        }
         self.state.nwc.default_relay = connection.relay.clone();
         self.state.nwc.connections.push(connection);
         self.state.nwa.approving = false;
