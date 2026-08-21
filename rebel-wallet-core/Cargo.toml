@@ -23,10 +23,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 lightning-invoice = "0.34"
 nostr = { version = "0.45.0-alpha.1", features = ["nip04", "nip47"] }
 nostr-sdk = "0.45.0-alpha.1"
-nwc-mobile = { git = "https://github.com/ntheile/nwc-mobile", rev = "c8062bbddfda83eb032a116501c0c557f5d295bf" }
-nwc-mobile-bolt11 = { git = "https://github.com/ntheile/nwc-mobile", rev = "c8062bbddfda83eb032a116501c0c557f5d295bf" }
-nwc-mobile-nostr = { git = "https://github.com/ntheile/nwc-mobile", rev = "c8062bbddfda83eb032a116501c0c557f5d295bf" }
-nwc-mobile-tokio = { git = "https://github.com/ntheile/nwc-mobile", rev = "c8062bbddfda83eb032a116501c0c557f5d295bf" }
+nwc-mobile = { git = "https://github.com/ntheile/nwc-mobile", rev = "ef82dd337bd107538acd78f84b70cfa7b8c98cb0" }
+nwc-mobile-bolt11 = { git = "https://github.com/ntheile/nwc-mobile", rev = "ef82dd337bd107538acd78f84b70cfa7b8c98cb0" }
+nwc-mobile-nostr = { git = "https://github.com/ntheile/nwc-mobile", rev = "ef82dd337bd107538acd78f84b70cfa7b8c98cb0" }
+nwc-mobile-tokio = { git = "https://github.com/ntheile/nwc-mobile", rev = "ef82dd337bd107538acd78f84b70cfa7b8c98cb0" }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.31" }
