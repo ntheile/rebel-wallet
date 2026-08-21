@@ -61,20 +61,10 @@ impl AppCore {
                 return;
             }
         };
-        let config = match self.nwc_push_config.ready() {
-            Ok(config) => config,
-            Err(error) => {
-                self.set_nwa_error(&format!("Cannot enable background NWC wake: {error:#}"));
-                return;
-            }
-        };
-        let keys = match self.nostr_keys() {
-            Ok(keys) => keys,
-            Err(error) => {
-                self.set_nwa_error(&format!("{error:#}"));
-                return;
-            }
-        };
+        if let Err(error) = self.nwc_push_config.ready() {
+            self.set_nwa_error(&format!("Cannot enable background NWC wake: {error:#}"));
+            return;
+        }
         let relays = parse_nwc_relay_urls(&connection.relay, "")
             .unwrap_or_default()
             .into_iter()
@@ -92,42 +82,7 @@ impl AppCore {
 
         self.state.nwa.approving = true;
         self.state.nwa.error_message = None;
-        let approval_client_pubkey = connection.client_pubkey.clone();
-        let tx = self.tx.clone();
-        self.rt.spawn(async move {
-            let message = match register_connections(
-                config.clone(),
-                keys.clone(),
-                vec![connection.clone()],
-                true,
-            )
-            .await
-            {
-                Ok(()) => AsyncMsg::NwaApprovalSucceeded {
-                    connection,
-                    callback_url,
-                },
-                Err(error) => {
-                    let _ = register_connections(config, keys, vec![connection], false).await;
-                    AsyncMsg::NwaApprovalFailed {
-                        client_pubkey: approval_client_pubkey,
-                        error: format!("Could not register background NWC wake: {error:#}"),
-                    }
-                }
-            };
-            let _ = tx.send(CoreMsg::Async(message));
-        });
-    }
-
-    pub(super) fn finish_nwa_approval_failure(&mut self, client_pubkey: String, error: String) {
-        let failure_matches_pending_request = self
-            .pending_nwa_request
-            .as_ref()
-            .and_then(|request| public_key_from_npub_or_hex(&request.state.client_pubkey).ok())
-            .is_some_and(|pubkey| pubkey.to_hex() == client_pubkey);
-        if failure_matches_pending_request {
-            self.set_nwa_error(&error);
-        }
+        self.finish_nwa_approval(connection, callback_url);
     }
 
     pub(super) fn finish_nwa_approval(
@@ -145,11 +100,9 @@ impl AppCore {
             })
             .unwrap_or(false);
         if !approval_matches_pending_request {
-            self.unregister_nwc_push_connections(vec![connection]);
             return;
         }
         if !self.nwc_registry_ready {
-            self.unregister_nwc_push_connections(vec![connection]);
             self.set_nwa_error("NWC authorization storage is unavailable.");
             return;
         }
@@ -158,7 +111,6 @@ impl AppCore {
             .expires_at
             .is_some_and(|expires_at| expires_at <= now)
         {
-            self.unregister_nwc_push_connections(vec![connection]);
             self.set_nwa_error("The Nostr Wallet Auth request expired during approval.");
             return;
         }
@@ -170,7 +122,6 @@ impl AppCore {
                 insert_nwc_registry_connection(ledger, &connection, now).map(|_| ())
             });
         if let Err(error) = registry_result {
-            self.unregister_nwc_push_connections(vec![connection]);
             self.set_nwa_error(&format!("Could not persist NWC authorization: {error:#}"));
             return;
         }
@@ -180,7 +131,6 @@ impl AppCore {
         self.state.nwa.error_message = None;
         self.save_app_data();
         self.publish_pending_nwc_info_events();
-        self.nwc_registered_fingerprint = None;
         self.sync_nwc_push_registrations();
         self.request_haptic(HapticFeedback::NotificationSuccess);
 
@@ -276,18 +226,7 @@ impl AppCore {
     }
 
     pub(super) fn sync_nwc_push_registrations(&mut self) {
-        if self.state.nwc.connections.is_empty() {
-            return;
-        }
-        let Some(fingerprint) = self
-            .nwc_push_config
-            .fingerprint(&self.state.nwc.connections)
-        else {
-            return;
-        };
-        if self.nwc_registered_fingerprint.as_deref() == Some(&fingerprint)
-            || self.nwc_registration_in_flight.as_deref() == Some(&fingerprint)
-        {
+        if self.nwc_registration_in_flight {
             return;
         }
         let Ok(config) = self.nwc_push_config.ready() else {
@@ -296,71 +235,96 @@ impl AppCore {
         let Ok(keys) = self.nostr_keys() else {
             return;
         };
-        self.nwc_registration_in_flight = Some(fingerprint.clone());
-        let connections = self.state.nwc.connections.clone();
+        if self.nwc_registration_refresh_pending {
+            let refresh_result = self
+                .nwc_ledger
+                .as_ref()
+                .context("NWC authorization storage is unavailable")
+                .and_then(|ledger| {
+                    ledger
+                        .requeue_active_wake_registrations_with_state(
+                            config.enabled(),
+                            nwc_mobile::UnixTimestamp::from_secs(now_unix()),
+                        )
+                        .context("could not refresh NWC wake registrations")
+                });
+            if refresh_result.is_err() {
+                self.state.nwc.last_wake_status =
+                    "NWC wake registration storage is unavailable".to_string();
+                return;
+            }
+            self.nwc_registration_refresh_pending = false;
+        }
+
+        self.nwc_registration_retry_nonce = self.nwc_registration_retry_nonce.wrapping_add(1);
+        self.nwc_registration_in_flight = true;
+        let data_dir = self.data_dir.clone();
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let error = register_connections(config, keys, connections, true)
-                .await
-                .err()
-                .map(|error| format!("{error:#}"));
-            let _ = tx.send(CoreMsg::Async(AsyncMsg::NwcPushRegistrationFinished {
-                fingerprint,
-                error,
-            }));
+            let result = match open_nwc_ledger(&data_dir) {
+                Ok(ledger) => run_registration_worker(&ledger, config, keys).await,
+                Err(error) => Err(error.into()),
+            };
+            let message = match result {
+                Ok(pass) => AsyncMsg::NwcPushRegistrationFinished {
+                    applied: pass.applied,
+                    deferred: pass.deferred,
+                    next_attempt_at: pass.next_attempt_at,
+                    error: None,
+                },
+                Err(_) => AsyncMsg::NwcPushRegistrationFinished {
+                    applied: 0,
+                    deferred: 0,
+                    next_attempt_at: None,
+                    error: Some("durable registration pass failed".to_string()),
+                },
+            };
+            let _ = tx.send(CoreMsg::Async(message));
         });
     }
 
     pub(super) fn finish_nwc_push_registration(
         &mut self,
-        fingerprint: String,
+        applied: usize,
+        deferred: usize,
+        next_attempt_at: Option<u64>,
         error: Option<String>,
     ) {
-        if self.nwc_registration_in_flight.as_deref() == Some(&fingerprint) {
-            self.nwc_registration_in_flight = None;
+        self.nwc_registration_in_flight = false;
+        if self.nwc_registration_refresh_pending {
+            self.sync_nwc_push_registrations();
+            return;
         }
         if let Some(error) = error {
             self.state.nwc.last_wake_status = format!("NWC wake registration failed: {error}");
-        } else {
-            self.nwc_registered_fingerprint = Some(fingerprint);
+            self.schedule_nwc_push_retry(now_unix().saturating_add(30));
+        } else if deferred > 0 {
+            self.state.nwc.last_wake_status = "NWC wake registration queued for retry".to_string();
+            if let Some(next_attempt_at) = next_attempt_at {
+                self.schedule_nwc_push_retry(next_attempt_at);
+            }
+        } else if applied > 0 {
             self.state.nwc.last_wake_status = format!(
-                "Registered {} NWC wake connection{}",
-                self.state.nwc.connections.len(),
-                if self.state.nwc.connections.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
+                "Applied {applied} NWC wake registration{}",
+                if applied == 1 { "" } else { "s" }
             );
+            if let Some(next_attempt_at) = next_attempt_at {
+                self.schedule_nwc_push_retry(next_attempt_at);
+            }
+        } else if let Some(next_attempt_at) = next_attempt_at {
+            self.schedule_nwc_push_retry(next_attempt_at);
         }
     }
 
-    pub(super) fn unregister_nwc_push_connections(&mut self, connections: Vec<NwcConnection>) {
-        if connections.is_empty() {
-            return;
-        }
-        let Ok(config) = self.nwc_push_config.ready() else {
-            return;
-        };
-        let Ok(keys) = self.nostr_keys() else {
-            return;
-        };
+    fn schedule_nwc_push_retry(&mut self, next_attempt_at: u64) {
+        self.nwc_registration_retry_nonce = self.nwc_registration_retry_nonce.wrapping_add(1);
+        let nonce = self.nwc_registration_retry_nonce;
+        let delay = Duration::from_secs(next_attempt_at.saturating_sub(now_unix()));
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let error = register_connections(config, keys, connections, false)
-                .await
-                .err()
-                .map(|error| format!("{error:#}"));
-            let _ = tx.send(CoreMsg::Async(AsyncMsg::NwcPushUnregistrationFinished {
-                error,
-            }));
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(CoreMsg::Async(AsyncMsg::NwcPushRetryDue { nonce }));
         });
-    }
-
-    pub(super) fn finish_nwc_push_unregistration(&mut self, error: Option<String>) {
-        if let Some(error) = error {
-            self.state.nwc.last_wake_status = format!("NWC wake removal failed: {error}");
-        }
     }
 
     pub(super) fn set_nwa_error(&mut self, message: &str) {
