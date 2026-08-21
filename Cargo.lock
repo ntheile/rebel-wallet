@@ -2011,7 +2011,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=98dbd76cbd0a1b6fb212a8a8c624267d0721376c#98dbd76cbd0a1b6fb212a8a8c624267d0721376c"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823#b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823"
 dependencies = [
  "base64 0.22.1",
  "base64ct",
@@ -2026,7 +2026,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-nostr"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=98dbd76cbd0a1b6fb212a8a8c624267d0721376c#98dbd76cbd0a1b6fb212a8a8c624267d0721376c"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823#b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823"
 dependencies = [
  "futures-util",
  "nwc-mobile",

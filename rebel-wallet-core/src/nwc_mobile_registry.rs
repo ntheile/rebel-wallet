@@ -189,7 +189,7 @@ impl TryFrom<&NwcConnection> for RegistryConnection {
     }
 }
 
-fn permission_method(permission: NwcPermission) -> Option<NwcMethod> {
+pub(crate) fn permission_method(permission: NwcPermission) -> Option<NwcMethod> {
     match permission {
         NwcPermission::GetInfo => Some(NwcMethod::GetInfo),
         NwcPermission::GetBalance => Some(NwcMethod::GetBalance),
