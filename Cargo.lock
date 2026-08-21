@@ -2011,7 +2011,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823#b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a97c018c14f2bfdd196827db1ba60cc4dd6cf09d#a97c018c14f2bfdd196827db1ba60cc4dd6cf09d"
 dependencies = [
  "base64 0.22.1",
  "base64ct",
@@ -2024,9 +2024,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nwc-mobile-bolt11"
+version = "0.1.0"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a97c018c14f2bfdd196827db1ba60cc4dd6cf09d#a97c018c14f2bfdd196827db1ba60cc4dd6cf09d"
+dependencies = [
+ "lightning-invoice",
+ "nwc-mobile",
+]
+
+[[package]]
 name = "nwc-mobile-nostr"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823#b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a97c018c14f2bfdd196827db1ba60cc4dd6cf09d#a97c018c14f2bfdd196827db1ba60cc4dd6cf09d"
 dependencies = [
  "futures-util",
  "nwc-mobile",
@@ -2521,6 +2530,7 @@ dependencies = [
  "nostr 0.45.0-alpha.1",
  "nostr-sdk",
  "nwc-mobile",
+ "nwc-mobile-bolt11",
  "nwc-mobile-nostr",
  "rand 0.8.6",
  "reqwest",

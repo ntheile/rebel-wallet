@@ -693,7 +693,7 @@
 			repositoryURL = "https://github.com/ntheile/nwc-mobile";
 			requirement = {
 				kind = revision;
-				revision = b2d9fe44ee4263ef7e3c70f30b6ea5fdf5205823;
+				revision = a97c018c14f2bfdd196827db1ba60cc4dd6cf09d;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
