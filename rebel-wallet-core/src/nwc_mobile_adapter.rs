@@ -8,7 +8,6 @@ use std::time::Duration;
 use bark::actions::lightning::pay::{LightningSend, LightningSendState};
 use bark::actions::lightning::receive::{LightningReceive, LightningReceiveState};
 use bark::ark::lightning::PaymentHash as BarkPaymentHash;
-use bark::lightning_invoice::Bolt11Invoice;
 use bark::movement::{Movement, MovementStatus};
 use bark::persist::models::SettledLightningReceive;
 use bark::Wallet;
@@ -20,6 +19,10 @@ use nwc_mobile::{
     NwcSecretKey, OperationContext, PayInvoiceRequest, PaymentFailure, PaymentHash,
     PaymentPreimage, PaymentQuote, PaymentStatus, PublicKey, SecretProvider, TransactionDirection,
     UnixTimestamp, WakeLedger, WalletBackend, WalletInfo, WalletTransaction,
+};
+use nwc_mobile_bolt11::{
+    created_invoice, exact_sats, parse_invoice, payment_amount_sats, quote_invoice_sats,
+    sats_to_msats,
 };
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
 use serde_json::Value;
@@ -148,7 +151,7 @@ impl WalletBackend for RebelWalletBackend {
         context: OperationContext<'a>,
     ) -> HostFuture<'a, Result<PaymentQuote, HostError>> {
         Box::pin(async move {
-            let quote = quote_invoice(invoice, amount)?;
+            let quote = quote_invoice_sats(invoice, amount)?;
             run_with_context(context, async move { Ok(quote) }).await
         })
     }
@@ -170,9 +173,8 @@ impl WalletBackend for RebelWalletBackend {
         context: OperationContext<'a>,
     ) -> HostFuture<'a, Result<PaymentStatus, HostError>> {
         Box::pin(async move {
-            let invoice = Bolt11Invoice::from_str(request.invoice())
-                .map_err(|_| host_error(HostErrorKind::Rejected))?;
-            let amount_sat = invoice_payment_sats(&invoice, request.amount())?;
+            let invoice = parse_invoice(request.invoice())?;
+            let amount_sat = payment_amount_sats(&invoice, request.amount())?;
             let payment_hash: BarkPaymentHash = (*invoice.payment_hash()).into();
             run_with_context(context, async {
                 let existing = payment_status(&self.wallet, payment_hash).await?;
@@ -515,40 +517,12 @@ fn movement_preimage(movement: &Movement) -> Option<PaymentPreimage> {
         .and_then(|preimage| PaymentPreimage::from_hex(preimage).ok())
 }
 
-fn created_invoice(invoice: Bolt11Invoice) -> Result<CreatedInvoice, HostError> {
-    let payment_hash = PaymentHash::from_hex(&invoice.payment_hash().to_string())
-        .map_err(|_| host_error(HostErrorKind::Internal))?;
-    let amount = invoice
-        .amount_milli_satoshis()
-        .map(AmountMsat::from_msat)
-        .ok_or_else(|| host_error(HostErrorKind::Internal))?;
-    let expires_at = invoice
-        .expires_at()
-        .map(|time| UnixTimestamp::from_secs(time.as_secs()))
-        .ok_or_else(|| host_error(HostErrorKind::Internal))?;
-    Ok(CreatedInvoice::new(
-        invoice.to_string(),
-        payment_hash,
-        amount,
-        expires_at,
-    ))
-}
-
-fn quote_invoice(invoice: &str, amount: Option<AmountMsat>) -> Result<PaymentQuote, HostError> {
-    let invoice =
-        Bolt11Invoice::from_str(invoice).map_err(|_| host_error(HostErrorKind::Rejected))?;
-    let amount_sat = invoice_payment_sats(&invoice, amount)?;
-    let payment_hash = PaymentHash::from_hex(&invoice.payment_hash().to_string())
-        .map_err(|_| host_error(HostErrorKind::Rejected))?;
-    Ok(PaymentQuote::new(payment_hash, sats_to_msats(amount_sat)))
-}
-
 fn lookup_payment_hash(request: &InvoiceLookup) -> Result<BarkPaymentHash, HostError> {
     match request {
         InvoiceLookup::PaymentHash(hash) => bark_payment_hash(hash),
-        InvoiceLookup::Invoice(invoice) => Bolt11Invoice::from_str(invoice)
-            .map(|invoice| (*invoice.payment_hash()).into())
-            .map_err(|_| host_error(HostErrorKind::Rejected)),
+        InvoiceLookup::Invoice(invoice) => {
+            parse_invoice(invoice).map(|invoice| (*invoice.payment_hash()).into())
+        }
         _ => Err(host_error(HostErrorKind::Rejected)),
     }
 }
@@ -556,39 +530,6 @@ fn lookup_payment_hash(request: &InvoiceLookup) -> Result<BarkPaymentHash, HostE
 fn bark_payment_hash(payment_hash: &PaymentHash) -> Result<BarkPaymentHash, HostError> {
     BarkPaymentHash::from_str(&payment_hash.to_hex())
         .map_err(|_| host_error(HostErrorKind::Rejected))
-}
-
-fn invoice_payment_sats(
-    invoice: &Bolt11Invoice,
-    amount: Option<AmountMsat>,
-) -> Result<u64, HostError> {
-    let amount = amount
-        .map(exact_sats)
-        .transpose()?
-        .or_else(|| {
-            invoice
-                .amount_milli_satoshis()
-                .and_then(exact_msats_to_sats)
-        })
-        .ok_or_else(|| host_error(HostErrorKind::Rejected))?;
-    if amount == 0 {
-        return Err(host_error(HostErrorKind::Rejected));
-    }
-    Ok(amount)
-}
-
-fn exact_sats(amount: AmountMsat) -> Result<u64, HostError> {
-    exact_msats_to_sats(amount.as_msat()).ok_or_else(|| host_error(HostErrorKind::Rejected))
-}
-
-fn exact_msats_to_sats(amount_msat: u64) -> Option<u64> {
-    amount_msat
-        .is_multiple_of(1_000)
-        .then_some(amount_msat / 1_000)
-}
-
-fn sats_to_msats(amount_sat: u64) -> AmountMsat {
-    AmountMsat::from_msat(amount_sat.saturating_mul(1_000))
 }
 
 fn timestamp(seconds: i64) -> UnixTimestamp {
@@ -653,12 +594,6 @@ mod tests {
             let provider = RebelSecretProvider::new(Arc::new(TestSecrets(Mutex::new(value))));
             assert!(provider.load_nwc_secret(&connection).is_err());
         }
-    }
-
-    #[test]
-    fn wallet_amount_boundary_rejects_fractional_satoshis() {
-        assert_eq!(exact_msats_to_sats(2_000), Some(2));
-        assert_eq!(exact_msats_to_sats(2_001), None);
     }
 
     #[tokio::test]
