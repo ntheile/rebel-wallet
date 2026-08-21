@@ -5,6 +5,7 @@ use nwc_mobile::{
     SecureWakeServerUrl, SystemClock, WakeLedger, WakeRegistrationChange,
     WakeRegistrationTransport, WakeRegistrationWorker,
 };
+use nwc_mobile_tokio::run_with_context;
 use serde::Serialize;
 use std::fmt;
 use std::time::Duration;
@@ -13,7 +14,6 @@ use crate::nostr_support::nostr_http_auth_header;
 
 const REGISTRATION_BATCH_SIZE: usize = 20;
 const REGISTRATION_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
-const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_CONFIG_VALUE_BYTES: usize = 2_048;
 
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -211,32 +211,9 @@ impl WakeRegistrationTransport for NwcPushTransport {
         change: &'a WakeRegistrationChange,
         context: OperationContext<'a>,
     ) -> HostFuture<'a, Result<(), HostError>> {
-        Box::pin(async move {
-            if context.cancellation().is_cancelled() {
-                return Err(HostError::new(HostErrorKind::Cancelled));
-            }
-            let operation = self.apply_change(server_url, change);
-            tokio::pin!(operation);
-            let deadline = tokio::time::sleep(context.budget().timeout());
-            tokio::pin!(deadline);
-            let cancellation_poll = tokio::time::sleep(CANCELLATION_POLL_INTERVAL);
-            tokio::pin!(cancellation_poll);
-
-            loop {
-                tokio::select! {
-                    result = &mut operation => return result,
-                    () = &mut deadline => return Err(HostError::new(HostErrorKind::TimedOut)),
-                    () = &mut cancellation_poll => {
-                        if context.cancellation().is_cancelled() {
-                            return Err(HostError::new(HostErrorKind::Cancelled));
-                        }
-                        cancellation_poll.as_mut().reset(
-                            tokio::time::Instant::now() + CANCELLATION_POLL_INTERVAL,
-                        );
-                    }
-                }
-            }
-        })
+        Box::pin(
+            async move { run_with_context(context, self.apply_change(server_url, change)).await },
+        )
     }
 }
 
