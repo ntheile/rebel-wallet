@@ -1,156 +1,154 @@
 import Foundation
-import os.log
+import NwcMobileApple
 import UserNotifications
 
-private let nseLog = OSLog(
-    subsystem: Bundle.main.bundleIdentifier ?? "NWC.NotificationService",
-    category: "NWCWake"
-)
+private let nwcExtensionExecutionMilliseconds: UInt64 = 25_000
 
 final class NotificationService: UNNotificationServiceExtension {
-    private var contentHandler: ((UNNotificationContent) -> Void)?
-    private var bestAttemptContent: UNMutableNotificationContent?
-    private var currentWake: StoredNwcWakeRequest?
+    private var adapter: NwcNotificationServiceAdapter?
 
     override func didReceive(
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
-        self.contentHandler = contentHandler
-        let content = (request.content.mutableCopy() as? UNMutableNotificationContent)
-            ?? UNMutableNotificationContent()
-        bestAttemptContent = content
-
-        if let wake = StoredNwcWakeRequest(userInfo: request.content.userInfo) {
-            currentWake = wake
-            let startedAt = Date()
-            logWakePayload(wake)
+        NwcWakeInbox.removeLegacySnapshot()
+        guard let wake = StoredNwcWakeRequest(userInfo: request.content.userInfo) else {
             NwcWakeInbox.appendDebug(
                 source: "NSE",
-                message: "NSE started event_id=\(wake.eventId) relay=\(wake.relay)"
+                message: StoredNwcWakeRequest.parseFailureMessage(userInfo: request.content.userInfo)
             )
-            if NwcWakeInbox.isProcessed(eventId: wake.eventId) {
-                currentWake = nil
-                NwcWakeInbox.appendDebug(
-                    source: "NSE",
-                    message: "Skipped already processed event_id=\(wake.eventId)"
-                )
-                setGenericWakeNotification(content, body: "Processing Request")
-            } else {
-                let outcome = respondToWakeIfPossible(wake, startedAt: startedAt)
-                if outcome.handled {
-                    currentWake = nil
-                    setGenericWakeNotification(content, body: outcome.notificationBody)
-                } else {
-                    NwcWakeInbox.enqueue(wake)
-                    currentWake = nil
-                    setGenericWakeNotification(content, body: outcome.notificationBody)
-                }
-            }
-            content.userInfo = wake.normalizedUserInfo
-        } else {
-            let message = StoredNwcWakeRequest.parseFailureMessage(userInfo: request.content.userInfo)
-            NwcWakeInbox.appendDebug(source: "NSE", message: message)
-            os_log(
-                "NWC wake push did not parse: %{private}@",
-                log: nseLog,
-                type: .info,
-                message
-            )
+            contentHandler(Self.openApplicationContent(from: request.content, userInfo: [:]))
+            return
+        }
+        guard let dataDirectory = NwcWakeInbox.extensionDataDirectoryPath() else {
+            NwcWakeInbox.appendDebug(source: "NSE", message: "Shared storage is unavailable")
+            contentHandler(Self.openApplicationContent(
+                from: request.content,
+                userInfo: wake.normalizedUserInfo
+            ))
+            return
         }
 
-        contentHandler(content)
+        let engine = NwcExtensionEngine(
+            dataDir: dataDirectory,
+            secretStore: KeychainSecretStore()
+        )
+        let executor = RebelNwcWakeExecutor(engine: engine)
+        let adapter = NwcNotificationServiceAdapter(
+            executor: executor,
+            cancellationFactory: { RebelNwcWakeCancellation() },
+            executionMilliseconds: nwcExtensionExecutionMilliseconds,
+            copy: NwcNotificationCopy(
+                processingTitle: "Nostr Wallet Connect",
+                processingBody: "Processing request",
+                completedTitle: "Nostr Wallet Connect",
+                completedBody: "Request completed",
+                openApplicationTitle: "Nostr Wallet Connect",
+                openApplicationBody: "Open Rebel Wallet to continue"
+            )
+        )
+        self.adapter = adapter
+
+        let normalizedContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
+            ?? UNMutableNotificationContent()
+        normalizedContent.userInfo = wake.normalizedUserInfo
+        let normalizedRequest = UNNotificationRequest(
+            identifier: request.identifier,
+            content: normalizedContent,
+            trigger: request.trigger
+        )
+        NwcWakeInbox.appendDebug(source: "NSE", message: "Started bounded NWC wake processing")
+        adapter.didReceive(normalizedRequest, contentHandler: contentHandler)
     }
 
     override func serviceExtensionTimeWillExpire() {
-        if let currentWake {
-            if !NwcWakeInbox.isProcessed(eventId: currentWake.eventId) {
-                NwcWakeInbox.enqueue(currentWake)
-                NwcWakeInbox.appendDebug(
-                    source: "NSE",
-                    message: "NSE time expired while processing \(currentWake.eventId); queued for app"
-                )
-            }
-        }
-        if let bestAttemptContent {
-            setGenericWakeNotification(bestAttemptContent)
-            contentHandler?(bestAttemptContent)
-        }
+        adapter?.timeWillExpire()
     }
 
-    private func logWakePayload(_ payload: StoredNwcWakeRequest) {
-        os_log(
-            "NWC wake received event_id=%{private}@ relay=%{private}@ wallet_service_pubkey=%{private}@",
-            log: nseLog,
-            type: .info,
-            payload.eventId,
-            payload.relay,
-            payload.walletServicePubkey
+    private static func openApplicationContent(
+        from content: UNNotificationContent,
+        userInfo: [AnyHashable: Any]
+    ) -> UNNotificationContent {
+        let mutable = (content.mutableCopy() as? UNMutableNotificationContent)
+            ?? UNMutableNotificationContent()
+        mutable.title = "Nostr Wallet Connect"
+        mutable.subtitle = ""
+        mutable.body = "Open Rebel Wallet to continue"
+        mutable.attachments = []
+        mutable.categoryIdentifier = ""
+        mutable.threadIdentifier = "nwc"
+        mutable.badge = nil
+        mutable.sound = nil
+        mutable.interruptionLevel = .active
+        mutable.userInfo = userInfo
+        return mutable
+    }
+}
+
+private final class RebelNwcWakeCancellation: NwcWakeCancellation, @unchecked Sendable {
+    let rust = NwcExtensionCancellation()
+
+    func cancel() {
+        rust.cancel()
+    }
+}
+
+private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
+    private let engine: NwcExtensionEngine
+
+    init(engine: NwcExtensionEngine) {
+        self.engine = engine
+    }
+
+    func execute(
+        payload: NwcWakePayload,
+        executionMilliseconds: UInt64,
+        cancellation: any NwcWakeCancellation
+    ) async -> NwcWakePresentationHint {
+        guard let cancellation = cancellation as? RebelNwcWakeCancellation else {
+            enqueue(payload)
+            return .openApplication
+        }
+
+        let result = await engine.executeWake(
+            request: NwcExtensionWakeRequest(
+                relayUrl: payload.relayURL,
+                eventIdHex: payload.eventIDHex,
+                walletServicePublicKeyHex: payload.walletServicePublicKeyHex,
+                embeddedEventJson: payload.embeddedEventJSON,
+                receivedAtSeconds: UInt64(Date().timeIntervalSince1970)
+            ),
+            executionMilliseconds: executionMilliseconds,
+            cancellation: cancellation.rust
         )
-    }
 
-    private struct WakeProcessingOutcome {
-        let handled: Bool
-        let notificationBody: String
-    }
-
-    private func respondToWakeIfPossible(
-        _ wake: StoredNwcWakeRequest,
-        startedAt: Date
-    ) -> WakeProcessingOutcome {
-        guard let snapshot = NwcWakeInbox.snapshot() else {
-            NwcWakeInbox.appendDebug(source: "NSE", message: "No local NWC wake snapshot; queued for app")
-            return WakeProcessingOutcome(handled: false, notificationBody: "Processing Request")
+        switch result.disposition {
+        case .completed, .alreadyProcessed, .rejected:
+            break
+        case .queuedForApplication, .retryAfter:
+            enqueue(payload)
         }
-
-        let result: NwcExtensionWakeResult
-        if let eventJson = wake.eventJson {
-            result = processNwcEventFromSnapshot(
-                snapshotJson: snapshot,
-                relay: wake.relay,
-                eventId: wake.eventId,
-                walletServicePubkey: wake.walletServicePubkey,
-                eventJson: eventJson
-            )
-        } else {
-            result = processNwcWakeFromSnapshot(
-                snapshotJson: snapshot,
-                relay: wake.relay,
-                eventId: wake.eventId,
-                walletServicePubkey: wake.walletServicePubkey
-            )
-        }
-        let durationMs = Int(Date().timeIntervalSince(startedAt) * 1000)
         NwcWakeInbox.appendDebug(
             source: "NSE",
-            message: "\(result.message) total_duration_ms=\(durationMs)"
+            message: "Finished bounded NWC wake processing: \(result.disposition)"
         )
-        if result.success {
-            let processedEventIds = result.processedEventIds.isEmpty
-                ? [wake.eventId]
-                : result.processedEventIds
-            NwcWakeInbox.markProcessed(eventIds: processedEventIds)
-            if let updatedSnapshot = result.updatedSnapshotJson {
-                NwcWakeInbox.saveSnapshot(updatedSnapshot)
-            }
+
+        switch result.notification {
+        case .processing:
+            return .processing
+        case .completed:
+            return .completed
+        case .openApplication:
+            return .openApplication
         }
-        os_log(
-            "NWC wake response result: %{private}@",
-            log: nseLog,
-            type: .info,
-            result.message
-        )
-        return WakeProcessingOutcome(handled: result.success, notificationBody: result.notificationBody)
     }
 
-    private func setGenericWakeNotification(
-        _ content: UNMutableNotificationContent,
-        body: String = "Processing Request"
-    ) {
-        content.title = "Nostr Connect"
-        content.body = body
-        content.sound = nil
-        content.badge = nil
-        content.interruptionLevel = .passive
+    private func enqueue(_ payload: NwcWakePayload) {
+        NwcWakeInbox.enqueue(StoredNwcWakeRequest(
+            relay: payload.relayURL,
+            eventId: payload.eventIDHex,
+            walletServicePubkey: payload.walletServicePublicKeyHex,
+            eventJson: payload.embeddedEventJSON
+        ))
     }
 }

@@ -13,6 +13,7 @@ mod custom_address;
 mod nostr_support;
 mod nwa;
 mod nwc;
+mod nwc_extension;
 mod nwc_mobile_adapter;
 mod nwc_mobile_registry;
 mod nwc_push;
@@ -27,6 +28,10 @@ mod wallet;
 mod zaps;
 
 pub use actions::AppAction;
+pub use nwc_extension::{
+    NwcExtensionCancellation, NwcExtensionDisposition, NwcExtensionEngine,
+    NwcExtensionNotification, NwcExtensionWakeRequest, NwcExtensionWakeResult,
+};
 use profile_cache::normalize_profile_picture_to_jpeg;
 pub use state::{
     ActivityIconKind, ActivityItem, AppState, BusyState, CapabilityRequest, CapabilityRequestKind,
@@ -67,22 +72,6 @@ pub struct FfiApp {
     listening: AtomicBool,
     shared_state: Arc<RwLock<AppState>>,
     secrets: Arc<dyn SecretStore>,
-    data_dir: PathBuf,
-}
-
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct NwcExtensionWakeResult {
-    pub success: bool,
-    pub message: String,
-    pub notification_body: String,
-    pub updated_snapshot_json: Option<String>,
-    pub processed_event_ids: Vec<String>,
-}
-
-fn nwc_extension_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
 }
 
 #[uniffi::export]
@@ -118,7 +107,6 @@ impl FfiApp {
             listening: AtomicBool::new(false),
             shared_state,
             secrets,
-            data_dir,
         })
     }
 
@@ -154,37 +142,6 @@ impl FfiApp {
         normalize_profile_picture_to_jpeg(&image_bytes).ok()
     }
 
-    pub fn nwc_wake_snapshot_json(&self) -> Option<String> {
-        let state = self.state();
-        if state.nwc.connections.is_empty() {
-            return None;
-        }
-
-        let nostr_secret = self
-            .secrets
-            .get_secret(core::NOSTR_SECRET_KEY.to_string())
-            .or_else(|| {
-                let mnemonic = self.secrets.get_secret(core::WALLET_SEED_KEY.to_string())?;
-                let keys = core::derive_nostr_keys_from_mnemonic(&mnemonic).ok()?;
-                let nsec = keys.secret_key().to_bech32().ok()?;
-                let _ = self
-                    .secrets
-                    .set_secret(core::NOSTR_SECRET_KEY.to_string(), nsec.clone());
-                Some(nsec)
-            })?;
-        let wallet_seed = self.secrets.get_secret(core::WALLET_SEED_KEY.to_string());
-
-        nwc::build_nwc_wake_snapshot(
-            nostr_secret,
-            wallet_seed,
-            self.data_dir.to_string_lossy().to_string(),
-            state.wallet.balance_sat,
-            state.wallet.network,
-            state.nwc.connections,
-        )
-        .ok()
-    }
-
     pub fn nwc_push_registration_auth_header(
         &self,
         url: String,
@@ -209,122 +166,4 @@ impl FfiApp {
         }
         nostr_support::nostr_http_auth_header(&keys, &url, "POST", body_json.as_bytes()).ok()
     }
-}
-
-#[uniffi::export]
-pub fn process_nwc_wake_from_snapshot(
-    snapshot_json: String,
-    relay: String,
-    event_id: String,
-    wallet_service_pubkey: String,
-) -> NwcExtensionWakeResult {
-    let wake = NwcWakeRequest {
-        relay,
-        event_id,
-        wallet_service_pubkey,
-        received_at: time::now_unix(),
-    };
-
-    let runtime = match nwc_extension_runtime() {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            return NwcExtensionWakeResult {
-                success: false,
-                message: format!("failed to start NWC wake runtime: {e:#}"),
-                notification_body: nwc_notification_body(None),
-                updated_snapshot_json: None,
-                processed_event_ids: vec![],
-            }
-        }
-    };
-
-    match runtime.block_on(nwc::process_nwc_wake_from_snapshot(snapshot_json, wake)) {
-        Ok(processed) => NwcExtensionWakeResult {
-            success: true,
-            message: format!(
-                "NSE responded to {} request {} ({})",
-                processed.method, processed.wake.event_id, processed.status
-            ),
-            notification_body: nwc_notification_body(Some(&processed.method)),
-            updated_snapshot_json: processed.updated_snapshot_json,
-            processed_event_ids: processed.processed_event_ids,
-        },
-        Err(e) => NwcExtensionWakeResult {
-            success: false,
-            message: format!("{e:#}"),
-            notification_body: nwc_notification_body(None),
-            updated_snapshot_json: None,
-            processed_event_ids: vec![],
-        },
-    }
-}
-
-#[uniffi::export]
-pub fn process_nwc_event_from_snapshot(
-    snapshot_json: String,
-    relay: String,
-    event_id: String,
-    wallet_service_pubkey: String,
-    event_json: String,
-) -> NwcExtensionWakeResult {
-    let wake = NwcWakeRequest {
-        relay,
-        event_id,
-        wallet_service_pubkey,
-        received_at: time::now_unix(),
-    };
-
-    let runtime = match nwc_extension_runtime() {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            return NwcExtensionWakeResult {
-                success: false,
-                message: format!("failed to start NWC wake runtime: {e:#}"),
-                notification_body: nwc_notification_body(None),
-                updated_snapshot_json: None,
-                processed_event_ids: vec![],
-            }
-        }
-    };
-
-    match runtime.block_on(nwc::process_nwc_event_from_snapshot(
-        snapshot_json,
-        wake,
-        event_json,
-    )) {
-        Ok(processed) => NwcExtensionWakeResult {
-            success: true,
-            message: format!(
-                "NSE responded to {} request {} ({})",
-                processed.method, processed.wake.event_id, processed.status
-            ),
-            notification_body: nwc_notification_body(Some(&processed.method)),
-            updated_snapshot_json: processed.updated_snapshot_json,
-            processed_event_ids: processed.processed_event_ids,
-        },
-        Err(e) => NwcExtensionWakeResult {
-            success: false,
-            message: format!("{e:#}"),
-            notification_body: nwc_notification_body(None),
-            updated_snapshot_json: None,
-            processed_event_ids: vec![],
-        },
-    }
-}
-
-fn nwc_notification_body(method: Option<&str>) -> String {
-    match method {
-        Some("get_info") => "Getting Info",
-        Some("get_balance") => "Getting Balance",
-        Some("pay_invoice") => "Paying Invoice",
-        Some("pay_keysend") => "Sending Payment",
-        Some("make_invoice") => "Creating Invoice",
-        Some("lookup_invoice") => "Fetching Invoice",
-        Some("list_transactions") => "Fetching Transactions",
-        Some("make_hold_invoice") => "Creating Hold Invoice",
-        Some("cancel_hold_invoice") => "Canceling Hold Invoice",
-        Some("settle_hold_invoice") => "Settling Hold Invoice",
-        _ => "Processing Request",
-    }
-    .to_string()
 }

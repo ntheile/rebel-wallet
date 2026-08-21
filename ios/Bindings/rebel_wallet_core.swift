@@ -566,8 +566,6 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
     
     func nwcPushRegistrationAuthHeader(url: String, bodyJson: String, walletServicePubkey: String)  -> String?
     
-    func nwcWakeSnapshotJson()  -> String?
-    
     func state()  -> AppState
     
 }
@@ -670,14 +668,6 @@ open func nwcPushRegistrationAuthHeader(url: String, bodyJson: String, walletSer
 })
 }
     
-open func nwcWakeSnapshotJson() -> String?  {
-    return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_rebel_wallet_core_fn_method_ffiapp_nwc_wake_snapshot_json(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
 open func state() -> AppState  {
     return try!  FfiConverterTypeAppState_lift(try! rustCall() {
     uniffi_rebel_wallet_core_fn_method_ffiapp_state(
@@ -729,6 +719,273 @@ public func FfiConverterTypeFfiApp_lift(_ handle: UInt64) throws -> FfiApp {
 #endif
 public func FfiConverterTypeFfiApp_lower(_ value: FfiApp) -> UInt64 {
     return FfiConverterTypeFfiApp.lower(value)
+}
+
+
+
+
+
+
+public protocol NwcExtensionCancellationProtocol: AnyObject, Sendable {
+    
+    func cancel() 
+    
+    func isCancelled()  -> Bool
+    
+}
+open class NwcExtensionCancellation: NwcExtensionCancellationProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_rebel_wallet_core_fn_clone_nwcextensioncancellation(self.handle, $0) }
+    }
+public convenience init() {
+    let handle =
+        try! rustCall() {
+    uniffi_rebel_wallet_core_fn_constructor_nwcextensioncancellation_new($0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_rebel_wallet_core_fn_free_nwcextensioncancellation(handle, $0) }
+    }
+
+    
+
+    
+open func cancel()  {try! rustCall() {
+    uniffi_rebel_wallet_core_fn_method_nwcextensioncancellation_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+open func isCancelled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_rebel_wallet_core_fn_method_nwcextensioncancellation_is_cancelled(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNwcExtensionCancellation: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = NwcExtensionCancellation
+
+    public static func lift(_ handle: UInt64) throws -> NwcExtensionCancellation {
+        return NwcExtensionCancellation(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: NwcExtensionCancellation) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcExtensionCancellation {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NwcExtensionCancellation, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionCancellation_lift(_ handle: UInt64) throws -> NwcExtensionCancellation {
+    return try FfiConverterTypeNwcExtensionCancellation.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionCancellation_lower(_ value: NwcExtensionCancellation) -> UInt64 {
+    return FfiConverterTypeNwcExtensionCancellation.lower(value)
+}
+
+
+
+
+
+
+public protocol NwcExtensionEngineProtocol: AnyObject, Sendable {
+    
+    func executeWake(request: NwcExtensionWakeRequest, executionMilliseconds: UInt64, cancellation: NwcExtensionCancellation) async  -> NwcExtensionWakeResult
+    
+}
+open class NwcExtensionEngine: NwcExtensionEngineProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_rebel_wallet_core_fn_clone_nwcextensionengine(self.handle, $0) }
+    }
+public convenience init(dataDir: String, secretStore: SecretStore) {
+    let handle =
+        try! rustCall() {
+    uniffi_rebel_wallet_core_fn_constructor_nwcextensionengine_new(
+        FfiConverterString.lower(dataDir),
+        FfiConverterCallbackInterfaceSecretStore_lower(secretStore),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_rebel_wallet_core_fn_free_nwcextensionengine(handle, $0) }
+    }
+
+    
+
+    
+open func executeWake(request: NwcExtensionWakeRequest, executionMilliseconds: UInt64, cancellation: NwcExtensionCancellation)async  -> NwcExtensionWakeResult  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_rebel_wallet_core_fn_method_nwcextensionengine_execute_wake(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeNwcExtensionWakeRequest_lower(request),FfiConverterUInt64.lower(executionMilliseconds),FfiConverterTypeNwcExtensionCancellation_lower(cancellation)
+                )
+            },
+            pollFunc: ffi_rebel_wallet_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_rebel_wallet_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_rebel_wallet_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeNwcExtensionWakeResult_lift,
+            errorHandler: nil
+            
+        )
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNwcExtensionEngine: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = NwcExtensionEngine
+
+    public static func lift(_ handle: UInt64) throws -> NwcExtensionEngine {
+        return NwcExtensionEngine(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: NwcExtensionEngine) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcExtensionEngine {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NwcExtensionEngine, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionEngine_lift(_ handle: UInt64) throws -> NwcExtensionEngine {
+    return try FfiConverterTypeNwcExtensionEngine.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionEngine_lower(_ value: NwcExtensionEngine) -> UInt64 {
+    return FfiConverterTypeNwcExtensionEngine.lower(value)
 }
 
 
@@ -1677,7 +1934,7 @@ public struct FfiConverterTypeNwaRequestState: FfiConverterRustBuffer {
                 clientPubkey: FfiConverterString.read(from: &buf), 
                 displayName: FfiConverterString.read(from: &buf), 
                 iconUrl: FfiConverterOptionString.read(from: &buf), 
-                iconDisplayUrl: FfiConverterOptionString.read(from: &buf),
+                iconDisplayUrl: FfiConverterOptionString.read(from: &buf), 
                 requestingAppDescription: FfiConverterOptionString.read(from: &buf), 
                 callbackTargetDescription: FfiConverterString.read(from: &buf), 
                 relay: FfiConverterString.read(from: &buf), 
@@ -1856,7 +2113,7 @@ public struct FfiConverterTypeNwcConnection: FfiConverterRustBuffer {
                 id: FfiConverterString.read(from: &buf), 
                 name: FfiConverterString.read(from: &buf), 
                 iconUrl: FfiConverterOptionString.read(from: &buf), 
-                iconDisplayUrl: FfiConverterOptionString.read(from: &buf),
+                iconDisplayUrl: FfiConverterOptionString.read(from: &buf), 
                 relay: FfiConverterString.read(from: &buf), 
                 uri: FfiConverterString.read(from: &buf), 
                 walletManagedSecret: FfiConverterBool.read(from: &buf), 
@@ -1924,21 +2181,81 @@ public func FfiConverterTypeNwcConnection_lower(_ value: NwcConnection) -> RustB
 }
 
 
-public struct NwcExtensionWakeResult: Equatable, Hashable {
-    public var success: Bool
-    public var message: String
-    public var notificationBody: String
-    public var updatedSnapshotJson: String?
-    public var processedEventIds: [String]
+public struct NwcExtensionWakeRequest: Equatable, Hashable {
+    public var relayUrl: String
+    public var eventIdHex: String
+    public var walletServicePublicKeyHex: String
+    public var embeddedEventJson: String?
+    public var receivedAtSeconds: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(success: Bool, message: String, notificationBody: String, updatedSnapshotJson: String?, processedEventIds: [String]) {
-        self.success = success
-        self.message = message
-        self.notificationBody = notificationBody
-        self.updatedSnapshotJson = updatedSnapshotJson
-        self.processedEventIds = processedEventIds
+    public init(relayUrl: String, eventIdHex: String, walletServicePublicKeyHex: String, embeddedEventJson: String?, receivedAtSeconds: UInt64) {
+        self.relayUrl = relayUrl
+        self.eventIdHex = eventIdHex
+        self.walletServicePublicKeyHex = walletServicePublicKeyHex
+        self.embeddedEventJson = embeddedEventJson
+        self.receivedAtSeconds = receivedAtSeconds
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NwcExtensionWakeRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNwcExtensionWakeRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcExtensionWakeRequest {
+        return
+            try NwcExtensionWakeRequest(
+                relayUrl: FfiConverterString.read(from: &buf), 
+                eventIdHex: FfiConverterString.read(from: &buf), 
+                walletServicePublicKeyHex: FfiConverterString.read(from: &buf), 
+                embeddedEventJson: FfiConverterOptionString.read(from: &buf), 
+                receivedAtSeconds: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NwcExtensionWakeRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.relayUrl, into: &buf)
+        FfiConverterString.write(value.eventIdHex, into: &buf)
+        FfiConverterString.write(value.walletServicePublicKeyHex, into: &buf)
+        FfiConverterOptionString.write(value.embeddedEventJson, into: &buf)
+        FfiConverterUInt64.write(value.receivedAtSeconds, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionWakeRequest_lift(_ buf: RustBuffer) throws -> NwcExtensionWakeRequest {
+    return try FfiConverterTypeNwcExtensionWakeRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionWakeRequest_lower(_ value: NwcExtensionWakeRequest) -> RustBuffer {
+    return FfiConverterTypeNwcExtensionWakeRequest.lower(value)
+}
+
+
+public struct NwcExtensionWakeResult: Equatable, Hashable {
+    public var disposition: NwcExtensionDisposition
+    public var notification: NwcExtensionNotification
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(disposition: NwcExtensionDisposition, notification: NwcExtensionNotification) {
+        self.disposition = disposition
+        self.notification = notification
     }
 
     
@@ -1957,20 +2274,14 @@ public struct FfiConverterTypeNwcExtensionWakeResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcExtensionWakeResult {
         return
             try NwcExtensionWakeResult(
-                success: FfiConverterBool.read(from: &buf), 
-                message: FfiConverterString.read(from: &buf), 
-                notificationBody: FfiConverterString.read(from: &buf), 
-                updatedSnapshotJson: FfiConverterOptionString.read(from: &buf), 
-                processedEventIds: FfiConverterSequenceString.read(from: &buf)
+                disposition: FfiConverterTypeNwcExtensionDisposition.read(from: &buf), 
+                notification: FfiConverterTypeNwcExtensionNotification.read(from: &buf)
         )
     }
 
     public static func write(_ value: NwcExtensionWakeResult, into buf: inout [UInt8]) {
-        FfiConverterBool.write(value.success, into: &buf)
-        FfiConverterString.write(value.message, into: &buf)
-        FfiConverterString.write(value.notificationBody, into: &buf)
-        FfiConverterOptionString.write(value.updatedSnapshotJson, into: &buf)
-        FfiConverterSequenceString.write(value.processedEventIds, into: &buf)
+        FfiConverterTypeNwcExtensionDisposition.write(value.disposition, into: &buf)
+        FfiConverterTypeNwcExtensionNotification.write(value.notification, into: &buf)
     }
 }
 
@@ -4124,6 +4435,168 @@ public func FfiConverterTypeNwcBudgetInterval_lower(_ value: NwcBudgetInterval) 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
+public enum NwcExtensionDisposition: Equatable, Hashable {
+    
+    case completed
+    case alreadyProcessed
+    case queuedForApplication
+    case retryAfter
+    case rejected
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NwcExtensionDisposition: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNwcExtensionDisposition: FfiConverterRustBuffer {
+    typealias SwiftType = NwcExtensionDisposition
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcExtensionDisposition {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .completed
+        
+        case 2: return .alreadyProcessed
+        
+        case 3: return .queuedForApplication
+        
+        case 4: return .retryAfter
+        
+        case 5: return .rejected
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NwcExtensionDisposition, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .completed:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .alreadyProcessed:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .queuedForApplication:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .retryAfter:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .rejected:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionDisposition_lift(_ buf: RustBuffer) throws -> NwcExtensionDisposition {
+    return try FfiConverterTypeNwcExtensionDisposition.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionDisposition_lower(_ value: NwcExtensionDisposition) -> RustBuffer {
+    return FfiConverterTypeNwcExtensionDisposition.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum NwcExtensionNotification: Equatable, Hashable {
+    
+    case processing
+    case completed
+    case openApplication
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NwcExtensionNotification: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNwcExtensionNotification: FfiConverterRustBuffer {
+    typealias SwiftType = NwcExtensionNotification
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcExtensionNotification {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .processing
+        
+        case 2: return .completed
+        
+        case 3: return .openApplication
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NwcExtensionNotification, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .processing:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .completed:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .openApplication:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionNotification_lift(_ buf: RustBuffer) throws -> NwcExtensionNotification {
+    return try FfiConverterTypeNwcExtensionNotification.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionNotification_lower(_ value: NwcExtensionNotification) -> RustBuffer {
+    return FfiConverterTypeNwcExtensionNotification.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 public enum NwcPermission: Equatable, Hashable {
     
     case payInvoice
@@ -5708,26 +6181,53 @@ fileprivate struct FfiConverterSequenceTypeScreen: FfiConverterRustBuffer {
         return seq
     }
 }
-public func processNwcEventFromSnapshot(snapshotJson: String, relay: String, eventId: String, walletServicePubkey: String, eventJson: String) -> NwcExtensionWakeResult  {
-    return try!  FfiConverterTypeNwcExtensionWakeResult_lift(try! rustCall() {
-    uniffi_rebel_wallet_core_fn_func_process_nwc_event_from_snapshot(
-        FfiConverterString.lower(snapshotJson),
-        FfiConverterString.lower(relay),
-        FfiConverterString.lower(eventId),
-        FfiConverterString.lower(walletServicePubkey),
-        FfiConverterString.lower(eventJson),$0
-    )
-})
+private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
+private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
+
+fileprivate let uniffiContinuationHandleMap = UniffiHandleMap<UnsafeContinuation<Int8, Never>>()
+
+fileprivate func uniffiRustCallAsync<F, T>(
+    rustFutureFunc: () -> UInt64,
+    pollFunc: (UInt64, @escaping UniffiRustFutureContinuationCallback, UInt64) -> (),
+    completeFunc: (UInt64, UnsafeMutablePointer<RustCallStatus>) -> F,
+    freeFunc: (UInt64) -> (),
+    liftFunc: (F) throws -> T,
+    errorHandler: ((RustBuffer) throws -> Swift.Error)?
+) async throws -> T {
+    // Make sure to call the ensure init function since future creation doesn't have a
+    // RustCallStatus param, so doesn't use makeRustCall()
+    uniffiEnsureRebelWalletCoreInitialized()
+    let rustFuture = rustFutureFunc()
+    defer {
+        freeFunc(rustFuture)
+    }
+    var pollResult: Int8;
+    repeat {
+        pollResult = await withUnsafeContinuation {
+            pollFunc(
+                rustFuture,
+                { handle, pollResult in
+                    uniffiFutureContinuationCallback(handle: handle, pollResult: pollResult)
+                },
+                uniffiContinuationHandleMap.insert(obj: $0)
+            )
+        }
+    } while pollResult != UNIFFI_RUST_FUTURE_POLL_READY
+
+    return try liftFunc(makeRustCall(
+        { completeFunc(rustFuture, $0) },
+        errorHandler: errorHandler
+    ))
 }
-public func processNwcWakeFromSnapshot(snapshotJson: String, relay: String, eventId: String, walletServicePubkey: String) -> NwcExtensionWakeResult  {
-    return try!  FfiConverterTypeNwcExtensionWakeResult_lift(try! rustCall() {
-    uniffi_rebel_wallet_core_fn_func_process_nwc_wake_from_snapshot(
-        FfiConverterString.lower(snapshotJson),
-        FfiConverterString.lower(relay),
-        FfiConverterString.lower(eventId),
-        FfiConverterString.lower(walletServicePubkey),$0
-    )
-})
+
+// Callback handlers for an async calls.  These are invoked by Rust when the future is ready.  They
+// lift the return value or error and resume the suspended function.
+fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: Int8) {
+    if let continuation = try? uniffiContinuationHandleMap.remove(handle: handle) {
+        continuation.resume(returning: pollResult)
+    } else {
+        print("uniffiFutureContinuationCallback invalid handle")
+    }
 }
 
 private enum InitializationResult {
@@ -5745,12 +6245,6 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_rebel_wallet_core_checksum_func_process_nwc_event_from_snapshot() != 901) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_rebel_wallet_core_checksum_func_process_nwc_wake_from_snapshot() != 2246) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_dispatch() != 784) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5763,13 +6257,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_nwc_push_registration_auth_header() != 4846) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_rebel_wallet_core_checksum_method_ffiapp_nwc_wake_snapshot_json() != 47111) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_state() != 28404) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_rebel_wallet_core_checksum_method_nwcextensioncancellation_cancel() != 1844) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_rebel_wallet_core_checksum_method_nwcextensioncancellation_is_cancelled() != 7680) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_rebel_wallet_core_checksum_method_nwcextensionengine_execute_wake() != 63834) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_rebel_wallet_core_checksum_constructor_ffiapp_new() != 37354) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_rebel_wallet_core_checksum_constructor_nwcextensioncancellation_new() != 38890) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_rebel_wallet_core_checksum_constructor_nwcextensionengine_new() != 41800) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_appreconciler_reconcile() != 39018) {
