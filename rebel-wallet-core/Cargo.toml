@@ -23,7 +23,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 lightning-invoice = "0.34"
 nostr = { version = "0.45.0-alpha.1", features = ["nip04", "nip47"] }
 nostr-sdk = "0.45.0-alpha.1"
-nwc-mobile = { git = "https://github.com/ntheile/nwc-mobile", rev = "8aa6f1c82f6849a2efc3efbec81c6990c753b2a8" }
+nwc-mobile = { git = "https://github.com/ntheile/nwc-mobile", rev = "4a996e9a60e0824f61278d8e79e9e2d2022abe9f" }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.31" }

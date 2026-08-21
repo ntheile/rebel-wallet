@@ -2011,7 +2011,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=8aa6f1c82f6849a2efc3efbec81c6990c753b2a8#8aa6f1c82f6849a2efc3efbec81c6990c753b2a8"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=4a996e9a60e0824f61278d8e79e9e2d2022abe9f#4a996e9a60e0824f61278d8e79e9e2d2022abe9f"
 dependencies = [
  "base64 0.22.1",
  "base64ct",

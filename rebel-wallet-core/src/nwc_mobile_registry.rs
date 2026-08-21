@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context};
 use nwc_mobile::{
-    ActiveConnection, BudgetInterval, BudgetPolicy, ConnectionId, ConnectionPolicy, FeePolicy,
-    NewConnection, NwcEncryption, NwcMethod, PublicKey, SecureRelayUrl, StoredConnection,
-    UnixTimestamp, WakeLedger, WakePolicy,
+    ActiveConnection, BudgetInterval, BudgetPolicy, Clock, ConnectionId, ConnectionManager,
+    ConnectionPolicy, FeePolicy, NewConnection, NwcEncryption, NwcMethod, PublicKey,
+    SecureRelayUrl, StoredConnection, UnixTimestamp, WakeLedger, WakePolicy,
 };
 
 use crate::{NwcBudgetInterval, NwcConnection, NwcPermission};
@@ -11,27 +11,36 @@ pub(crate) struct MigrationResult {
     pub(crate) revoked_client_pubkeys: Vec<String>,
 }
 
+struct MigrationClock(UnixTimestamp);
+
+impl Clock for MigrationClock {
+    fn now(&self) -> UnixTimestamp {
+        self.0
+    }
+}
+
 pub(crate) fn migrate_connections(
     ledger: &WakeLedger,
     connections: &mut Vec<NwcConnection>,
     now: u64,
 ) -> anyhow::Result<MigrationResult> {
+    let clock = MigrationClock(UnixTimestamp::from_secs(now));
+    let manager = ConnectionManager::new(ledger, &clock);
     let mut revoked_ids = Vec::new();
     let mut revoked_client_pubkeys = Vec::new();
 
     for connection in connections.iter() {
         let specification = RegistryConnection::try_from(connection)?;
-        match ledger
-            .load_connection(&specification.id)
+        match manager
+            .connection(&specification.id)
             .context("could not read the NWC connection registry")?
         {
             None => {
-                ledger
-                    .import_connection(
+                manager
+                    .import_legacy(
                         specification.new_connection()?,
                         UnixTimestamp::from_secs(connection.created_at),
                         connection.spent_sat,
-                        UnixTimestamp::from_secs(now),
                     )
                     .context("could not import an existing NWC connection")?;
             }
@@ -61,13 +70,18 @@ pub(crate) fn insert_connection(
     connection: &NwcConnection,
     now: u64,
 ) -> anyhow::Result<ActiveConnection> {
+    if connection.spent_sat != 0 {
+        return Err(anyhow!(
+            "new NWC connection contains legacy accounting state"
+        ));
+    }
     let specification = RegistryConnection::try_from(connection)?;
-    ledger
-        .import_connection(
+    let clock = MigrationClock(UnixTimestamp::from_secs(now));
+    ConnectionManager::new(ledger, &clock)
+        .import_legacy(
             specification.new_connection()?,
             UnixTimestamp::from_secs(connection.created_at),
-            connection.spent_sat,
-            UnixTimestamp::from_secs(now),
+            0,
         )
         .context("could not persist the NWC authorization")
 }
@@ -78,13 +92,15 @@ pub(crate) fn tombstone_connection(
     now: u64,
 ) -> anyhow::Result<()> {
     let id = ConnectionId::parse(connection.id.clone()).context("invalid NWC connection id")?;
-    match ledger
-        .load_connection(&id)
+    let clock = MigrationClock(UnixTimestamp::from_secs(now));
+    let manager = ConnectionManager::new(ledger, &clock);
+    match manager
+        .connection(&id)
         .context("could not read the NWC connection registry")?
     {
         Some(StoredConnection::Active(active)) => {
-            ledger
-                .tombstone_connection(&id, active.revision(), UnixTimestamp::from_secs(now))
+            manager
+                .revoke(&id, active.revision())
                 .context("could not revoke the NWC authorization")?;
             Ok(())
         }
@@ -272,7 +288,8 @@ mod tests {
     fn migration_removes_a_permanently_revoked_legacy_record() {
         let directory = tempfile::tempdir().expect("directory");
         let ledger = WakeLedger::open(directory.path().join("mobile.sqlite3")).expect("ledger");
-        let original = connection("nwc-revoked");
+        let mut original = connection("nwc-revoked");
+        original.spent_sat = 0;
         let active = insert_connection(&ledger, &original, 100).expect("insert");
         ledger
             .tombstone_connection(
