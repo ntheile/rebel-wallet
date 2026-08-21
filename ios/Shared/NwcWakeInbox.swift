@@ -45,11 +45,15 @@ struct StoredNwcWakeRequest: Codable, Hashable {
     }
 
     init?(userInfo: [AnyHashable: Any]) {
+        if let legacyProtocol = userInfo["protocol"] as? String, legacyProtocol != "nwc_wake" {
+            return nil
+        }
         guard
-            (userInfo["protocol"] as? String) == "nwc_wake",
-            let relay = userInfo["relay"] as? String,
-            let eventId = userInfo["event_id"] as? String,
-            let walletServicePubkey = userInfo["wallet_service_pubkey"] as? String
+            let relay = (userInfo["nwc_relay"] ?? userInfo["relay"]) as? String,
+            let eventId = (userInfo["nwc_event_id"] ?? userInfo["event_id"]) as? String,
+            let walletServicePubkey = (
+                userInfo["nwc_wallet_service_pubkey"] ?? userInfo["wallet_service_pubkey"]
+            ) as? String
         else {
             return nil
         }
@@ -58,37 +62,22 @@ struct StoredNwcWakeRequest: Codable, Hashable {
             relay: relay,
             eventId: eventId,
             walletServicePubkey: walletServicePubkey,
-            eventJson: userInfo["nwc_event"] as? String
+            eventJson: (userInfo["nwc_event_json"] ?? userInfo["nwc_event"]) as? String
         )
     }
 
-    static func parseFailureMessage(userInfo: [AnyHashable: Any]) -> String {
-        let keys = userInfo.keys.map { String(describing: $0) }.sorted().joined(separator: ", ")
-        guard (userInfo["protocol"] as? String) == "nwc_wake" else {
-            return "Ignored push: protocol was \(String(describing: userInfo["protocol"])); keys: \(keys)"
-        }
-        if userInfo["relay"] as? String == nil {
-            return "Invalid nwc_wake push: missing relay; keys: \(keys)"
-        }
-        if userInfo["event_id"] as? String == nil {
-            return "Invalid nwc_wake push: missing event_id; keys: \(keys)"
-        }
-        if userInfo["wallet_service_pubkey"] as? String == nil {
-            return "Invalid nwc_wake push: missing wallet_service_pubkey; keys: \(keys)"
-        }
-        return "Invalid nwc_wake push: fields were present but not parseable; keys: \(keys)"
+    static func parseFailureMessage(userInfo _: [AnyHashable: Any]) -> String {
+        "Ignored malformed or unrelated wake notification"
     }
 
     var normalizedUserInfo: [AnyHashable: Any] {
         var info: [AnyHashable: Any] = [
-            "protocol": "nwc_wake",
-            "version": "v1",
-            "relay": relay,
-            "event_id": eventId,
-            "wallet_service_pubkey": walletServicePubkey
+            "nwc_relay": relay,
+            "nwc_event_id": eventId,
+            "nwc_wallet_service_pubkey": walletServicePubkey,
         ]
         if let eventJson {
-            info["nwc_event"] = eventJson
+            info["nwc_event_json"] = eventJson
         }
         return info
     }
@@ -98,19 +87,14 @@ enum NwcWakeInbox {
     private static let queueKey = "nwcWakeQueue"
     private static let debugKey = "nwcWakeDebugLog"
     private static let snapshotKey = "nwcWakeSnapshot"
-    private static let processedEventIdsKey = "nwcWakeProcessedEventIds"
+    private static let legacyProcessedEventIdsKey = "nwcWakeProcessedEventIds"
     private static let maxDebugEntries = 30
-    private static let maxProcessedEventIds = 100
 
     static func enqueue(_ request: StoredNwcWakeRequest) {
         guard let defaults = appGroupDefaults() else {
             NSLog("Could not open app group defaults for nwc_wake queue")
             return
         }
-        guard !isProcessed(request.eventId, defaults: defaults) else {
-            return
-        }
-
         var requests = load(from: defaults)
         requests.removeAll { $0.eventId == request.eventId }
         requests.append(request)
@@ -124,15 +108,7 @@ enum NwcWakeInbox {
         }
 
         let requests = load(from: defaults)
-            .filter { !isProcessed($0.eventId, defaults: defaults) }
-        let drainedIds = Set(requests.map(\.eventId))
-        let remaining = load(from: defaults)
-            .filter { !drainedIds.contains($0.eventId) && !isProcessed($0.eventId, defaults: defaults) }
-        if remaining.isEmpty {
-            defaults.removeObject(forKey: queueKey)
-        } else {
-            save(remaining, to: defaults)
-        }
+        defaults.removeObject(forKey: queueKey)
         return requests
     }
 
@@ -166,83 +142,34 @@ enum NwcWakeInbox {
         NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
     }
 
-    static func saveSnapshot(_ snapshotJson: String?) {
-        guard let defaults = appGroupDefaults() else {
-            NSLog("Could not open app group defaults for nwc_wake snapshot")
-            return
+    static func removeLegacySnapshot() {
+        if let defaults = appGroupDefaults() {
+            defaults.removeObject(forKey: snapshotKey)
+            defaults.removeObject(forKey: legacyProcessedEventIdsKey)
         }
-
-        if let snapshotJson, !snapshotJson.isEmpty {
-            if !NwcWakeKeychainStore.set(snapshotJson, key: snapshotKey) {
-                NSLog("Could not save NWC wake snapshot to Keychain")
-            }
-        } else {
-            if !NwcWakeKeychainStore.delete(key: snapshotKey) {
-                NSLog("Could not delete NWC wake snapshot from Keychain")
-            }
-        }
-        defaults.removeObject(forKey: snapshotKey)
+        NwcWakeKeychainStore.delete(key: snapshotKey)
     }
 
-    static func snapshot() -> String? {
-        guard let defaults = appGroupDefaults() else {
+    static func extensionDataDirectoryPath() -> String? {
+        guard
+            let appGroupId = Bundle.main.object(
+                forInfoDictionaryKey: "RebelWalletAppGroupIdentifier"
+            ) as? String,
+            !appGroupId.isEmpty,
+            let root = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: appGroupId
+            )
+        else {
             return nil
         }
-        if let snapshot = NwcWakeKeychainStore.get(key: snapshotKey) {
-            return snapshot
-        }
-        if let legacySnapshot = defaults.string(forKey: snapshotKey), !legacySnapshot.isEmpty {
-            saveSnapshot(legacySnapshot)
-            return legacySnapshot
-        }
-        return nil
-    }
-
-    static func markProcessed(eventId: String) {
-        markProcessed(eventIds: [eventId])
-    }
-
-    static func markProcessed(eventIds: [String]) {
-        guard let defaults = appGroupDefaults() else {
-            return
-        }
-
-        let newIds = eventIds.reduce(into: [String]()) { uniqueIds, eventId in
-            guard !eventId.isEmpty, !uniqueIds.contains(eventId) else {
-                return
-            }
-            uniqueIds.append(eventId)
-        }
-        guard !newIds.isEmpty else {
-            return
-        }
-
-        let newIdSet = Set(newIds)
-        var ids = processedEventIds(from: defaults).filter { !newIdSet.contains($0) }
-        ids.append(contentsOf: newIds)
-        if ids.count > maxProcessedEventIds {
-            ids.removeFirst(ids.count - maxProcessedEventIds)
-        }
-        defaults.set(ids, forKey: processedEventIdsKey)
-        NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
-    }
-
-    static func unmarkProcessed(eventId: String) {
-        guard let defaults = appGroupDefaults() else {
-            return
-        }
-
-        var ids = processedEventIds(from: defaults)
-        ids.removeAll { $0 == eventId }
-        defaults.set(ids, forKey: processedEventIdsKey)
-        NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
-    }
-
-    static func isProcessed(eventId: String) -> Bool {
-        guard let defaults = appGroupDefaults() else {
-            return false
-        }
-        return isProcessed(eventId, defaults: defaults)
+        let dataDirectory = root
+            .appendingPathComponent("RustCore", isDirectory: true)
+            .appendingPathComponent("ApplicationSupport", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: dataDirectory,
+            withIntermediateDirectories: true
+        )
+        return dataDirectory.path
     }
 
     private static func load(from defaults: UserDefaults) -> [StoredNwcWakeRequest] {
@@ -275,14 +202,6 @@ enum NwcWakeInbox {
         defaults.set(data, forKey: debugKey)
     }
 
-    private static func processedEventIds(from defaults: UserDefaults) -> [String] {
-        defaults.stringArray(forKey: processedEventIdsKey) ?? []
-    }
-
-    private static func isProcessed(_ eventId: String, defaults: UserDefaults) -> Bool {
-        processedEventIds(from: defaults).contains(eventId)
-    }
-
     private static func appGroupDefaults() -> UserDefaults? {
         guard
             let appGroupId = Bundle.main.object(forInfoDictionaryKey: "RebelWalletAppGroupIdentifier") as? String,
@@ -297,37 +216,8 @@ enum NwcWakeInbox {
 private enum NwcWakeKeychainStore {
     private static let service = "com.rebelwallet.app.nwc-wake"
 
-    static func get(key: String) -> String? {
-        var query = baseQuery(key: key)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
-    }
-
-    static func set(_ value: String, key: String) -> Bool {
-        let data = Data(value.utf8)
-        var query = baseQuery(key: key)
-        let update: [String: Any] = [kSecValueData as String: data]
-
-        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return true
-        }
-
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
-    }
-
-    static func delete(key: String) -> Bool {
-        let status = SecItemDelete(baseQuery(key: key) as CFDictionary)
-        return status == errSecSuccess || status == errSecItemNotFound
+    static func delete(key: String) {
+        SecItemDelete(baseQuery(key: key) as CFDictionary)
     }
 
     private static func baseQuery(key: String) -> [String: Any] {

@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import Security
 import UIKit
 import UserNotifications
 
@@ -13,7 +12,6 @@ final class AppManager: AppReconciler {
     var nwcConnectionExport: NwcConnectionExport?
     private var lastRevApplied: UInt64
     private var lastNwcWakeStatusLogged: String
-    private var lastNwcWakeSnapshot: String?
     private var lastReceiveNotificationKey: String?
     private var receiveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var notificationObservers: [NSObjectProtocol] = []
@@ -29,7 +27,6 @@ final class AppManager: AppReconciler {
         nwcWakeDebugEntries = NwcWakeInbox.debugEntries()
         lastRevApplied = initial.rev
         lastNwcWakeStatusLogged = initial.nwc.lastWakeStatus
-        lastNwcWakeSnapshot = nil
         lastReceiveNotificationKey = Self.receiveNotificationKey(initial.receive)
 
         rust.listenForUpdates(reconciler: self)
@@ -39,7 +36,7 @@ final class AppManager: AppReconciler {
         if let deviceToken = NwcPushPlatformContext.cachedDeviceToken {
             syncPushNotificationRegistration(status: "Registered", deviceToken: deviceToken)
         }
-        syncNwcWakeSnapshot()
+        NwcWakeInbox.removeLegacySnapshot()
         drainQueuedNwcWakeRequests()
     }
 
@@ -69,7 +66,6 @@ final class AppManager: AppReconciler {
             notifyIfReceiveCompleted(nextState: s)
             lastRevApplied = s.rev
             state = s
-            syncNwcWakeSnapshot()
             // If a Lightning receive completed (e.g. while backgrounded), release the
             // background-execution assertion now that the core no longer needs to run.
             if !isAwaitingLightningReceive {
@@ -274,13 +270,6 @@ final class AppManager: AppReconciler {
         refreshNwcWakeDebugEntries()
     }
 
-    private func syncNwcWakeSnapshot() {
-        let snapshot = rust.nwcWakeSnapshotJson()
-        guard snapshot != lastNwcWakeSnapshot else { return }
-        lastNwcWakeSnapshot = snapshot
-        NwcWakeInbox.saveSnapshot(snapshot)
-    }
-
     func syncWalletForRefresh() async {
         if state.busy.syncingWallet {
             await waitForWalletSync()
@@ -366,65 +355,5 @@ private enum AppStoragePreparer {
             guard !fm.fileExists(atPath: destinationUrl.path) else { continue }
             try? fm.copyItem(at: sourceUrl, to: destinationUrl)
         }
-    }
-}
-
-final class KeychainSecretStore: SecretStore {
-    private let service = "com.rebelwallet.app"
-    private let accessGroup = KeychainSecretStore.keychainAccessGroup
-
-    func getSecret(key: String) -> String? {
-        var query = baseQuery(key: key)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
-    }
-
-    func setSecret(key: String, value: String) -> Bool {
-        let data = Data(value.utf8)
-        var query = baseQuery(key: key)
-        let update: [String: Any] = [kSecValueData as String: data]
-
-        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if status == errSecSuccess {
-            return true
-        }
-
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
-    }
-
-    func deleteSecret(key: String) -> Bool {
-        SecItemDelete(baseQuery(key: key) as CFDictionary) == errSecSuccess
-    }
-
-    private func baseQuery(key: String) -> [String: Any] {
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-        ]
-        if let accessGroup {
-            query[kSecAttrAccessGroup as String] = accessGroup
-        }
-        return query
-    }
-
-    private static var keychainAccessGroup: String? {
-        guard let value = Bundle.main.object(forInfoDictionaryKey: "RebelWalletKeychainAccessGroup") as? String else {
-            return nil
-        }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.hasPrefix("$(") else {
-            return nil
-        }
-        return trimmed
     }
 }

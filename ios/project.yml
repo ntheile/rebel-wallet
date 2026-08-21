@@ -5,6 +5,11 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 
+packages:
+  NwcMobileApple:
+    url: https://github.com/ntheile/nwc-mobile
+    revision: 605c9dd1a819a209fb7db3098c1137d1566c0095
+
 settings:
   base:
     PRODUCT_BUNDLE_IDENTIFIER: ${IOS_BUNDLE_ID}
@@ -64,6 +69,7 @@ targets:
     dependencies:
       - framework: Frameworks/RebelWalletCore.xcframework
         embed: false
+      - package: NwcMobileApple
 
 schemes:
   App:

@@ -151,10 +151,6 @@ impl NwcConnection {
         }
         permissions
     }
-
-    pub(crate) fn allows_permission(&self, permission: NwcPermission) -> bool {
-        self.enabled_permissions().contains(&permission)
-    }
 }
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

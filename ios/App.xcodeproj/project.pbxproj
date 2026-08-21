@@ -35,9 +35,12 @@
 		A254CD83F0CFB086C4E1E988 /* NwcWakeInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B331642D861D9C2C3E7455E /* NwcWakeInbox.swift */; };
 		A7A986D21CE49F9EC3ADCB18 /* BackupRestoreViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BEE4097AE328C49061CF79C /* BackupRestoreViews.swift */; };
 		AC5F9605CCFD3CE1158502B0 /* LaunchSplashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16D83FFD70D94BAE3A8ACC73 /* LaunchSplashView.swift */; };
+		AE7885E95B58D6E97883E16B /* KeychainSecretStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0050051F2DE3F2322DF93DF7 /* KeychainSecretStore.swift */; };
 		B5AAD623F82BE3B1BDB58880 /* DisplayText.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0724D7DE35C122B119C79 /* DisplayText.swift */; };
 		B757D13B7C830FB1E21C287A /* SendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC5043C96A336BFDB3828A80 /* SendView.swift */; };
 		B9CCB02C6244FD9FA6DB98EA /* NwaCallbackOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DCF4ADAA275B48D3BA1A458 /* NwaCallbackOpener.swift */; };
+		BD582B31BA2D8FB407839679 /* KeychainSecretStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0050051F2DE3F2322DF93DF7 /* KeychainSecretStore.swift */; };
+		BFF0C291C0E94B1D126837B5 /* NwcMobileApple in Frameworks */ = {isa = PBXBuildFile; productRef = DBA0DF6522AE70E734C7F52E /* NwcMobileApple */; };
 		CE9095245DC4CDF7215A797E /* UIKitPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9755A3599BFF7CE9D4C2B1BA /* UIKitPresentation.swift */; };
 		CED21125310A750295A4780F /* DeviceAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D863AEFB2673876DB1D78CD /* DeviceAuth.swift */; };
 		D096C657DFB51D8FC3F689AE /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6865C8CFB78CE40B67FA1DB2 /* ProfileView.swift */; };
@@ -74,6 +77,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0050051F2DE3F2322DF93DF7 /* KeychainSecretStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainSecretStore.swift; sourceTree = "<group>"; };
 		07DF4B0F56CEA10895EF3067 /* WalletEasterEgg.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletEasterEgg.swift; sourceTree = "<group>"; };
 		084A69637C40DAFB20690CE9 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		08790D56E6532CF87DC5EAF5 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -122,6 +126,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5F0CDE902BA5F4FF700244BA /* RebelWalletCore.xcframework in Frameworks */,
+				BFF0C291C0E94B1D126837B5 /* NwcMobileApple in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -216,6 +221,7 @@
 		9D2C6B5818429C4B03B3E455 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				0050051F2DE3F2322DF93DF7 /* KeychainSecretStore.swift */,
 				0B331642D861D9C2C3E7455E /* NwcWakeInbox.swift */,
 			);
 			path = Shared;
@@ -307,6 +313,7 @@
 			);
 			name = NotificationService;
 			packageProductDependencies = (
+				DBA0DF6522AE70E734C7F52E /* NwcMobileApple */,
 			);
 			productName = NotificationService;
 			productReference = ED3F1AA2DED717C2ED0B471C /* NotificationService.appex */;
@@ -340,6 +347,9 @@
 			);
 			mainGroup = 4102E3E068508DD683953C7D;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BEA342C042E103E2D0C5969F /* XCRemoteSwiftPackageReference "nwc-mobile" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E9C3DB3EC6D7655028A9C0D3 /* Products */;
 			projectDirPath = "";
@@ -367,6 +377,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AE7885E95B58D6E97883E16B /* KeychainSecretStore.swift in Sources */,
 				19450B4EB3A474AF0761CD2E /* NotificationService.swift in Sources */,
 				A254CD83F0CFB086C4E1E988 /* NwcWakeInbox.swift in Sources */,
 				18DC007A5A51D30A57687770 /* rebel_wallet_core.swift in Sources */,
@@ -389,6 +400,7 @@
 				CED21125310A750295A4780F /* DeviceAuth.swift in Sources */,
 				B5AAD623F82BE3B1BDB58880 /* DisplayText.swift in Sources */,
 				737B461EAB6B2553322AF574 /* Haptics.swift in Sources */,
+				BD582B31BA2D8FB407839679 /* KeychainSecretStore.swift in Sources */,
 				AC5F9605CCFD3CE1158502B0 /* LaunchSplashView.swift in Sources */,
 				77560E1840FC1750DD978DFF /* LightningAddressView.swift in Sources */,
 				2F71F386BE8E65B77B9C4A44 /* MainWalletView.swift in Sources */,
@@ -674,6 +686,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BEA342C042E103E2D0C5969F /* XCRemoteSwiftPackageReference "nwc-mobile" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ntheile/nwc-mobile";
+			requirement = {
+				kind = revision;
+				revision = 605c9dd1a819a209fb7db3098c1137d1566c0095;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DBA0DF6522AE70E734C7F52E /* NwcMobileApple */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BEA342C042E103E2D0C5969F /* XCRemoteSwiftPackageReference "nwc-mobile" */;
+			productName = NwcMobileApple;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 6B590BF25178DC7D824D09CE /* Project object */;
 }
