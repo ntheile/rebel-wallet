@@ -2,6 +2,14 @@ use super::*;
 
 impl AppCore {
     pub(super) fn open_nwa_request(&mut self, uri: String) {
+        if self.pending_nwa_request.is_some() {
+            self.state.toast = Some(
+                "Finish or cancel the current Nostr Wallet Auth request before opening another."
+                    .to_string(),
+            );
+            self.request_haptic(HapticFeedback::NotificationWarning);
+            return;
+        }
         match NwaRequest::parse(&uri, now_unix()) {
             Ok(request) => {
                 let icon_url = request.state.icon_url.clone();
@@ -61,10 +69,6 @@ impl AppCore {
                 return;
             }
         };
-        if let Err(error) = self.nwc_push_config.ready() {
-            self.set_nwa_error(&format!("Cannot enable background NWC wake: {error:#}"));
-            return;
-        }
         let relays = parse_nwc_relay_urls(&connection.relay, "")
             .unwrap_or_default()
             .into_iter()
@@ -176,14 +180,6 @@ impl AppCore {
     pub(super) fn cancel_nwa_request(&mut self) {
         if self.state.nwa.approving {
             return;
-        }
-        if let Some(request) = self.pending_nwa_request.as_ref() {
-            if let Ok(Some(url)) = request.cancelled_callback() {
-                self.pending_side_effects.push(AppUpdate::OpenUrl {
-                    rev: self.rev + 1,
-                    url,
-                });
-            }
         }
         self.clear_nwa_request();
     }

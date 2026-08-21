@@ -564,8 +564,6 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
     
     func normalizeProfileImageToJpeg(imageBytes: Data)  -> Data?
     
-    func nwcPushRegistrationAuthHeader(url: String, bodyJson: String, walletServicePubkey: String)  -> String?
-    
     func state()  -> AppState
     
 }
@@ -653,17 +651,6 @@ open func normalizeProfileImageToJpeg(imageBytes: Data) -> Data?  {
     uniffi_rebel_wallet_core_fn_method_ffiapp_normalize_profile_image_to_jpeg(
             self.uniffiCloneHandle(),
         FfiConverterData.lower(imageBytes),$0
-    )
-})
-}
-    
-open func nwcPushRegistrationAuthHeader(url: String, bodyJson: String, walletServicePubkey: String) -> String?  {
-    return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_rebel_wallet_core_fn_method_ffiapp_nwc_push_registration_auth_header(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(url),
-        FfiConverterString.lower(bodyJson),
-        FfiConverterString.lower(walletServicePubkey),$0
     )
 })
 }
@@ -6252,9 +6239,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_normalize_profile_image_to_jpeg() != 8272) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_rebel_wallet_core_checksum_method_ffiapp_nwc_push_registration_auth_header() != 4846) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_state() != 28404) {

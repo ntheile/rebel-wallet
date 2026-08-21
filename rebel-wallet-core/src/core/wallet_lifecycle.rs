@@ -352,7 +352,7 @@ impl AppCore {
             })
             .unwrap_or_else(|| self.state.lightning_address.custom_name.clone());
         let mut nwc_connections = self.state.nwc.connections.clone();
-        super::redact_migrated_nwc_connection_secrets(&mut nwc_connections);
+        super::redact_persisted_nwc_connection_secrets(&mut nwc_connections);
 
         let data = PersistedAppData {
             nostr,

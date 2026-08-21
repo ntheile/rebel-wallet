@@ -21,11 +21,13 @@ struct NwcConnectionsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+#if DEBUG
                     Button {
                         manager.dispatch(.pushScreen(screen: .nwcWakeLogs))
                     } label: {
                         Label("Logs", systemImage: "list.bullet.rectangle")
                     }
+#endif
 
                     Button {
                         manager.dispatch(.pushScreen(screen: .nwcWakeStatus))
@@ -1185,7 +1187,13 @@ struct NwcConnectionQRCodeSheet: View {
     }
 
     private func copyConnection() {
-        UIPasteboard.general.string = connection.uri
+        UIPasteboard.general.setItems(
+            [[UIPasteboard.typeAutomatic: connection.uri]],
+            options: [
+                .localOnly: true,
+                .expirationDate: Date().addingTimeInterval(120),
+            ]
+        )
         copied = true
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
