@@ -61,14 +61,6 @@ impl NwaRequest {
             .map(|url| Some(url.to_string()))
             .context("could not build NWA approval callback")
     }
-
-    pub(crate) fn cancelled_callback(&self) -> anyhow::Result<Option<String>> {
-        self.inner
-            .callback()
-            .map(|callback| callback.cancelled_url().map(|url| url.to_string()))
-            .transpose()
-            .context("could not build NWA cancellation callback")
-    }
 }
 
 impl fmt::Debug for NwaRequest {

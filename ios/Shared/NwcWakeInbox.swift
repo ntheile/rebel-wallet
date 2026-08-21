@@ -113,6 +113,7 @@ enum NwcWakeInbox {
     }
 
     static func appendDebug(source: String, message: String) {
+#if DEBUG
         guard let defaults = appGroupDefaults() else {
             NSLog("Could not open app group defaults for nwc_wake debug log")
             return
@@ -125,21 +126,28 @@ enum NwcWakeInbox {
         }
         saveDebugEntries(entries, to: defaults)
         NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+#endif
     }
 
     static func debugEntries() -> [NwcWakeDebugEntry] {
+#if DEBUG
         guard let defaults = appGroupDefaults() else {
             return []
         }
         return debugEntries(from: defaults)
+#else
+        return []
+#endif
     }
 
     static func clearDebugEntries() {
+#if DEBUG
         guard let defaults = appGroupDefaults() else {
             return
         }
         defaults.removeObject(forKey: debugKey)
         NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+#endif
     }
 
     static func removeLegacySnapshot() {

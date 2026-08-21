@@ -3,11 +3,13 @@ import UIKit
 
 struct NwcWakeStatusView: View {
     @Bindable var manager: AppManager
+#if DEBUG
     @State private var copiedDeviceToken = false
 
     private var apnsDeviceToken: String {
         manager.state.pushNotifications.apnsDeviceToken ?? ""
     }
+#endif
 
     private var pushRegistrationStatus: String {
         manager.state.pushNotifications.registrationStatus
@@ -45,15 +47,15 @@ struct NwcWakeStatusView: View {
                                 .foregroundStyle(pushRegistrationStatus == "Registered" ? rebelGreen : mutedText)
                         }
 
-                        Text(apnsDeviceToken.isEmpty ? "No device token yet" : apnsDeviceToken)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(apnsDeviceToken.isEmpty ? mutedText : primaryText)
-                            .textSelection(.enabled)
-                            .lineLimit(nil)
-                            .fixedSize(horizontal: false, vertical: true)
-
+#if DEBUG
                         Button {
-                            UIPasteboard.general.string = apnsDeviceToken
+                            UIPasteboard.general.setItems(
+                                [[UIPasteboard.typeAutomatic: apnsDeviceToken]],
+                                options: [
+                                    .localOnly: true,
+                                    .expirationDate: Date().addingTimeInterval(120),
+                                ]
+                            )
                             copiedDeviceToken = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                                 copiedDeviceToken = false
@@ -67,6 +69,7 @@ struct NwcWakeStatusView: View {
                         }
                         .buttonStyle(.bordered)
                         .disabled(apnsDeviceToken.isEmpty)
+#endif
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)

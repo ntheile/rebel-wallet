@@ -85,7 +85,13 @@ final class AppManager: AppReconciler {
             }
         case let .nwcConnectionExportReady(_, connectionId, name, uri, copyToClipboard, presentQr):
             if copyToClipboard {
-                UIPasteboard.general.string = uri
+                UIPasteboard.general.setItems(
+                    [[UIPasteboard.typeAutomatic: uri]],
+                    options: [
+                        .localOnly: true,
+                        .expirationDate: Date().addingTimeInterval(120),
+                    ]
+                )
                 Haptics.play(.impactLight)
             }
             if presentQr {
@@ -194,7 +200,8 @@ final class AppManager: AppReconciler {
     }
 
     func handleOpenURL(_ url: URL) {
-        guard url.scheme?.hasPrefix("nostr+walletauth") == true else { return }
+        let allowedSchemes = ["nostr+walletauth", "nostr+walletauth+rebelwallet"]
+        guard let scheme = url.scheme?.lowercased(), allowedSchemes.contains(scheme) else { return }
         dispatch(.openNwaRequest(uri: url.absoluteString))
     }
 

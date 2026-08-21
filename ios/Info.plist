@@ -27,7 +27,6 @@
 			<array>
 				<string>nostr+walletauth</string>
 				<string>nostr+walletauth+rebelwallet</string>
-				<string>rebelwallet</string>
 			</array>
 		</dict>
 	</array>

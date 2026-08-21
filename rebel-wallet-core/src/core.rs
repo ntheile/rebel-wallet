@@ -183,11 +183,9 @@ fn redact_nwc_connection_secrets(connections: &mut [NwcConnection]) {
     }
 }
 
-fn redact_migrated_nwc_connection_secrets(connections: &mut [NwcConnection]) {
+fn redact_persisted_nwc_connection_secrets(connections: &mut [NwcConnection]) {
     for connection in connections {
-        if connection.wallet_managed_secret {
-            connection.uri.clear();
-        }
+        connection.uri.clear();
     }
 }
 
@@ -1113,7 +1111,7 @@ impl AppCore {
                 connection_id: connection.id.clone(),
                 name: connection.name.clone(),
                 uri,
-                copy_to_clipboard: true,
+                copy_to_clipboard: false,
                 present_qr: true,
             });
     }
@@ -1322,17 +1320,36 @@ impl AppCore {
 
     pub(super) fn hydrate_nwc_connection_uris(&mut self) {
         let secrets = self.secrets.clone();
+        let mut migration_attempted = false;
+        let mut migration_failed = false;
         for connection in &mut self.state.nwc.connections {
             let secret_key = nwc_client_secret_key(&connection.client_pubkey);
+            let mut attempted_for_connection = false;
             if secrets.get_secret(secret_key.clone()).is_none() && !connection.uri.is_empty() {
+                migration_attempted = true;
+                attempted_for_connection = true;
                 if let Ok(uri) = NostrWalletConnectUri::parse(&connection.uri) {
-                    let _ = secrets.set_secret(secret_key.clone(), uri.secret.to_secret_hex());
+                    if !secrets.set_secret(secret_key.clone(), uri.secret.to_secret_hex()) {
+                        migration_failed = true;
+                    }
+                } else {
+                    migration_failed = true;
                 }
             }
             connection.wallet_managed_secret = secrets.get_secret(secret_key).is_some();
-            if connection.wallet_managed_secret {
-                connection.uri.clear();
+            if attempted_for_connection && !connection.wallet_managed_secret {
+                migration_failed = true;
             }
+            connection.uri.clear();
+        }
+        if migration_attempted {
+            self.save_app_data();
+        }
+        if migration_failed {
+            self.state.toast = Some(
+                "A legacy NWC secret could not be moved to secure storage and was removed. Reconnect that client."
+                    .to_string(),
+            );
         }
     }
 
@@ -3492,6 +3509,45 @@ mod tests {
     }
 
     #[test]
+    fn inbound_nwa_cannot_replace_the_request_being_reviewed() {
+        const CLIENT: &str = "687dd8ece211539364549b1f32c63eceec1e0661009ba65cf8ff2e73ba000746";
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.open_nwa_request(format!(
+            "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&name=First"
+        ));
+        let first = core.state.nwa.request.clone().expect("first request");
+
+        core.open_nwa_request(format!(
+            "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&name=Second"
+        ));
+
+        let current = core.state.nwa.request.as_ref().expect("current request");
+        assert_eq!(current.id, first.id);
+        assert_eq!(current.display_name, "First");
+        assert!(core
+            .state
+            .toast
+            .as_deref()
+            .is_some_and(|message| message.contains("current Nostr Wallet Auth request")));
+    }
+
+    #[test]
+    fn cancelling_nwa_never_opens_the_requester_callback() {
+        const CLIENT: &str = "687dd8ece211539364549b1f32c63eceec1e0661009ba65cf8ff2e73ba000746";
+        const STATE: &str = "0123456789abcdef0123456789abcdef";
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.open_nwa_request(format!(
+            "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&return_to=https%3A%2F%2Fapp.example.com%2Fnwa&state={STATE}"
+        ));
+        core.pending_side_effects.clear();
+
+        core.cancel_nwa_request();
+
+        assert!(core.pending_nwa_request.is_none());
+        assert!(core.pending_side_effects.is_empty());
+    }
+
+    #[test]
     fn redacts_nwc_secrets_from_observable_connections() {
         let mut connections = vec![NwcConnection {
             id: "test".to_string(),
@@ -3527,17 +3583,27 @@ mod tests {
     }
 
     #[test]
-    fn persistence_keeps_legacy_uri_when_secret_migration_failed() {
-        let mut connection = NwcConnection {
+    fn persistence_redacts_legacy_uri_when_secret_migration_failed() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        let service_keys = Keys::generate();
+        let client_keys = Keys::generate();
+        let uri = NostrWalletConnectUri::new(
+            service_keys.public_key(),
+            vec![RelayUrl::parse("wss://relay.example.com").expect("relay")],
+            client_keys.secret_key().clone(),
+            None,
+        )
+        .to_string();
+        core.state.nwc.connections.push(NwcConnection {
             id: "legacy".to_string(),
             name: "Legacy".to_string(),
             icon_url: None,
             icon_display_url: None,
             relay: "wss://relay.example.com".to_string(),
-            uri: "nostr+walletconnect://legacy-secret".to_string(),
+            uri,
             wallet_managed_secret: false,
-            service_pubkey: String::new(),
-            client_pubkey: String::new(),
+            service_pubkey: service_keys.public_key().to_hex(),
+            client_pubkey: client_keys.public_key().to_hex(),
             budget_sat: 0,
             spent_sat: 0,
             budget_display: String::new(),
@@ -3553,11 +3619,18 @@ mod tests {
             expires_at: None,
             budget_period_started_at: 0,
             pending_info_event_relays: Vec::new(),
-        };
+        });
 
-        redact_migrated_nwc_connection_secrets(std::slice::from_mut(&mut connection));
+        core.hydrate_nwc_connection_uris();
 
-        assert_eq!(connection.uri, "nostr+walletconnect://legacy-secret");
+        let connection = &core.state.nwc.connections[0];
+        assert!(connection.uri.is_empty());
+        assert!(!connection.wallet_managed_secret);
+        assert!(core
+            .state
+            .toast
+            .as_deref()
+            .is_some_and(|message| message.contains("could not be moved to secure storage")));
     }
 
     #[test]
