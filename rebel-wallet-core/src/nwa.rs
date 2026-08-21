@@ -1,142 +1,48 @@
-use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use anyhow::Context;
-use reqwest::Url;
+use nwc_mobile::{
+    BudgetInterval, NwaParsePolicy, NwaRequest as MobileNwaRequest, NwcMethod, PublicKey,
+    UnixTimestamp,
+};
 
 use crate::{NwaRequestState, NwcBudgetInterval, NwcPermission};
 
-const MAX_REQUEST_LENGTH: usize = 8192;
-const MAX_CALLBACK_LENGTH: usize = 2048;
-const MAX_ICON_URL_LENGTH: usize = 2048;
-const MIN_STATE_LENGTH: usize = 32;
-const MAX_STATE_LENGTH: usize = 256;
-
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct NwaRequest {
     pub(crate) state: NwaRequestState,
-    return_to: Option<Url>,
-    callback_state: Option<String>,
+    inner: MobileNwaRequest,
 }
 
 impl NwaRequest {
     pub(crate) fn parse(input: &str, now: u64) -> anyhow::Result<Self> {
-        if input.len() > MAX_REQUEST_LENGTH {
-            anyhow::bail!("NWA request is too large");
-        }
-
-        let url = Url::parse(input).context("not a valid NWA URL")?;
-        if !matches!(
-            url.scheme(),
-            "nostr+walletauth" | "nostr+walletauth+rebelwallet"
-        ) {
-            anyhow::bail!("not an NWA URL");
-        }
-
-        let client_pubkey = url
-            .host_str()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        if client_pubkey.len() != 64 || !client_pubkey.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            anyhow::bail!("NWA requires a valid client public key in the URI authority");
-        }
-
-        let query = NwaQuery::new(&url);
-        if query.has_duplicate_single_value_parameters(&["relay"]) {
-            anyhow::bail!("duplicate NWA parameter");
-        }
-        if query.value("version").unwrap_or("1") != "1" {
-            anyhow::bail!("unsupported NWA version");
-        }
-        if query.value("pubkey").is_some() {
-            anyhow::bail!("NWA client public key must be in the URI authority");
-        }
-        if !query
-            .value("secret_mode")
-            .unwrap_or("client")
-            .eq_ignore_ascii_case("client")
-        {
-            anyhow::bail!("only client-created secret mode is supported");
-        }
-        if !query
-            .value("response_mode")
-            .unwrap_or("relay")
-            .eq_ignore_ascii_case("relay")
-        {
-            anyhow::bail!("only relay response mode is supported");
-        }
-
-        let expires_at = query
-            .value("expires_at")
-            .map(|raw| {
-                let expires_at = raw
-                    .parse::<u64>()
-                    .context("expires_at must be an unsigned timestamp")?;
-                if expires_at <= now {
-                    anyhow::bail!("NWA request has expired");
-                }
-                Ok(expires_at)
-            })
-            .transpose()?;
-
-        let relays = query.values("relay");
-        if relays.is_empty() {
-            anyhow::bail!("at least one relay is required");
-        }
-        let relay = relays.join("\n");
-
-        let budget_sat = query
-            .value("max_amount")
-            .map(|raw| {
-                raw.parse::<u64>()
-                    .context("max_amount must be an unsigned millisatoshi amount")
-                    .map(|amount_msat| amount_msat / 1000)
-            })
-            .transpose()?
-            .unwrap_or(10_000);
-        let budget_interval = parse_budget_interval(query.value("budget_renewal"));
-        let permissions = parse_permissions(query.value("request_methods"));
-
-        let (return_to, callback_state) =
-            parse_callback(query.value("return_to"), query.value("state"));
-        let name = query
-            .value("name")
-            .or_else(|| query.value("appname"))
-            .unwrap_or_default()
-            .trim();
-        let display_name = if name.is_empty() {
-            "External App".to_string()
-        } else {
-            name.to_string()
+        let inner = MobileNwaRequest::parse(
+            input,
+            UnixTimestamp::from_secs(now),
+            &NwaParsePolicy::default(),
+        )
+        .context("Nostr Wallet Auth request rejected")?;
+        let requested_policy = inner.requested_policy();
+        let budget = requested_policy.budget();
+        let callback = inner.callback();
+        let state = NwaRequestState {
+            id: inner.id().to_hex(),
+            client_pubkey: inner.client_pubkey().to_hex(),
+            display_name: inner.display_name().to_string(),
+            icon_url: inner.icon_url().map(ToString::to_string),
+            icon_display_url: None,
+            requesting_app_description: callback
+                .and_then(|callback| callback.url().host_str().map(str::to_string)),
+            callback_target_description: callback
+                .map(|callback| callback.target_description())
+                .unwrap_or_else(|| "none".to_string()),
+            relay: inner.relays().join("\n"),
+            budget_sat: budget.limit_sat(),
+            budget_interval: budget_interval(budget.interval()),
+            permissions: requested_policy.methods().filter_map(permission).collect(),
+            expires_at: inner.expires_at().map(|timestamp| timestamp.as_secs()),
         };
-        let icon_url = parse_icon_url(query.value("icon"));
-        let requesting_app_description = return_to
-            .as_ref()
-            .and_then(|callback| callback.host_str().map(str::to_string));
-        let callback_target_description = return_to
-            .as_ref()
-            .map(callback_target_description)
-            .unwrap_or_else(|| "none".to_string());
-
-        Ok(Self {
-            state: NwaRequestState {
-                id: format!("{client_pubkey}-{now}"),
-                client_pubkey,
-                display_name,
-                icon_url,
-                icon_display_url: None,
-                requesting_app_description,
-                callback_target_description,
-                relay,
-                budget_sat,
-                budget_interval,
-                permissions,
-                expires_at,
-            },
-            return_to,
-            callback_state,
-        })
+        Ok(Self { state, inner })
     }
 
     pub(crate) fn approved_callback(
@@ -145,211 +51,57 @@ impl NwaRequest {
         relays: &[String],
         lud16: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
-        let mut pairs = self.state_pairs();
-        pairs.push(("status", "approved".to_string()));
-        pairs.push(("wallet_pubkey", wallet_pubkey.to_string()));
-        pairs.extend(relays.iter().cloned().map(|relay| ("relay", relay)));
-        if let Some(lud16) = lud16.filter(|value| !value.is_empty()) {
-            pairs.push(("lud16", lud16.to_string()));
-        }
-        self.callback_url(&pairs)
+        let Some(callback) = self.inner.callback() else {
+            return Ok(None);
+        };
+        let wallet_pubkey =
+            PublicKey::from_hex(wallet_pubkey).context("invalid NWC wallet-service public key")?;
+        callback
+            .approved_url(&wallet_pubkey, relays, lud16)
+            .map(|url| Some(url.to_string()))
+            .context("could not build NWA approval callback")
     }
 
     pub(crate) fn cancelled_callback(&self) -> anyhow::Result<Option<String>> {
-        let mut pairs = self.state_pairs();
-        pairs.push(("status", "cancelled".to_string()));
-        self.callback_url(&pairs)
-    }
-
-    fn state_pairs(&self) -> Vec<(&'static str, String)> {
-        self.callback_state
-            .as_ref()
-            .map(|state| vec![("state", state.clone())])
-            .unwrap_or_default()
-    }
-
-    fn callback_url(&self, pairs: &[(&str, String)]) -> anyhow::Result<Option<String>> {
-        let Some(mut callback) = self.return_to.clone() else {
-            return Ok(None);
-        };
-        let mut fragment_builder = Url::parse("https://callback.invalid/")?;
-        {
-            let mut query = fragment_builder.query_pairs_mut();
-            for (name, value) in pairs {
-                query.append_pair(name, value);
-            }
-        }
-        callback.set_fragment(fragment_builder.query());
-        Ok(Some(callback.to_string()))
+        self.inner
+            .callback()
+            .map(|callback| callback.cancelled_url().map(|url| url.to_string()))
+            .transpose()
+            .context("could not build NWA cancellation callback")
     }
 }
 
-struct NwaQuery {
-    values: HashMap<String, Vec<String>>,
-}
-
-impl NwaQuery {
-    fn new(url: &Url) -> Self {
-        let mut values = HashMap::<String, Vec<String>>::new();
-        for (name, value) in url.query_pairs() {
-            values
-                .entry(name.into_owned())
-                .or_default()
-                .push(value.into_owned());
-        }
-        Self { values }
-    }
-
-    fn value(&self, name: &str) -> Option<&str> {
-        self.values
-            .get(name)
-            .and_then(|values| values.first())
-            .map(String::as_str)
-    }
-
-    fn values(&self, name: &str) -> Vec<String> {
-        self.values.get(name).cloned().unwrap_or_default()
-    }
-
-    fn has_duplicate_single_value_parameters(&self, repeatable: &[&str]) -> bool {
-        let repeatable = repeatable.iter().copied().collect::<HashSet<_>>();
-        self.values
-            .iter()
-            .any(|(name, values)| !repeatable.contains(name.as_str()) && values.len() > 1)
+impl fmt::Debug for NwaRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NwaRequest")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
     }
 }
 
-fn parse_callback(return_to: Option<&str>, state: Option<&str>) -> (Option<Url>, Option<String>) {
-    let Some(return_to) = return_to.filter(|value| value.len() <= MAX_CALLBACK_LENGTH) else {
-        return (None, None);
-    };
-    let state = match state {
-        Some(value) => {
-            let value = value.trim();
-            if value.len() < MIN_STATE_LENGTH || value.len() > MAX_STATE_LENGTH {
-                return (None, None);
-            }
-            Some(value)
-        }
-        None => None,
-    };
-    let Ok(callback) = Url::parse(return_to) else {
-        return (None, None);
-    };
-    if !is_allowed_callback(&callback) {
-        return (None, None);
-    }
-    (Some(callback), state.map(str::to_string))
-}
-
-fn parse_icon_url(icon: Option<&str>) -> Option<String> {
-    let icon = icon?.trim();
-    if icon.is_empty() || icon.len() > MAX_ICON_URL_LENGTH {
-        return None;
-    }
-
-    let url = Url::parse(icon).ok()?;
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-        || url.port().is_some_and(|port| port != 443)
-    {
-        return None;
-    }
-
-    let host = url.host_str()?.to_ascii_lowercase();
-    is_public_domain(&host).then(|| url.to_string())
-}
-
-fn is_allowed_callback(callback: &Url) -> bool {
-    if !callback.username().is_empty()
-        || callback.password().is_some()
-        || callback.fragment().is_some()
-    {
-        return false;
-    }
-
-    if callback.scheme() == "https" {
-        let Some(host) = callback.host_str().map(str::to_ascii_lowercase) else {
-            return false;
-        };
-        return is_public_domain(&host)
-            && callback.port().map_or(true, |port| port == 443)
-            && !callback.path().is_empty();
-    }
-
-    let blocked = [
-        "http",
-        "file",
-        "data",
-        "javascript",
-        "about",
-        "blob",
-        "nostr+walletauth",
-        "nostr+walletauth+rebelwallet",
-    ];
-    !blocked.contains(&callback.scheme())
-        && callback.port().is_none()
-        && (callback.host_str().is_some() || !callback.path().is_empty())
-}
-
-fn is_public_domain(host: &str) -> bool {
-    if !host.contains('.') || host.ends_with(".local") || host == "localhost" || host.contains(':')
-    {
-        return false;
-    }
-    let parts = host.split('.').collect::<Vec<_>>();
-    let is_ipv4 = parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok());
-    !is_ipv4
-}
-
-fn callback_target_description(callback: &Url) -> String {
-    let host = callback.host_str().unwrap_or_default();
-    let port = callback
-        .port()
-        .map(|port| format!(":{port}"))
-        .unwrap_or_default();
-    format!(
-        "{}://{}{}{}",
-        callback.scheme(),
-        host,
-        port,
-        callback.path()
-    )
-}
-
-fn parse_budget_interval(value: Option<&str>) -> NwcBudgetInterval {
-    match value.unwrap_or_default().to_ascii_lowercase().as_str() {
-        "hourly" => NwcBudgetInterval::Hourly,
-        "daily" => NwcBudgetInterval::Daily,
-        "weekly" => NwcBudgetInterval::Weekly,
-        "monthly" => NwcBudgetInterval::Monthly,
-        "yearly" => NwcBudgetInterval::Yearly,
+const fn budget_interval(interval: BudgetInterval) -> NwcBudgetInterval {
+    match interval {
+        BudgetInterval::Never => NwcBudgetInterval::Never,
+        BudgetInterval::Hourly => NwcBudgetInterval::Hourly,
+        BudgetInterval::Daily => NwcBudgetInterval::Daily,
+        BudgetInterval::Weekly => NwcBudgetInterval::Weekly,
+        BudgetInterval::Monthly => NwcBudgetInterval::Monthly,
+        BudgetInterval::Yearly => NwcBudgetInterval::Yearly,
         _ => NwcBudgetInterval::Never,
     }
 }
 
-fn parse_permissions(value: Option<&str>) -> Vec<NwcPermission> {
-    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
-        return NwcPermission::IMPLEMENTED.to_vec();
-    };
-    let mut permissions = value
-        .split(|character: char| character.is_whitespace() || character == ',')
-        .filter_map(|method| match method.to_ascii_lowercase().as_str() {
-            "get_info" => Some(NwcPermission::GetInfo),
-            "get_balance" => Some(NwcPermission::GetBalance),
-            "pay_invoice" => Some(NwcPermission::PayInvoice),
-            "make_invoice" => Some(NwcPermission::MakeInvoice),
-            "lookup_invoice" => Some(NwcPermission::LookupInvoice),
-            "list_transactions" => Some(NwcPermission::ListTransactions),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if !permissions.contains(&NwcPermission::GetInfo) {
-        permissions.push(NwcPermission::GetInfo);
+const fn permission(method: NwcMethod) -> Option<NwcPermission> {
+    match method {
+        NwcMethod::GetInfo => Some(NwcPermission::GetInfo),
+        NwcMethod::GetBalance => Some(NwcPermission::GetBalance),
+        NwcMethod::MakeInvoice => Some(NwcPermission::MakeInvoice),
+        NwcMethod::PayInvoice => Some(NwcPermission::PayInvoice),
+        NwcMethod::LookupInvoice => Some(NwcPermission::LookupInvoice),
+        NwcMethod::ListTransactions => Some(NwcPermission::ListTransactions),
+        _ => None,
     }
-    permissions
 }
 
 #[cfg(test)]
@@ -357,95 +109,84 @@ mod tests {
     use super::*;
 
     const CLIENT: &str = "687dd8ece211539364549b1f32c63eceec1e0661009ba65cf8ff2e73ba000746";
+    const WALLET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const STATE: &str = "0123456789abcdef0123456789abcdef";
 
     #[test]
-    fn parses_client_created_nwa_request_and_converts_msats() {
+    fn maps_validated_mobile_request_to_rebel_state() {
         let request = NwaRequest::parse(
             &format!(
-                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.getalby.com&max_amount=500000000&budget_renewal=monthly&request_methods=get_info+pay_invoice&name=Alby+Go&icon=https%3A%2F%2Fexample.com%2Falby.png"
+                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.getalby.com%2Fnwc%2F&max_amount=500000000&budget_renewal=monthly&request_methods=get_info+pay_invoice&name=Alby+Go&icon=https%3A%2F%2Fexample.com%2Falby.png"
             ),
             100,
         )
-        .unwrap();
+        .expect("request");
 
         assert_eq!(request.state.client_pubkey, CLIENT);
         assert_eq!(request.state.display_name, "Alby Go");
-        assert_eq!(
-            request.state.icon_url.as_deref(),
-            Some("https://example.com/alby.png")
-        );
         assert_eq!(request.state.budget_sat, 500_000);
         assert_eq!(request.state.budget_interval, NwcBudgetInterval::Monthly);
         assert_eq!(
             request.state.permissions,
             vec![NwcPermission::GetInfo, NwcPermission::PayInvoice]
         );
+        assert_eq!(request.state.relay, "wss://relay.getalby.com/nwc/");
+        assert_eq!(request.state.id.len(), 32);
     }
 
     #[test]
-    fn ignores_unsafe_app_icon_urls() {
-        for icon in [
-            "http://example.com/icon.png",
-            "https://localhost/icon.png",
-            "https://127.0.0.1/icon.png",
-            "https://user@example.com/icon.png",
-            "https://example.com:8443/icon.png",
-        ] {
-            let request = NwaRequest::parse(
-                &format!(
-                    "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&icon={icon}"
-                ),
-                100,
-            )
-            .unwrap();
-            assert_eq!(request.state.icon_url, None, "accepted unsafe icon {icon}");
-        }
+    fn omitted_authority_is_read_only_and_zero_budget() {
+        let request = NwaRequest::parse(
+            &format!("nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com"),
+            100,
+        )
+        .expect("request");
+        assert_eq!(request.state.budget_sat, 0);
+        assert_eq!(request.state.permissions, vec![NwcPermission::GetInfo]);
     }
 
     #[test]
-    fn rejects_duplicate_security_parameters() {
-        let result = NwaRequest::parse(
+    fn only_https_app_link_callbacks_are_accepted() {
+        let custom_scheme = NwaRequest::parse(
             &format!(
-                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&max_amount=1000&max_amount=2000"
+                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&return_to=example%3A%2F%2Fnwa&state={STATE}"
             ),
             100,
         );
-        assert!(result.unwrap_err().to_string().contains("duplicate"));
-    }
+        assert!(custom_scheme.is_err());
 
-    #[test]
-    fn builds_fragment_callback_without_exposing_a_secret() {
-        let callback_state = "0123456789abcdef0123456789abcdef";
         let request = NwaRequest::parse(
             &format!(
-                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&return_to=zapritep2p-dev%3A%2F%2Fnwa%2Fcallback&state={callback_state}"
+                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&return_to=https%3A%2F%2Fapp.example.com%2Fnwa&state={STATE}"
             ),
             100,
         )
-        .unwrap();
+        .expect("https callback");
         let callback = request
             .approved_callback(
-                "102b3ceebfe25f0b58c526de93433b96866aa4c58ec75b3843a3dfd9d2255b50",
+                WALLET,
                 &["wss://relay.example.com".to_string()],
                 Some("name@example.com"),
             )
-            .unwrap()
-            .unwrap();
-
-        assert!(callback.starts_with("zapritep2p-dev://nwa/callback#"));
+            .expect("callback")
+            .expect("callback URL");
+        assert!(callback.starts_with("https://app.example.com/nwa#"));
         assert!(callback.contains("status=approved"));
-        assert!(callback.contains("wallet_pubkey="));
         assert!(!callback.contains("secret="));
     }
 
     #[test]
-    fn rejects_expired_requests() {
-        let result = NwaRequest::parse(
-            &format!(
-                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&expires_at=100"
-            ),
-            100,
-        );
-        assert!(result.unwrap_err().to_string().contains("expired"));
+    fn rejects_fractional_satoshi_unknown_methods_and_excess_lifetime() {
+        for query in [
+            "max_amount=1001",
+            "request_methods=get_info+unknown_method",
+            "expires_at=3000000",
+        ] {
+            let result = NwaRequest::parse(
+                &format!("nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&{query}"),
+                100,
+            );
+            assert!(result.is_err(), "accepted {query}");
+        }
     }
 }
