@@ -1,16 +1,14 @@
 use anyhow::Context;
 use nostr_sdk::prelude::Keys;
 use nwc_mobile::{
-    HostError, HostErrorKind, HostFuture, NeverCancelled, OperationBudget, OperationContext,
-    SecureWakeServerUrl, SystemClock, WakeLedger, WakeRegistrationChange,
-    WakeRegistrationTransport, WakeRegistrationWorker,
+    Clock, HostError, HostErrorKind, HostFuture, NeverCancelled, Nip98Authorization,
+    Nip98SigningKey, OperationBudget, OperationContext, SecureWakeServerUrl, SystemClock,
+    WakeLedger, WakeRegistrationChange, WakeRegistrationTransport, WakeRegistrationWorker,
 };
 use nwc_mobile_tokio::run_with_context;
 use serde::Serialize;
 use std::fmt;
 use std::time::Duration;
-
-use crate::nostr_support::nostr_http_auth_header;
 
 const REGISTRATION_BATCH_SIZE: usize = 20;
 const REGISTRATION_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -155,6 +153,8 @@ impl NwcPushTransport {
         let url = base_url
             .join("register-nwc-push")
             .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+        let endpoint = SecureWakeServerUrl::parse(url.as_str())
+            .map_err(|_| HostError::new(HostErrorKind::Internal))?;
         let client_pubkey = change.client_pubkey().to_hex();
         let wallet_service_pubkey = change.wallet_service_pubkey().to_hex();
         if self.keys.public_key().to_hex() != wallet_service_pubkey {
@@ -177,12 +177,19 @@ impl NwcPushTransport {
             };
             let body = serde_json::to_vec(&payload)
                 .map_err(|_| HostError::new(HostErrorKind::Internal))?;
-            let auth = nostr_http_auth_header(&self.keys, url.as_str(), "POST", &body)
+            let signing_key = Nip98SigningKey::from_bytes(self.keys.secret_key().to_secret_bytes())
                 .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+            let auth = Nip98Authorization::for_registration_post(
+                &endpoint,
+                &body,
+                &signing_key,
+                SystemClock.now(),
+            )
+            .map_err(|_| HostError::new(HostErrorKind::Internal))?;
             let response = self
                 .client
                 .post(url.clone())
-                .header(reqwest::header::AUTHORIZATION, auth)
+                .header(reqwest::header::AUTHORIZATION, auth.as_header_value())
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body)
                 .send()
