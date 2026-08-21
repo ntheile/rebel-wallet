@@ -23,9 +23,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 lightning-invoice = "0.34"
 nostr = { version = "0.45.0-alpha.1", features = ["nip04", "nip47"] }
 nostr-sdk = "0.45.0-alpha.1"
-nwc-mobile = { git = "https://github.com/ntheile/nwc-mobile", rev = "a97c018c14f2bfdd196827db1ba60cc4dd6cf09d" }
-nwc-mobile-bolt11 = { git = "https://github.com/ntheile/nwc-mobile", rev = "a97c018c14f2bfdd196827db1ba60cc4dd6cf09d" }
-nwc-mobile-nostr = { git = "https://github.com/ntheile/nwc-mobile", rev = "a97c018c14f2bfdd196827db1ba60cc4dd6cf09d" }
+nwc-mobile = { git = "https://github.com/ntheile/nwc-mobile", rev = "c8062bbddfda83eb032a116501c0c557f5d295bf" }
+nwc-mobile-bolt11 = { git = "https://github.com/ntheile/nwc-mobile", rev = "c8062bbddfda83eb032a116501c0c557f5d295bf" }
+nwc-mobile-nostr = { git = "https://github.com/ntheile/nwc-mobile", rev = "c8062bbddfda83eb032a116501c0c557f5d295bf" }
+nwc-mobile-tokio = { git = "https://github.com/ntheile/nwc-mobile", rev = "c8062bbddfda83eb032a116501c0c557f5d295bf" }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.31" }

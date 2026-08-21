@@ -2011,7 +2011,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=a97c018c14f2bfdd196827db1ba60cc4dd6cf09d#a97c018c14f2bfdd196827db1ba60cc4dd6cf09d"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=c8062bbddfda83eb032a116501c0c557f5d295bf#c8062bbddfda83eb032a116501c0c557f5d295bf"
 dependencies = [
  "base64 0.22.1",
  "base64ct",
@@ -2026,7 +2026,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-bolt11"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=a97c018c14f2bfdd196827db1ba60cc4dd6cf09d#a97c018c14f2bfdd196827db1ba60cc4dd6cf09d"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=c8062bbddfda83eb032a116501c0c557f5d295bf#c8062bbddfda83eb032a116501c0c557f5d295bf"
 dependencies = [
  "lightning-invoice",
  "nwc-mobile",
@@ -2035,13 +2035,22 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-nostr"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=a97c018c14f2bfdd196827db1ba60cc4dd6cf09d#a97c018c14f2bfdd196827db1ba60cc4dd6cf09d"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=c8062bbddfda83eb032a116501c0c557f5d295bf#c8062bbddfda83eb032a116501c0c557f5d295bf"
 dependencies = [
  "futures-util",
  "nwc-mobile",
+ "nwc-mobile-tokio",
  "serde_json",
- "tokio",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "nwc-mobile-tokio"
+version = "0.1.0"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=c8062bbddfda83eb032a116501c0c557f5d295bf#c8062bbddfda83eb032a116501c0c557f5d295bf"
+dependencies = [
+ "nwc-mobile",
+ "tokio",
 ]
 
 [[package]]
@@ -2532,6 +2541,7 @@ dependencies = [
  "nwc-mobile",
  "nwc-mobile-bolt11",
  "nwc-mobile-nostr",
+ "nwc-mobile-tokio",
  "rand 0.8.6",
  "reqwest",
  "rusqlite",

@@ -1,9 +1,7 @@
 use std::collections::BTreeSet;
-use std::future::Future;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bark::actions::lightning::pay::{LightningSend, LightningSendState};
 use bark::actions::lightning::receive::{LightningReceive, LightningReceiveState};
@@ -14,17 +12,18 @@ use bark::Wallet;
 use bitcoin::Amount;
 use nostr_sdk::prelude::SecretKey;
 use nwc_mobile::{
-    AmountMsat, CancellationSignal, ConnectionId, CreatedInvoice, HostError, HostErrorKind,
-    HostFuture, InvoiceLookup, ListTransactionsRequest, MakeInvoiceRequest, NwcMethod,
-    NwcSecretKey, OperationContext, PayInvoiceRequest, PaymentFailure, PaymentHash,
-    PaymentPreimage, PaymentQuote, PaymentStatus, PublicKey, SecretProvider, TransactionDirection,
-    UnixTimestamp, WakeLedger, WalletBackend, WalletInfo, WalletTransaction,
+    AmountMsat, ConnectionId, CreatedInvoice, HostError, HostErrorKind, HostFuture, InvoiceLookup,
+    ListTransactionsRequest, MakeInvoiceRequest, NwcMethod, NwcSecretKey, OperationContext,
+    PayInvoiceRequest, PaymentFailure, PaymentHash, PaymentPreimage, PaymentQuote, PaymentStatus,
+    PublicKey, SecretProvider, TransactionDirection, UnixTimestamp, WakeLedger, WalletBackend,
+    WalletInfo, WalletTransaction,
 };
 use nwc_mobile_bolt11::{
     created_invoice, exact_sats, parse_invoice, payment_amount_sats, quote_invoice_sats,
     sats_to_msats,
 };
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
+use nwc_mobile_tokio::run_with_context;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
@@ -32,7 +31,6 @@ use crate::core::NOSTR_SECRET_KEY;
 use crate::SecretStore;
 
 const NWC_LEDGER_FILE: &str = "nwc-mobile.sqlite3";
-const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Opens the one cross-process ledger shared by the app and its NSE.
 pub(crate) fn open_nwc_ledger(data_dir: &Path) -> Result<WakeLedger, nwc_mobile::LedgerError> {
@@ -279,30 +277,6 @@ impl WalletBackend for RebelWalletBackend {
             })
             .await
         })
-    }
-}
-
-async fn run_with_context<T, F>(context: OperationContext<'_>, operation: F) -> Result<T, HostError>
-where
-    F: Future<Output = Result<T, HostError>> + Send,
-{
-    if context.cancellation().is_cancelled() {
-        return Err(host_error(HostErrorKind::Cancelled));
-    }
-    tokio::select! {
-        biased;
-        () = wait_for_cancellation(context.cancellation()) => {
-            Err(host_error(HostErrorKind::Cancelled))
-        }
-        result = tokio::time::timeout(context.budget().timeout(), operation) => {
-            result.unwrap_or_else(|_| Err(host_error(HostErrorKind::TimedOut)))
-        }
-    }
-}
-
-async fn wait_for_cancellation(cancellation: &dyn CancellationSignal) {
-    while !cancellation.is_cancelled() {
-        tokio::time::sleep(CANCELLATION_POLL_INTERVAL).await;
     }
 }
 
@@ -556,7 +530,6 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use nwc_mobile::{NeverCancelled, OperationBudget};
 
     const SECRET_HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -594,35 +567,6 @@ mod tests {
             let provider = RebelSecretProvider::new(Arc::new(TestSecrets(Mutex::new(value))));
             assert!(provider.load_nwc_secret(&connection).is_err());
         }
-    }
-
-    #[tokio::test]
-    async fn cancelled_host_operation_does_not_start() {
-        struct Cancelled;
-        impl CancellationSignal for Cancelled {
-            fn is_cancelled(&self) -> bool {
-                true
-            }
-        }
-        let budget = OperationBudget::new(Duration::from_secs(1)).expect("budget");
-        let context = OperationContext::new(budget, &Cancelled);
-        let result = run_with_context(context, async { Ok::<_, HostError>(()) }).await;
-        assert_eq!(
-            result.expect_err("cancelled").kind(),
-            HostErrorKind::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn host_operation_enforces_timeout() {
-        let budget = OperationBudget::new(Duration::from_millis(1)).expect("budget");
-        let context = OperationContext::new(budget, &NeverCancelled);
-        let result = run_with_context(context, async {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            Ok::<_, HostError>(())
-        })
-        .await;
-        assert_eq!(result.expect_err("timeout").kind(), HostErrorKind::TimedOut);
     }
 
     #[test]
