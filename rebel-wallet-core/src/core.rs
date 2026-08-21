@@ -55,7 +55,7 @@ use crate::nwc_mobile_registry::{
     migrate_connections as migrate_nwc_registry_connections,
     tombstone_connection as tombstone_nwc_registry_connection,
 };
-use crate::nwc_push::{register_connections, NwcPushConfig};
+use crate::nwc_push::{run_registration_worker, NwcPushConfig};
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
 use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
 use crate::price::fetch_bitcoin_price;
@@ -483,8 +483,9 @@ struct AppCore {
     pending_nwa_request: Option<NwaRequest>,
     pending_nwa_callback: Option<String>,
     nwc_push_config: NwcPushConfig,
-    nwc_registered_fingerprint: Option<String>,
-    nwc_registration_in_flight: Option<String>,
+    nwc_registration_in_flight: bool,
+    nwc_registration_refresh_pending: bool,
+    nwc_registration_retry_nonce: u64,
     rev: u64,
     next_capability_id: u64,
     send_fee_estimate_request_id: u64,
@@ -536,8 +537,9 @@ impl AppCore {
             pending_nwa_request: None,
             pending_nwa_callback: None,
             nwc_push_config: NwcPushConfig::default(),
-            nwc_registered_fingerprint: None,
-            nwc_registration_in_flight: None,
+            nwc_registration_in_flight: false,
+            nwc_registration_refresh_pending: false,
+            nwc_registration_retry_nonce: 0,
             rev: 0,
             next_capability_id: 0,
             send_fee_estimate_request_id: 0,
@@ -758,15 +760,21 @@ impl AppCore {
                 environment,
                 install_id,
             } => {
+                let wake_enabled = registration_status != "Permission denied";
                 self.state.push_notifications.apns_device_token = apns_device_token.clone();
                 self.state.push_notifications.registration_status = registration_status;
-                self.nwc_push_config = NwcPushConfig {
+                let config = NwcPushConfig {
                     server_url: wake_server_url,
                     push_token: apns_device_token,
                     app_id,
                     environment,
                     install_id,
+                    enabled: wake_enabled,
                 };
+                if self.nwc_push_config != config {
+                    self.nwc_registration_refresh_pending = true;
+                    self.nwc_push_config = config;
+                }
                 self.sync_nwc_push_registrations();
             }
             AppAction::OpenNwaRequest { uri } => self.open_nwa_request(uri),
@@ -1241,8 +1249,6 @@ impl AppCore {
                     .delete_secret(nwc_client_secret_key(&client_pubkey));
             }
             self.save_app_data();
-            self.unregister_nwc_push_connections(deleted_connections);
-            self.nwc_registered_fingerprint = None;
             self.sync_nwc_push_registrations();
         }
     }
@@ -1956,19 +1962,16 @@ impl AppCore {
                 self.state.nwc.last_wake_status =
                     format!("NWC info event failed on {relay}: {error}");
             }
-            AsyncMsg::NwaApprovalSucceeded {
-                connection,
-                callback_url,
-            } => self.finish_nwa_approval(connection, callback_url),
-            AsyncMsg::NwaApprovalFailed {
-                client_pubkey,
+            AsyncMsg::NwcPushRegistrationFinished {
+                applied,
+                deferred,
+                next_attempt_at,
                 error,
-            } => self.finish_nwa_approval_failure(client_pubkey, error),
-            AsyncMsg::NwcPushRegistrationFinished { fingerprint, error } => {
-                self.finish_nwc_push_registration(fingerprint, error)
-            }
-            AsyncMsg::NwcPushUnregistrationFinished { error } => {
-                self.finish_nwc_push_unregistration(error)
+            } => self.finish_nwc_push_registration(applied, deferred, next_attempt_at, error),
+            AsyncMsg::NwcPushRetryDue { nonce } => {
+                if nonce == self.nwc_registration_retry_nonce {
+                    self.sync_nwc_push_registrations();
+                }
             }
             AsyncMsg::PriceUpdated { currency, price } => {
                 self.state.wallet.price_currency = currency;
@@ -2075,10 +2078,8 @@ impl AppCore {
             | AsyncMsg::NwcWakeRetryDue { .. }
             | AsyncMsg::NwcInfoEventPublished { .. }
             | AsyncMsg::NwcInfoEventFailed { .. }
-            | AsyncMsg::NwaApprovalSucceeded { .. }
-            | AsyncMsg::NwaApprovalFailed { .. }
             | AsyncMsg::NwcPushRegistrationFinished { .. }
-            | AsyncMsg::NwcPushUnregistrationFinished { .. }
+            | AsyncMsg::NwcPushRetryDue { .. }
             | AsyncMsg::NostrSearchLoaded { .. }
             | AsyncMsg::PrimalProfilesLoaded { .. }
             | AsyncMsg::PrimalProfilesFailed { .. }

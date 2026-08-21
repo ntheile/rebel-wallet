@@ -218,8 +218,9 @@ final class AppManager: AppReconciler {
     }
 
     private func syncPushNotificationRegistration(status: String, deviceToken: String?) {
+        let effectiveDeviceToken = deviceToken ?? NwcPushPlatformContext.cachedDeviceToken
         dispatch(.setPushNotificationRegistration(
-            apnsDeviceToken: deviceToken,
+            apnsDeviceToken: effectiveDeviceToken,
             registrationStatus: status,
             wakeServerUrl: NwcPushPlatformContext.serverURL,
             appId: Bundle.main.bundleIdentifier ?? "com.rebelwallet.app",

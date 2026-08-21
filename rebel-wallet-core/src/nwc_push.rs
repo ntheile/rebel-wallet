@@ -1,87 +1,261 @@
 use anyhow::Context;
 use nostr_sdk::prelude::Keys;
+use nwc_mobile::{
+    HostError, HostErrorKind, HostFuture, NeverCancelled, OperationBudget, OperationContext,
+    SecureWakeServerUrl, SystemClock, WakeLedger, WakeRegistrationChange,
+    WakeRegistrationTransport, WakeRegistrationWorker,
+};
 use serde::Serialize;
+use std::fmt;
 use std::time::Duration;
 
 use crate::nostr_support::nostr_http_auth_header;
-use crate::NwcConnection;
 
-const REGISTRATION_ATTEMPTS: usize = 3;
-const REGISTRATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const REGISTRATION_BATCH_SIZE: usize = 20;
+const REGISTRATION_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_CONFIG_VALUE_BYTES: usize = 2_048;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct NwcPushConfig {
     pub(crate) server_url: Option<String>,
     pub(crate) push_token: Option<String>,
     pub(crate) app_id: String,
     pub(crate) environment: String,
     pub(crate) install_id: String,
+    pub(crate) enabled: bool,
+}
+
+impl fmt::Debug for NwcPushConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NwcPushConfig")
+            .field("configured", &self.server_url.is_some())
+            .field("has_push_token", &self.push_token.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl NwcPushConfig {
     pub(crate) fn ready(&self) -> anyhow::Result<ReadyNwcPushConfig> {
-        let server_url = self
-            .server_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .context("wake server is not configured")?;
-        let push_token = self
-            .push_token
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .context("APNs device token is not available")?;
-        if self.app_id.is_empty() || self.install_id.is_empty() {
-            anyhow::bail!("push registration metadata is incomplete");
+        let server_url = required_bounded(self.server_url.as_deref(), "wake server")?;
+        let push_token = required_bounded(self.push_token.as_deref(), "APNs device token")?;
+        let app_id = required_bounded(Some(&self.app_id), "app identifier")?;
+        let environment = required_bounded(Some(&self.environment), "push environment")?;
+        let install_id = required_bounded(Some(&self.install_id), "install identifier")?;
+        if !matches!(environment, "sandbox" | "production") {
+            anyhow::bail!("push environment is invalid");
         }
         Ok(ReadyNwcPushConfig {
-            server_url: reqwest::Url::parse(server_url).context("invalid wake server URL")?,
+            server_url: SecureWakeServerUrl::parse(server_url)
+                .context("wake server must be a secure HTTPS URL")?,
             push_token: push_token.to_string(),
-            app_id: self.app_id.clone(),
-            environment: self.environment.clone(),
-            install_id: self.install_id.clone(),
+            app_id: app_id.to_string(),
+            environment: environment.to_string(),
+            install_id: install_id.to_string(),
+            enabled: self.enabled,
         })
-    }
-
-    pub(crate) fn fingerprint(&self, connections: &[NwcConnection]) -> Option<String> {
-        let ready = self.ready().ok()?;
-        let mut connection_values = connections
-            .iter()
-            .map(|connection| {
-                format!(
-                    "{}|{}|{}|{}|{}",
-                    connection.id,
-                    connection.client_pubkey,
-                    connection.service_pubkey,
-                    connection.relay,
-                    connection.name
-                )
-            })
-            .collect::<Vec<_>>();
-        connection_values.sort();
-        Some(format!(
-            "{}\n{}\n{}\n{}\n{}\n{}",
-            ready.server_url,
-            ready.push_token,
-            ready.app_id,
-            ready.environment,
-            ready.install_id,
-            connection_values.join("\n")
-        ))
     }
 }
 
-#[derive(Clone, Debug)]
+fn required_bounded<'a>(value: Option<&'a str>, label: &str) -> anyhow::Result<&'a str> {
+    let value = value.filter(|value| !value.trim().is_empty());
+    match value {
+        Some(value) if value.len() <= MAX_CONFIG_VALUE_BYTES => Ok(value),
+        Some(_) => anyhow::bail!("{label} is too long"),
+        None => anyhow::bail!("{label} is not configured"),
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct ReadyNwcPushConfig {
-    server_url: reqwest::Url,
+    server_url: SecureWakeServerUrl,
     push_token: String,
     app_id: String,
     environment: String,
     install_id: String,
+    enabled: bool,
+}
+
+impl ReadyNwcPushConfig {
+    pub(crate) const fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+impl fmt::Debug for ReadyNwcPushConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReadyNwcPushConfig")
+            .field("server_url", &self.server_url)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RegistrationPass {
+    pub(crate) applied: usize,
+    pub(crate) deferred: usize,
+    pub(crate) next_attempt_at: Option<u64>,
+}
+
+pub(crate) async fn run_registration_worker(
+    ledger: &WakeLedger,
+    config: ReadyNwcPushConfig,
+    keys: Keys,
+) -> anyhow::Result<RegistrationPass> {
+    let transport = NwcPushTransport::new(config.clone(), keys)?;
+    let worker = WakeRegistrationWorker::new(ledger, &transport, &config.server_url, &SystemClock);
+    let report = worker
+        .run(
+            REGISTRATION_BATCH_SIZE,
+            OperationBudget::new(REGISTRATION_OPERATION_TIMEOUT)
+                .context("invalid wake registration budget")?,
+            &NeverCancelled,
+        )
+        .await
+        .context("wake registration outbox pass failed")?;
+    let next_attempt_at = ledger
+        .next_wake_registration_at()
+        .context("could not schedule pending wake registration")?
+        .map(|timestamp| timestamp.as_secs());
+    Ok(RegistrationPass {
+        applied: report.applied(),
+        deferred: report.deferred(),
+        next_attempt_at,
+    })
+}
+
+struct NwcPushTransport {
+    client: reqwest::Client,
+    config: ReadyNwcPushConfig,
+    keys: Keys,
+}
+
+impl NwcPushTransport {
+    fn new(config: ReadyNwcPushConfig, keys: Keys) -> anyhow::Result<Self> {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to build wake registration client")?;
+        Ok(Self {
+            client,
+            config,
+            keys,
+        })
+    }
+
+    async fn apply_change(
+        &self,
+        server_url: &SecureWakeServerUrl,
+        change: &WakeRegistrationChange,
+    ) -> Result<(), HostError> {
+        let base_url = reqwest::Url::parse(server_url.as_str())
+            .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+        let url = base_url
+            .join("register-nwc-push")
+            .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+        let client_pubkey = change.client_pubkey().to_hex();
+        let wallet_service_pubkey = change.wallet_service_pubkey().to_hex();
+        if self.keys.public_key().to_hex() != wallet_service_pubkey {
+            return Err(HostError::new(HostErrorKind::Rejected));
+        }
+        for relay in change.relays() {
+            let payload = RegisterNwcPushPayload {
+                id: &self.config.install_id,
+                connection_id: change.connection_id().as_str(),
+                connection_revision: change.connection_revision().value(),
+                push_service: "apns",
+                push_token: &self.config.push_token,
+                app_id: &self.config.app_id,
+                environment: &self.config.environment,
+                client_pubkey: &client_pubkey,
+                wallet_service_pubkey: &wallet_service_pubkey,
+                relay: relay.as_str(),
+                name: "NWC connection",
+                enabled: change.enabled(),
+            };
+            let body = serde_json::to_vec(&payload)
+                .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+            let auth = nostr_http_auth_header(&self.keys, url.as_str(), "POST", &body)
+                .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+            let response = self
+                .client
+                .post(url.clone())
+                .header(reqwest::header::AUTHORIZATION, auth)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body)
+                .send()
+                .await
+                .map_err(classify_request_error)?;
+            let status = response.status();
+            if !status.is_success() {
+                let kind = if status.is_server_error()
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                {
+                    HostErrorKind::Unavailable
+                } else {
+                    HostErrorKind::Rejected
+                };
+                return Err(HostError::new(kind));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl WakeRegistrationTransport for NwcPushTransport {
+    fn apply<'a>(
+        &'a self,
+        server_url: &'a SecureWakeServerUrl,
+        change: &'a WakeRegistrationChange,
+        context: OperationContext<'a>,
+    ) -> HostFuture<'a, Result<(), HostError>> {
+        Box::pin(async move {
+            if context.cancellation().is_cancelled() {
+                return Err(HostError::new(HostErrorKind::Cancelled));
+            }
+            let operation = self.apply_change(server_url, change);
+            tokio::pin!(operation);
+            let deadline = tokio::time::sleep(context.budget().timeout());
+            tokio::pin!(deadline);
+            let cancellation_poll = tokio::time::sleep(CANCELLATION_POLL_INTERVAL);
+            tokio::pin!(cancellation_poll);
+
+            loop {
+                tokio::select! {
+                    result = &mut operation => return result,
+                    () = &mut deadline => return Err(HostError::new(HostErrorKind::TimedOut)),
+                    () = &mut cancellation_poll => {
+                        if context.cancellation().is_cancelled() {
+                            return Err(HostError::new(HostErrorKind::Cancelled));
+                        }
+                        cancellation_poll.as_mut().reset(
+                            tokio::time::Instant::now() + CANCELLATION_POLL_INTERVAL,
+                        );
+                    }
+                }
+            }
+        })
+    }
+}
+
+fn classify_request_error(error: reqwest::Error) -> HostError {
+    let kind = if error.is_timeout() {
+        HostErrorKind::TimedOut
+    } else if error.is_builder() {
+        HostErrorKind::Internal
+    } else {
+        HostErrorKind::Unavailable
+    };
+    HostError::new(kind)
 }
 
 #[derive(Serialize)]
 struct RegisterNwcPushPayload<'a> {
     id: &'a str,
+    connection_id: &'a str,
+    connection_revision: u64,
     push_service: &'static str,
     push_token: &'a str,
     app_id: &'a str,
@@ -89,199 +263,41 @@ struct RegisterNwcPushPayload<'a> {
     client_pubkey: &'a str,
     wallet_service_pubkey: &'a str,
     relay: &'a str,
-    name: &'a str,
+    name: &'static str,
     enabled: bool,
-}
-
-pub(crate) async fn register_connections(
-    config: ReadyNwcPushConfig,
-    keys: Keys,
-    connections: Vec<NwcConnection>,
-    enabled: bool,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(REGISTRATION_REQUEST_TIMEOUT)
-        .build()
-        .context("failed to build wake registration client")?;
-    let mut failures = Vec::new();
-    for connection in connections {
-        for relay in relay_values(&connection.relay) {
-            let mut last_error = None;
-            for attempt in 0..REGISTRATION_ATTEMPTS {
-                match register_connection(&client, &config, &keys, &connection, &relay, enabled)
-                    .await
-                {
-                    Ok(()) => {
-                        last_error = None;
-                        break;
-                    }
-                    Err(error) => last_error = Some(error),
-                }
-                if attempt + 1 < REGISTRATION_ATTEMPTS {
-                    tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
-                }
-            }
-            if let Some(error) = last_error {
-                failures.push(format!(
-                    "connection {} relay {relay}: {error:#}",
-                    connection.id
-                ));
-            }
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        anyhow::bail!(failures.join("; "))
-    }
-}
-
-async fn register_connection(
-    client: &reqwest::Client,
-    config: &ReadyNwcPushConfig,
-    keys: &Keys,
-    connection: &NwcConnection,
-    relay: &str,
-    enabled: bool,
-) -> anyhow::Result<()> {
-    if connection.service_pubkey != keys.public_key().to_hex() {
-        anyhow::bail!("NWC connection service pubkey does not match registration signer");
-    }
-    let url = config
-        .server_url
-        .join("register-nwc-push")
-        .context("invalid wake registration endpoint")?;
-    let payload = RegisterNwcPushPayload {
-        id: &config.install_id,
-        push_service: "apns",
-        push_token: &config.push_token,
-        app_id: &config.app_id,
-        environment: &config.environment,
-        client_pubkey: &connection.client_pubkey,
-        wallet_service_pubkey: &connection.service_pubkey,
-        relay,
-        name: &connection.name,
-        enabled,
-    };
-    let body = serde_json::to_vec(&payload).context("failed to encode wake registration")?;
-    let auth = nostr_http_auth_header(keys, url.as_str(), "POST", &body)
-        .context("failed to sign wake registration")?;
-    let response = client
-        .post(url)
-        .header(reqwest::header::AUTHORIZATION, auth)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .send()
-        .await
-        .context("wake registration request failed")?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("wake server rejected registration with {status}: {body}");
-    }
-    Ok(())
-}
-
-fn relay_values(value: &str) -> Vec<String> {
-    let mut relays = Vec::new();
-    for relay in value
-        .split(|character: char| character.is_whitespace() || character == ',')
-        .map(str::trim)
-        .filter(|relay| !relay.is_empty())
-    {
-        let relay = relay.trim_end_matches('/').to_string();
-        if !relays.contains(&relay) {
-            relays.push(relay);
-        }
-        if relays.len() == 2 {
-            break;
-        }
-    }
-    relays
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn fingerprint_is_stable_across_connection_order() {
-        let config = NwcPushConfig {
-            server_url: Some("https://wake.example.com".to_string()),
-            push_token: Some("token".to_string()),
+    fn config(server_url: &str) -> NwcPushConfig {
+        NwcPushConfig {
+            server_url: Some(server_url.to_string()),
+            push_token: Some("super-secret-token".to_string()),
             app_id: "com.example.wallet".to_string(),
             environment: "sandbox".to_string(),
             install_id: "install".to_string(),
-        };
-        let mut first = test_connection("a");
-        let mut second = test_connection("b");
-        first.name = "First".to_string();
-        second.name = "Second".to_string();
-        assert_eq!(
-            config.fingerprint(&[first.clone(), second.clone()]),
-            config.fingerprint(&[second, first])
-        );
+            enabled: true,
+        }
     }
 
     #[test]
-    fn fingerprint_changes_with_registration_destination_or_installation() {
-        let base = NwcPushConfig {
-            server_url: Some("https://wake.example.com".to_string()),
-            push_token: Some("token".to_string()),
-            app_id: "com.example.wallet".to_string(),
-            environment: "sandbox".to_string(),
-            install_id: "install-a".to_string(),
-        };
-        let connections = [test_connection("a")];
-
-        let mut changed_server = base.clone();
-        changed_server.server_url = Some("https://other.example.com".to_string());
-        assert_ne!(
-            base.fingerprint(&connections),
-            changed_server.fingerprint(&connections)
-        );
-
-        let mut changed_environment = base.clone();
-        changed_environment.environment = "production".to_string();
-        assert_ne!(
-            base.fingerprint(&connections),
-            changed_environment.fingerprint(&connections)
-        );
-
-        let mut changed_install = base.clone();
-        changed_install.install_id = "install-b".to_string();
-        assert_ne!(
-            base.fingerprint(&connections),
-            changed_install.fingerprint(&connections)
-        );
+    fn config_requires_https_and_known_apns_environment() {
+        assert!(config("https://wake.example.com").ready().is_ok());
+        assert!(config("http://wake.example.com").ready().is_err());
+        let mut invalid_environment = config("https://wake.example.com");
+        invalid_environment.environment = "development".to_string();
+        assert!(invalid_environment.ready().is_err());
     }
 
-    fn test_connection(id: &str) -> NwcConnection {
-        NwcConnection {
-            id: id.to_string(),
-            name: id.to_string(),
-            icon_url: None,
-            icon_display_url: None,
-            relay: "wss://relay.example.com".to_string(),
-            uri: String::new(),
-            wallet_managed_secret: false,
-            service_pubkey: "service".to_string(),
-            client_pubkey: id.to_string(),
-            budget_sat: 0,
-            spent_sat: 0,
-            budget_display: String::new(),
-            spent_display: String::new(),
-            budget_interval: crate::NwcBudgetInterval::Never,
-            budget_interval_display: String::new(),
-            permissions: Vec::new(),
-            permissions_configured: true,
-            allow_get_balance: false,
-            allow_pay_invoice: false,
-            created_at: 0,
-            last_used_at: None,
-            expires_at: None,
-            budget_period_started_at: 0,
-            pending_info_event_relays: Vec::new(),
-        }
+    #[test]
+    fn config_debug_output_redacts_provider_metadata() {
+        let config = config("https://private.example.com/wake");
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("private.example.com"));
+        assert!(!debug.contains("super-secret-token"));
+        assert!(!debug.contains("com.example.wallet"));
+        assert!(!debug.contains("install"));
     }
 }

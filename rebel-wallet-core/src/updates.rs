@@ -6,8 +6,8 @@ use crate::nostr_support::FetchedProfileContact;
 use crate::persistence::ZapReceiptRecord;
 use crate::wallet::WalletRecoveryNotice;
 use crate::{
-    ActivityItem, AppAction, AppState, NostrMessage, NostrState, NwcConnection, NwcWakeRequest,
-    PriceCurrency, SendDestinationKind,
+    ActivityItem, AppAction, AppState, NostrMessage, NostrState, NwcWakeRequest, PriceCurrency,
+    SendDestinationKind,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -211,20 +211,14 @@ pub(crate) enum AsyncMsg {
         relay: String,
         error: String,
     },
-    NwaApprovalSucceeded {
-        connection: NwcConnection,
-        callback_url: Option<String>,
-    },
-    NwaApprovalFailed {
-        client_pubkey: String,
-        error: String,
-    },
     NwcPushRegistrationFinished {
-        fingerprint: String,
+        applied: usize,
+        deferred: usize,
+        next_attempt_at: Option<u64>,
         error: Option<String>,
     },
-    NwcPushUnregistrationFinished {
-        error: Option<String>,
+    NwcPushRetryDue {
+        nonce: u64,
     },
     PriceUpdated {
         currency: PriceCurrency,
