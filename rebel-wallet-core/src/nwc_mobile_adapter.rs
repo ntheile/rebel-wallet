@@ -13,29 +13,22 @@ use bark::movement::{Movement, MovementStatus};
 use bark::persist::models::SettledLightningReceive;
 use bark::Wallet;
 use bitcoin::Amount;
-use futures_util::{SinkExt, StreamExt};
 use nostr_sdk::prelude::SecretKey;
 use nwc_mobile::{
-    AmountMsat, CancellationSignal, ConnectionId, CreatedInvoice, EventId, HostError,
-    HostErrorKind, HostFuture, InvoiceLookup, ListTransactionsRequest, MakeInvoiceRequest,
-    NwcMethod, NwcSecretKey, OperationContext, PayInvoiceRequest, PaymentFailure, PaymentHash,
-    PaymentPreimage, PaymentQuote, PaymentStatus, PublicKey, RelayTransport, SecretProvider,
-    SecureRelayUrl, TransactionDirection, UnixTimestamp, WakeLedger, WalletBackend, WalletInfo,
-    WalletTransaction,
+    AmountMsat, CancellationSignal, ConnectionId, CreatedInvoice, HostError, HostErrorKind,
+    HostFuture, InvoiceLookup, ListTransactionsRequest, MakeInvoiceRequest, NwcMethod,
+    NwcSecretKey, OperationContext, PayInvoiceRequest, PaymentFailure, PaymentHash,
+    PaymentPreimage, PaymentQuote, PaymentStatus, PublicKey, SecretProvider, TransactionDirection,
+    UnixTimestamp, WakeLedger, WalletBackend, WalletInfo, WalletTransaction,
 };
-use serde_json::{json, Value};
-use tokio_tungstenite::connect_async_with_config;
-use tokio_tungstenite::tungstenite::error::Error as WebSocketError;
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
-use tokio_tungstenite::tungstenite::Message;
+pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
+use serde_json::Value;
 use zeroize::Zeroizing;
 
 use crate::core::NOSTR_SECRET_KEY;
 use crate::SecretStore;
 
 const NWC_LEDGER_FILE: &str = "nwc-mobile.sqlite3";
-const NWC_REQUEST_KIND: u16 = 23_194;
-const RELAY_ACK_MAX_BYTES: usize = 16 * 1_024;
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Opens the one cross-process ledger shared by the app and its NSE.
@@ -285,205 +278,6 @@ impl WalletBackend for RebelWalletBackend {
             .await
         })
     }
-}
-
-/// A bounded Nostr relay transport that never follows HTTP redirects.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct NostrRelayTransport;
-
-impl RelayTransport for NostrRelayTransport {
-    fn fetch_event<'a>(
-        &'a self,
-        relay: &'a SecureRelayUrl,
-        event_id: &'a EventId,
-        maximum_event_bytes: usize,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<Option<String>, HostError>> {
-        Box::pin(async move {
-            if maximum_event_bytes == 0 {
-                return Err(host_error(HostErrorKind::Rejected));
-            }
-            run_with_context(
-                context,
-                fetch_relay_event(relay, event_id, maximum_event_bytes),
-            )
-            .await
-        })
-    }
-
-    fn publish_event<'a>(
-        &'a self,
-        relay: &'a SecureRelayUrl,
-        event_json: &'a str,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<(), HostError>> {
-        Box::pin(
-            async move { run_with_context(context, publish_relay_event(relay, event_json)).await },
-        )
-    }
-}
-
-async fn fetch_relay_event(
-    relay: &SecureRelayUrl,
-    event_id: &EventId,
-    maximum_event_bytes: usize,
-) -> Result<Option<String>, HostError> {
-    let config = bounded_websocket_config(maximum_event_bytes, 4 * 1_024);
-    let (mut socket, response) = connect_async_with_config(relay.as_str(), Some(config), false)
-        .await
-        .map_err(relay_connect_error)?;
-    if response.status().is_redirection() {
-        return Err(host_error(HostErrorKind::Rejected));
-    }
-
-    let subscription_id = format!("nwc-mobile-{}", &event_id.to_hex()[..16]);
-    let request = json!(["REQ", subscription_id, {
-        "ids": [event_id.to_hex()],
-        "kinds": [NWC_REQUEST_KIND],
-        "limit": 1
-    }]);
-    socket
-        .send(Message::Text(request.to_string().into()))
-        .await
-        .map_err(relay_io_error)?;
-
-    while let Some(message) = socket.next().await {
-        match message.map_err(relay_io_error)? {
-            Message::Text(text) => {
-                match parse_fetch_message(text.as_str(), &subscription_id, maximum_event_bytes)? {
-                    FetchMessage::Event(event_json) => return Ok(Some(event_json)),
-                    FetchMessage::EndOfStoredEvents => return Ok(None),
-                    FetchMessage::Ignore => {}
-                }
-            }
-            Message::Ping(payload) => socket
-                .send(Message::Pong(payload))
-                .await
-                .map_err(relay_io_error)?,
-            Message::Close(_) => return Ok(None),
-            Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
-        }
-    }
-    Ok(None)
-}
-
-async fn publish_relay_event(relay: &SecureRelayUrl, event_json: &str) -> Result<(), HostError> {
-    let event: Value =
-        serde_json::from_str(event_json).map_err(|_| host_error(HostErrorKind::Rejected))?;
-    let event_id = event
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|value| value.len() == 64)
-        .ok_or_else(|| host_error(HostErrorKind::Rejected))?
-        .to_string();
-    let (mut socket, response) = connect_async_with_config(
-        relay.as_str(),
-        Some(bounded_websocket_config(
-            RELAY_ACK_MAX_BYTES,
-            event_json.len().saturating_add(512),
-        )),
-        false,
-    )
-    .await
-    .map_err(relay_connect_error)?;
-    if response.status().is_redirection() {
-        return Err(host_error(HostErrorKind::Rejected));
-    }
-    socket
-        .send(Message::Text(json!(["EVENT", event]).to_string().into()))
-        .await
-        .map_err(relay_io_error)?;
-
-    while let Some(message) = socket.next().await {
-        match message.map_err(relay_io_error)? {
-            Message::Text(text) => {
-                if let Some(accepted) = parse_publish_ack(text.as_str(), &event_id)? {
-                    return if accepted {
-                        Ok(())
-                    } else {
-                        Err(host_error(HostErrorKind::Unavailable))
-                    };
-                }
-            }
-            Message::Ping(payload) => socket
-                .send(Message::Pong(payload))
-                .await
-                .map_err(relay_io_error)?,
-            Message::Close(_) => return Err(host_error(HostErrorKind::Unavailable)),
-            Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
-        }
-    }
-    Err(host_error(HostErrorKind::Unavailable))
-}
-
-enum FetchMessage {
-    Event(String),
-    EndOfStoredEvents,
-    Ignore,
-}
-
-fn parse_fetch_message(
-    message: &str,
-    subscription_id: &str,
-    maximum_event_bytes: usize,
-) -> Result<FetchMessage, HostError> {
-    let value: Value =
-        serde_json::from_str(message).map_err(|_| host_error(HostErrorKind::Rejected))?;
-    let Some(values) = value.as_array() else {
-        return Err(host_error(HostErrorKind::Rejected));
-    };
-    match values.first().and_then(Value::as_str) {
-        Some("EVENT") if values.get(1).and_then(Value::as_str) == Some(subscription_id) => {
-            let event = values
-                .get(2)
-                .filter(|event| event.is_object())
-                .ok_or_else(|| host_error(HostErrorKind::Rejected))?;
-            let event_json =
-                serde_json::to_string(event).map_err(|_| host_error(HostErrorKind::Rejected))?;
-            if event_json.len() > maximum_event_bytes {
-                return Err(host_error(HostErrorKind::Rejected));
-            }
-            Ok(FetchMessage::Event(event_json))
-        }
-        Some("EOSE") if values.get(1).and_then(Value::as_str) == Some(subscription_id) => {
-            Ok(FetchMessage::EndOfStoredEvents)
-        }
-        Some("CLOSED") if values.get(1).and_then(Value::as_str) == Some(subscription_id) => {
-            Err(host_error(HostErrorKind::Unavailable))
-        }
-        _ => Ok(FetchMessage::Ignore),
-    }
-}
-
-fn parse_publish_ack(message: &str, event_id: &str) -> Result<Option<bool>, HostError> {
-    let value: Value =
-        serde_json::from_str(message).map_err(|_| host_error(HostErrorKind::Rejected))?;
-    let Some(values) = value.as_array() else {
-        return Err(host_error(HostErrorKind::Rejected));
-    };
-    if values.first().and_then(Value::as_str) != Some("OK")
-        || values.get(1).and_then(Value::as_str) != Some(event_id)
-    {
-        return Ok(None);
-    }
-    values
-        .get(2)
-        .and_then(Value::as_bool)
-        .map(Some)
-        .ok_or_else(|| host_error(HostErrorKind::Rejected))
-}
-
-fn bounded_websocket_config(
-    maximum_message_bytes: usize,
-    maximum_outgoing_bytes: usize,
-) -> WebSocketConfig {
-    let buffer = maximum_message_bytes.clamp(1_024, 16 * 1_024);
-    WebSocketConfig::default()
-        .read_buffer_size(buffer)
-        .write_buffer_size(4 * 1_024)
-        .max_write_buffer_size(maximum_outgoing_bytes.saturating_add(8 * 1_024))
-        .max_message_size(Some(maximum_message_bytes))
-        .max_frame_size(Some(maximum_message_bytes))
 }
 
 async fn run_with_context<T, F>(context: OperationContext<'_>, operation: F) -> Result<T, HostError>
@@ -812,22 +606,6 @@ fn supported_methods() -> [NwcMethod; 6] {
     ]
 }
 
-fn relay_connect_error(error: WebSocketError) -> HostError {
-    match error {
-        WebSocketError::Http(response) if response.status().is_redirection() => {
-            host_error(HostErrorKind::Rejected)
-        }
-        _ => host_error(HostErrorKind::Unavailable),
-    }
-}
-
-fn relay_io_error(error: WebSocketError) -> HostError {
-    match error {
-        WebSocketError::Capacity(_) => host_error(HostErrorKind::Rejected),
-        _ => host_error(HostErrorKind::Unavailable),
-    }
-}
-
 const fn host_error(kind: HostErrorKind) -> HostError {
     HostError::new(kind)
 }
@@ -840,7 +618,6 @@ mod tests {
     use nwc_mobile::{NeverCancelled, OperationBudget};
 
     const SECRET_HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    const EVENT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     struct TestSecrets(Mutex<Option<String>>);
 
@@ -876,58 +653,6 @@ mod tests {
             let provider = RebelSecretProvider::new(Arc::new(TestSecrets(Mutex::new(value))));
             assert!(provider.load_nwc_secret(&connection).is_err());
         }
-    }
-
-    #[test]
-    fn relay_parser_returns_only_the_requested_subscription_event() {
-        let event = json!({"id": EVENT_ID, "kind": NWC_REQUEST_KIND});
-        let message = json!(["EVENT", "sub", event]).to_string();
-        match parse_fetch_message(&message, "sub", 1_024).expect("event") {
-            FetchMessage::Event(json) => assert!(json.contains(EVENT_ID)),
-            _ => panic!("expected event"),
-        }
-        assert!(matches!(
-            parse_fetch_message(r#"["EOSE","sub"]"#, "sub", 1_024).expect("eose"),
-            FetchMessage::EndOfStoredEvents
-        ));
-        assert!(matches!(
-            parse_fetch_message(&message, "other", 1_024).expect("ignored"),
-            FetchMessage::Ignore
-        ));
-    }
-
-    #[test]
-    fn relay_parser_rejects_event_over_post_parse_bound() {
-        let message =
-            json!(["EVENT", "sub", {"id": EVENT_ID, "content": "x".repeat(512)}]).to_string();
-        let error = match parse_fetch_message(&message, "sub", 64) {
-            Err(error) => error,
-            Ok(_) => panic!("oversize event accepted"),
-        };
-        assert_eq!(error.kind(), HostErrorKind::Rejected);
-    }
-
-    #[test]
-    fn publish_ack_must_match_event_id() {
-        assert_eq!(
-            parse_publish_ack(&json!(["OK", EVENT_ID, true, ""]).to_string(), EVENT_ID)
-                .expect("ack"),
-            Some(true)
-        );
-        assert_eq!(
-            parse_publish_ack(&json!(["OK", "other", true, ""]).to_string(), EVENT_ID)
-                .expect("other"),
-            None
-        );
-    }
-
-    #[test]
-    fn websocket_receive_caps_are_applied_before_reading() {
-        let config = bounded_websocket_config(4_096, 8_192);
-        assert_eq!(config.max_message_size, Some(4_096));
-        assert_eq!(config.max_frame_size, Some(4_096));
-        assert_eq!(config.read_buffer_size, 4_096);
-        assert_eq!(config.max_write_buffer_size, 16_384);
     }
 
     #[test]

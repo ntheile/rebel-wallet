@@ -2011,7 +2011,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=4a996e9a60e0824f61278d8e79e9e2d2022abe9f#4a996e9a60e0824f61278d8e79e9e2d2022abe9f"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=98dbd76cbd0a1b6fb212a8a8c624267d0721376c#98dbd76cbd0a1b6fb212a8a8c624267d0721376c"
 dependencies = [
  "base64 0.22.1",
  "base64ct",
@@ -2021,6 +2021,18 @@ dependencies = [
  "rusqlite",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "nwc-mobile-nostr"
+version = "0.1.0"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=98dbd76cbd0a1b6fb212a8a8c624267d0721376c#98dbd76cbd0a1b6fb212a8a8c624267d0721376c"
+dependencies = [
+ "futures-util",
+ "nwc-mobile",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -2509,6 +2521,7 @@ dependencies = [
  "nostr 0.45.0-alpha.1",
  "nostr-sdk",
  "nwc-mobile",
+ "nwc-mobile-nostr",
  "rand 0.8.6",
  "reqwest",
  "rusqlite",
