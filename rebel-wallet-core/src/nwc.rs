@@ -2,11 +2,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use nostr_sdk::prelude::{Keys, PublicKey};
-use nwc_mobile::{
-    build_nwc_info_event, Clock, NeverCancelled, NwcMethod, NwcSecretKey, OperationBudget,
-    OperationContext, PublicKey as MobilePublicKey, RelayTransport, SecureRelayUrl, SystemClock,
-};
-use nwc_mobile_nostr::NostrRelayTransport;
+use nwc_mobile::{NwcMethod, NwcSecretKey, PublicKey as MobilePublicKey};
+use nwc_mobile_nostr::publish_nwc_info_event as publish_shared_nwc_info_event;
 
 use crate::nwc_mobile_registry::{permission_method, NWC_ENCRYPTION};
 use crate::NwcPermission;
@@ -40,27 +37,19 @@ async fn publish_info_event(
     client_pubkey: Option<MobilePublicKey>,
     methods: Vec<NwcMethod>,
 ) -> anyhow::Result<()> {
-    let relay = SecureRelayUrl::parse(&relay).context("invalid NWC relay URL")?;
     let secret = keys.secret_key();
     let secret = NwcSecretKey::from_bytes(secret.to_secret_bytes())
         .context("invalid NWC wallet service key")?;
-    let event_json = build_nwc_info_event(
+    publish_shared_nwc_info_event(
+        &relay,
         &secret,
         client_pubkey.as_ref(),
         methods,
         NWC_ENCRYPTION,
-        SystemClock.now(),
+        INFO_PUBLISH_TIMEOUT,
     )
-    .context("failed to sign NWC info event")?;
-    let budget = OperationBudget::new(INFO_PUBLISH_TIMEOUT).context("invalid relay budget")?;
-    NostrRelayTransport
-        .publish_event(
-            &relay,
-            &event_json,
-            OperationContext::new(budget, &NeverCancelled),
-        )
-        .await
-        .context("failed to publish NWC info event")
+    .await
+    .context("failed to publish NWC info event")
 }
 
 fn supported_methods() -> Vec<NwcMethod> {
