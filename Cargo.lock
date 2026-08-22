@@ -2011,7 +2011,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7#ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a581ebee3f52c82d46c5271636e27a763339a2a7#a581ebee3f52c82d46c5271636e27a763339a2a7"
 dependencies = [
  "base64 0.22.1",
  "base64ct",
@@ -2026,7 +2026,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-bark"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7#ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a581ebee3f52c82d46c5271636e27a763339a2a7#a581ebee3f52c82d46c5271636e27a763339a2a7"
 dependencies = [
  "bark-wallet",
  "bitcoin",
@@ -2039,7 +2039,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-bolt11"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7#ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a581ebee3f52c82d46c5271636e27a763339a2a7#a581ebee3f52c82d46c5271636e27a763339a2a7"
 dependencies = [
  "lightning-invoice",
  "nwc-mobile",
@@ -2048,7 +2048,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-http"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7#ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a581ebee3f52c82d46c5271636e27a763339a2a7#a581ebee3f52c82d46c5271636e27a763339a2a7"
 dependencies = [
  "nwc-mobile",
  "nwc-mobile-tokio",
@@ -2060,7 +2060,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-nostr"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7#ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a581ebee3f52c82d46c5271636e27a763339a2a7#a581ebee3f52c82d46c5271636e27a763339a2a7"
 dependencies = [
  "futures-util",
  "nwc-mobile",
@@ -2072,7 +2072,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-tokio"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7#ebdbb328d2d7e6f51ae4521c85f0bc460733e7f7"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=a581ebee3f52c82d46c5271636e27a763339a2a7#a581ebee3f52c82d46c5271636e27a763339a2a7"
 dependencies = [
  "nwc-mobile",
  "tokio",
