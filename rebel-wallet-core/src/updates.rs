@@ -1,3 +1,5 @@
+use std::fmt;
+
 use bark::Wallet;
 use nwc_mobile::WakeDisposition;
 use zeroize::Zeroizing;
@@ -11,7 +13,7 @@ use crate::{
 };
 
 #[allow(clippy::large_enum_variant)]
-#[derive(uniffi::Enum, Clone, Debug)]
+#[derive(uniffi::Enum, Clone)]
 pub enum AppUpdate {
     FullState(AppState),
     Haptic(HapticFeedback),
@@ -27,6 +29,38 @@ pub enum AppUpdate {
         copy_to_clipboard: bool,
         present_qr: bool,
     },
+}
+
+impl fmt::Debug for AppUpdate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FullState(_) => formatter
+                .debug_tuple("FullState")
+                .field(&"<redacted>")
+                .finish(),
+            Self::Haptic(feedback) => formatter.debug_tuple("Haptic").field(feedback).finish(),
+            Self::OpenUrl { rev, .. } => formatter
+                .debug_struct("OpenUrl")
+                .field("rev", rev)
+                .field("url", &"<redacted>")
+                .finish(),
+            Self::NwcConnectionExportReady {
+                rev,
+                connection_id,
+                copy_to_clipboard,
+                present_qr,
+                ..
+            } => formatter
+                .debug_struct("NwcConnectionExportReady")
+                .field("rev", rev)
+                .field("connection_id", connection_id)
+                .field("name", &"<redacted>")
+                .field("uri", &"<redacted>")
+                .field("copy_to_clipboard", copy_to_clipboard)
+                .field("present_qr", present_qr)
+                .finish(),
+        }
+    }
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
@@ -226,4 +260,35 @@ pub(crate) enum AsyncMsg {
     },
     PriceFailed,
     Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_update_debug_redacts_sensitive_urls() {
+        let export = AppUpdate::NwcConnectionExportReady {
+            rev: 1,
+            connection_id: "connection".to_string(),
+            name: "Private client".to_string(),
+            uri: "nostr+walletconnect://secret".to_string(),
+            copy_to_clipboard: false,
+            present_qr: true,
+        };
+        let callback = AppUpdate::OpenUrl {
+            rev: 2,
+            url: "https://client.example/callback?secret=value".to_string(),
+        };
+
+        let export_debug = format!("{export:?}");
+        assert!(!export_debug.contains("nostr+walletconnect"));
+        assert!(!export_debug.contains("Private client"));
+        assert!(export_debug.contains("<redacted>"));
+
+        let callback_debug = format!("{callback:?}");
+        assert!(!callback_debug.contains("client.example"));
+        assert!(!callback_debug.contains("secret=value"));
+        assert!(callback_debug.contains("<redacted>"));
+    }
 }
