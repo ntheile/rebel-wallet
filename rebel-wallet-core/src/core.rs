@@ -21,7 +21,6 @@ use bitcoin::{
     Amount,
 };
 use flume::Sender;
-use nostr::nips::nip47::NostrWalletConnectUri;
 use nostr_sdk::prelude::{
     nip04, Contact as NostrContact, ContactListBuilder, EventBuilder, EventBuilderTemplate, Filter,
     FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, Tag, ToBech32,
@@ -48,11 +47,11 @@ use crate::nostr_support::{
     profile_contact_from_metadata_json_with_petname, public_key_from_npub_or_hex,
     upload_profile_picture,
 };
-use crate::nwc_legacy_persistence::PersistedNwcConnection;
 use crate::nwc_mobile_adapter::{
-    legacy_connection, nwa_request_state, open_nwc_service, publish_nwc_info_event,
-    NostrRelayTransport, RebelSecretProvider, NWC_ENCRYPTION,
+    nwa_request_state, open_nwc_service, publish_nwc_info_event, NostrRelayTransport,
+    RebelSecretProvider, NWC_ENCRYPTION,
 };
+use crate::nwc_persistence::{connection_view, PersistedNwcMetadata};
 use crate::nwc_push::{run_registration_worker, NwcPushConfig};
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
 use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
@@ -82,8 +81,6 @@ mod send_flow;
 mod wallet_lifecycle;
 mod wallet_work;
 
-#[cfg(test)]
-use nostr_sdk::prelude::RelayUrl;
 #[cfg(test)]
 use nwc_mobile::WakeDisposition;
 
@@ -883,42 +880,50 @@ impl AppCore {
         self.reconcile_refresh_poll();
     }
 
-    fn migrate_nwc_connections(&mut self) {
+    fn load_nwc_connections(&mut self, persisted: Vec<PersistedNwcMetadata>) {
         self.nwc_service_ready = false;
         let Some(service) = self.nwc_service.as_ref() else {
             self.state.nwc.last_wake_status =
                 "NWC authorization storage is unavailable".to_string();
             return;
         };
-        let legacy = self
-            .state
-            .nwc
-            .connections
-            .iter()
-            .map(legacy_connection)
-            .collect();
-        match service.migrate_legacy_connections(legacy) {
-            Ok(result) => {
+        let presentations = match service.connection_presentations() {
+            Ok(presentations) => presentations,
+            Err(error) => {
+                self.state.nwc.last_wake_status =
+                    format!("NWC authorization storage is unavailable: {error}");
+                return;
+            }
+        };
+        let mut persisted = persisted
+            .into_iter()
+            .map(|metadata| (metadata.connection_id.clone(), metadata))
+            .collect::<HashMap<_, _>>();
+        let connections = presentations
+            .into_iter()
+            .enumerate()
+            .map(|(index, presentation)| {
+                let metadata = persisted.remove(presentation.id());
+                let wallet_managed_secret = self
+                    .secrets
+                    .get_secret(nwc_client_secret_key(presentation.client_pubkey_hex()))
+                    .is_some();
+                connection_view(
+                    presentation,
+                    metadata,
+                    format!("NWC {}", index + 1),
+                    wallet_managed_secret,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>();
+        match connections {
+            Ok(connections) => {
+                self.state.nwc.connections = connections;
                 self.nwc_service_ready = true;
-                let revoked_ids = result.revoked_connection_ids();
-                self.state
-                    .nwc
-                    .connections
-                    .retain(|connection| !revoked_ids.contains(&connection.id));
-                let removed = !result.revoked_client_pubkeys().is_empty();
-                for client_pubkey in result.revoked_client_pubkeys() {
-                    let _ = self
-                        .secrets
-                        .delete_secret(nwc_client_secret_key(client_pubkey));
-                }
-                if removed {
-                    self.save_app_data();
-                }
-                self.refresh_nwc_connection_usage();
             }
             Err(error) => {
                 self.state.nwc.last_wake_status =
-                    format!("NWC authorization migration failed: {error:#}");
+                    format!("NWC authorization data is invalid: {error:#}");
             }
         }
     }
@@ -1161,49 +1166,6 @@ impl AppCore {
                 let _ = tx.send(CoreMsg::Async(message));
             });
         }
-    }
-
-    pub(super) fn migrate_persisted_nwc_secrets(
-        &mut self,
-        connections: Vec<PersistedNwcConnection>,
-    ) -> Vec<NwcConnection> {
-        let secrets = self.secrets.clone();
-        let mut migration_attempted = false;
-        let mut migration_failed = false;
-        let mut views = Vec::with_capacity(connections.len());
-        for connection in connections {
-            let secret_key = nwc_client_secret_key(&connection.client_pubkey);
-            let mut attempted_for_connection = false;
-            if secrets.get_secret(secret_key.clone()).is_none() && !connection.uri.is_empty() {
-                migration_attempted = true;
-                attempted_for_connection = true;
-                if let Ok(uri) = NostrWalletConnectUri::parse(&connection.uri) {
-                    if !secrets.set_secret(secret_key.clone(), uri.secret.to_secret_hex()) {
-                        migration_failed = true;
-                    }
-                } else {
-                    migration_failed = true;
-                }
-            }
-            let wallet_managed_secret = secrets.get_secret(secret_key).is_some();
-            if attempted_for_connection && !wallet_managed_secret {
-                migration_failed = true;
-            }
-            let mut view = connection.into_view();
-            view.wallet_managed_secret = wallet_managed_secret;
-            views.push(view);
-        }
-        if migration_failed {
-            self.state.toast = Some(
-                "A legacy NWC secret could not be moved to secure storage and was removed. Reconnect that client."
-                    .to_string(),
-            );
-        }
-        if migration_attempted {
-            // The next normal persistence pass writes the secret-free compatibility DTO.
-            self.nwc_registration.mark_refresh_pending();
-        }
-        views
     }
 
     pub(super) fn refresh_nwc_connection_uris_for_lud16(&mut self) {
@@ -3372,20 +3334,42 @@ mod tests {
     }
 
     #[test]
-    fn failed_authorization_migration_keeps_pending_wakes_queued() {
+    fn loads_connections_from_the_authoritative_nwc_mobile_ledger() {
         let (_data_dir, _cache_dir, mut core) = test_core();
-        core.state.nwc.connections = vec![test_nwc_connection("invalid-client-public-key")];
-        core.state
-            .nwc
-            .pending_wake_requests
-            .push(test_nwc_wake_request());
+        let service_keys = Keys::generate();
+        let client_keys = Keys::generate();
+        let mut connection = test_nwc_connection(&client_keys.public_key().to_hex());
+        connection.service_pubkey = service_keys.public_key().to_hex();
+        connection.name = "Stored display name".to_string();
+        let authorization = nwc_mobile::HostConnectionAuthorization::new(
+            connection.id.clone(),
+            connection.client_pubkey.clone(),
+            connection.service_pubkey.clone(),
+            vec![connection.relay.clone()],
+            vec![nwc_mobile::NwcMethod::GetInfo],
+            connection.budget_sat,
+            connection.budget_interval.into(),
+            nwc_mobile::FeePolicy::CountTowardBudget {
+                maximum_fee_sat: nwc_mobile::maximum_mobile_fee_sat(connection.budget_sat),
+            },
+            NWC_ENCRYPTION,
+            None,
+        );
+        core.nwc_service
+            .as_ref()
+            .expect("service")
+            .create_host_connection(authorization)
+            .expect("persist connection");
 
-        core.migrate_nwc_connections();
-        core.process_pending_nwc_wake_requests();
+        core.load_nwc_connections(vec![PersistedNwcMetadata::from(&connection)]);
 
-        assert!(!core.nwc_service_ready);
-        assert!(!core.nwc_wake_coordinator.is_in_flight(&"event".to_string()));
-        assert_eq!(core.state.nwc.pending_wake_requests.len(), 1);
+        assert!(core.nwc_service_ready);
+        assert_eq!(core.state.nwc.connections.len(), 1);
+        let loaded = &core.state.nwc.connections[0];
+        assert_eq!(loaded.name, "Stored display name");
+        assert_eq!(loaded.client_pubkey, client_keys.public_key().to_hex());
+        assert_eq!(loaded.service_pubkey, service_keys.public_key().to_hex());
+        assert!(!loaded.wallet_managed_secret);
     }
 
     #[test]
@@ -3535,42 +3519,6 @@ mod tests {
         assert_eq!(nwc_push_retry_delay(100, 100), Duration::from_secs(5));
         assert_eq!(nwc_push_retry_delay(99, 100), Duration::from_secs(5));
         assert_eq!(nwc_push_retry_delay(110, 100), Duration::from_secs(10));
-    }
-
-    #[test]
-    fn persistence_never_writes_nwc_secrets() {
-        let connection = test_nwc_connection("client");
-        let persisted = PersistedNwcConnection::from(&connection);
-
-        assert!(persisted.uri.is_empty());
-        assert!(persisted.wallet_managed_secret);
-    }
-
-    #[test]
-    fn persistence_redacts_legacy_uri_when_secret_migration_failed() {
-        let (_data_dir, _cache_dir, mut core) = test_core();
-        let service_keys = Keys::generate();
-        let client_keys = Keys::generate();
-        let uri = NostrWalletConnectUri::new(
-            service_keys.public_key(),
-            vec![RelayUrl::parse("wss://relay.example.com").expect("relay")],
-            client_keys.secret_key().clone(),
-            None,
-        )
-        .to_string();
-        let mut persisted =
-            PersistedNwcConnection::from(&test_nwc_connection(&client_keys.public_key().to_hex()));
-        persisted.uri = uri;
-        persisted.service_pubkey = service_keys.public_key().to_hex();
-        core.state.nwc.connections = core.migrate_persisted_nwc_secrets(vec![persisted]);
-
-        let connection = &core.state.nwc.connections[0];
-        assert!(!connection.wallet_managed_secret);
-        assert!(core
-            .state
-            .toast
-            .as_deref()
-            .is_some_and(|message| message.contains("could not be moved to secure storage")));
     }
 
     #[test]
