@@ -130,10 +130,14 @@ reload_project_contents() {
 
 validate_project() {
   local ok=true
+  local development_team_setting="DEVELOPMENT_TEAM = ${ios_development_team};"
+  if [ -z "$ios_development_team" ]; then
+    development_team_setting='DEVELOPMENT_TEAM = "";'
+  fi
 
   require_project_value "PRODUCT_BUNDLE_IDENTIFIER = ${ios_bundle_id};" "bundle id does not match .env.sample" || ok=false
   require_project_value "PRODUCT_BUNDLE_IDENTIFIER = ${ios_bundle_id}.NotificationService;" "notification service bundle id does not match .env.sample" || ok=false
-  require_project_value "DEVELOPMENT_TEAM = ${ios_development_team};" "development team does not match .env.sample" || ok=false
+  require_project_value "$development_team_setting" "development team does not match .env.sample" || ok=false
   require_project_value "CODE_SIGN_STYLE = ${ios_code_sign_style};" "code sign style does not match .env.sample" || ok=false
   require_project_value "IOS_APS_ENVIRONMENT = ${ios_aps_environment};" "APS environment does not match .env.sample" || ok=false
   require_project_value "IOS_APP_GROUP_ID = ${ios_app_group_id};" "app group does not match .env.sample" || ok=false

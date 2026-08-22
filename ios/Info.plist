@@ -47,7 +47,11 @@
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
+#if IOS_ALLOWS_LOCAL_NETWORKING
 		<true/>
+#else
+		<false/>
+#endif
 	</dict>
 	<key>RebelWalletAppGroupIdentifier</key>
 	<string>$(IOS_APP_GROUP_ID)</string>

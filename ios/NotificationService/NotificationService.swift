@@ -17,7 +17,7 @@ final class NotificationService: UNNotificationServiceExtension {
                 source: "NSE",
                 message: StoredNwcWakeRequest.parseFailureMessage(userInfo: request.content.userInfo)
             )
-            contentHandler(Self.openApplicationContent(from: request.content, userInfo: [:]))
+            contentHandler(request.content)
             return
         }
         guard let dataDirectory = NwcWakeInbox.extensionDataDirectoryPath() else {

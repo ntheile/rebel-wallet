@@ -32,7 +32,6 @@ struct RebelWalletApp: App {
                 }
                 .onAppear {
                     easterEgg.start()
-                    manager?.dispatch(.foregrounded)
                 }
                 .onDisappear {
                     easterEgg.stop()
@@ -41,16 +40,7 @@ struct RebelWalletApp: App {
                     guard let manager else { return }
                     switch phase {
                     case .active:
-                        manager.drainQueuedNwcWakeRequests()
-                        manager.dispatch(.foregrounded)
-                        // Re-attempt claiming an in-flight Lightning receive in case
-                        // the payment landed while the app was suspended.
-                        manager.dispatch(.resumeReceiveMonitor)
-                        // Sweep for any Lightning receive whose HTLCs arrived while we
-                        // were away, independent of the receive screen, so it can't get
-                        // stuck in "claimable".
-                        manager.dispatch(.claimPendingLightningReceives)
-                        manager.endReceiveBackgroundTask()
+                        runActivePhaseWork(manager)
                     case .background:
                         manager.dispatch(.backgrounded)
                         // Keep the core running briefly so an in-flight Lightning
@@ -69,9 +59,24 @@ struct RebelWalletApp: App {
         let storagePaths = await AppManager.prepareStorage()
         let loadedManager = AppManager(storagePaths: storagePaths)
         manager = loadedManager
+        if scenePhase == .active {
+            runActivePhaseWork(loadedManager)
+        }
         if let pendingOpenURL {
             loadedManager.handleOpenURL(pendingOpenURL)
             self.pendingOpenURL = nil
         }
+    }
+
+    private func runActivePhaseWork(_ manager: AppManager) {
+        manager.drainQueuedNwcWakeRequests()
+        manager.dispatch(.foregrounded)
+        // Re-attempt claiming an in-flight Lightning receive in case the
+        // payment landed while the app was suspended.
+        manager.dispatch(.resumeReceiveMonitor)
+        // Sweep independently of the receive screen so an HTLC cannot remain
+        // stuck in the claimable state.
+        manager.dispatch(.claimPendingLightningReceives)
+        manager.endReceiveBackgroundTask()
     }
 }
