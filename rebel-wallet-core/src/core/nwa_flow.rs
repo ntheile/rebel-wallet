@@ -264,9 +264,9 @@ impl AppCore {
             };
             let message = match result {
                 Ok(pass) => AsyncMsg::NwcPushRegistrationFinished {
-                    applied: pass.applied,
-                    deferred: pass.deferred,
-                    next_attempt_at: pass.next_attempt_at,
+                    applied: pass.applied(),
+                    deferred: pass.deferred(),
+                    next_attempt_at: pass.next_attempt_at(),
                     error: None,
                 },
                 Err(_) => AsyncMsg::NwcPushRegistrationFinished {
