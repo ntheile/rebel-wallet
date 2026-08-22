@@ -789,14 +789,14 @@ impl AppCore {
                 let wake_enabled = registration_status != "Permission denied";
                 self.state.push_notifications.apns_device_token = apns_device_token.clone();
                 self.state.push_notifications.registration_status = registration_status;
-                let config = NwcPushConfig {
-                    server_url: wake_server_url,
-                    push_token: apns_device_token,
+                let config = NwcPushConfig::new(
+                    wake_server_url,
+                    apns_device_token,
                     app_id,
                     environment,
                     install_id,
-                    enabled: wake_enabled,
-                };
+                    wake_enabled,
+                );
                 if self.nwc_push_config != config {
                     self.nwc_registration_refresh_pending = true;
                     self.nwc_push_config = config;

@@ -908,7 +908,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2011,7 +2011,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=e6e8a30743e8d951a4870c227e78f374e008c356#e6e8a30743e8d951a4870c227e78f374e008c356"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=1197d11eb3e1cd1e95994e44441e929e2aca52ee#1197d11eb3e1cd1e95994e44441e929e2aca52ee"
 dependencies = [
  "base64 0.22.1",
  "base64ct",
@@ -2026,16 +2026,28 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-bolt11"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=e6e8a30743e8d951a4870c227e78f374e008c356#e6e8a30743e8d951a4870c227e78f374e008c356"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=1197d11eb3e1cd1e95994e44441e929e2aca52ee#1197d11eb3e1cd1e95994e44441e929e2aca52ee"
 dependencies = [
  "lightning-invoice",
  "nwc-mobile",
 ]
 
 [[package]]
+name = "nwc-mobile-http"
+version = "0.1.0"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=1197d11eb3e1cd1e95994e44441e929e2aca52ee#1197d11eb3e1cd1e95994e44441e929e2aca52ee"
+dependencies = [
+ "nwc-mobile",
+ "nwc-mobile-tokio",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nwc-mobile-nostr"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=e6e8a30743e8d951a4870c227e78f374e008c356#e6e8a30743e8d951a4870c227e78f374e008c356"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=1197d11eb3e1cd1e95994e44441e929e2aca52ee#1197d11eb3e1cd1e95994e44441e929e2aca52ee"
 dependencies = [
  "futures-util",
  "nwc-mobile",
@@ -2047,7 +2059,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-tokio"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=e6e8a30743e8d951a4870c227e78f374e008c356#e6e8a30743e8d951a4870c227e78f374e008c356"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=1197d11eb3e1cd1e95994e44441e929e2aca52ee#1197d11eb3e1cd1e95994e44441e929e2aca52ee"
 dependencies = [
  "nwc-mobile",
  "tokio",
@@ -2540,6 +2552,7 @@ dependencies = [
  "nostr-sdk",
  "nwc-mobile",
  "nwc-mobile-bolt11",
+ "nwc-mobile-http",
  "nwc-mobile-nostr",
  "nwc-mobile-tokio",
  "rand 0.8.6",
@@ -2723,7 +2736,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3022,7 +3035,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3166,7 +3179,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
