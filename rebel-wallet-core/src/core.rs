@@ -94,8 +94,17 @@ const MAX_NWC_WAKE_HISTORY: usize = 30;
 const MAX_NWC_RELAYS_PER_CONNECTION: usize = 2;
 const NWC_RELAY_STORAGE_SEPARATOR: &str = "\n";
 const NWC_INFO_EVENT_PUBLISH_ATTEMPTS: usize = 3;
+const NWC_REGISTRATION_MIN_RETRY_SECONDS: u64 = 5;
 const NWC_FOREGROUND_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const NOSTR_DERIVATION_PATH: &str = "m/44'/1237'/0'/0/0";
+
+fn nwc_push_retry_delay(next_attempt_at: u64, now: u64) -> Duration {
+    Duration::from_secs(
+        next_attempt_at
+            .saturating_sub(now)
+            .max(NWC_REGISTRATION_MIN_RETRY_SECONDS),
+    )
+}
 
 fn profile_picture_download_key(pubkey: &str, remote_url: &str) -> String {
     format!("{pubkey}:{remote_url}")
@@ -3412,6 +3421,35 @@ mod tests {
 
     use super::*;
 
+    fn test_nwc_connection(client_pubkey: &str) -> NwcConnection {
+        NwcConnection {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            icon_url: None,
+            icon_display_url: None,
+            relay: "wss://relay.example.com".to_string(),
+            uri: String::new(),
+            wallet_managed_secret: true,
+            service_pubkey: String::new(),
+            client_pubkey: client_pubkey.to_string(),
+            budget_sat: 0,
+            spent_sat: 0,
+            budget_display: String::new(),
+            spent_display: String::new(),
+            budget_interval: NwcBudgetInterval::Never,
+            budget_interval_display: String::new(),
+            permissions: Vec::new(),
+            permissions_configured: true,
+            allow_get_balance: false,
+            allow_pay_invoice: false,
+            created_at: 0,
+            last_used_at: None,
+            expires_at: None,
+            budget_period_started_at: 0,
+            pending_info_event_relays: Vec::new(),
+        }
+    }
+
     #[test]
     fn derives_nostr_key_from_wallet_seed_path() {
         let keys = derive_nostr_keys_from_mnemonic(
@@ -3545,6 +3583,29 @@ mod tests {
 
         assert!(core.pending_nwa_request.is_none());
         assert!(core.pending_side_effects.is_empty());
+    }
+
+    #[test]
+    fn mismatched_nwa_approval_restores_user_controls() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.nwa.approving = true;
+
+        core.finish_nwa_approval(test_nwc_connection("different-client"), None);
+
+        assert!(!core.state.nwa.approving);
+        assert!(core
+            .state
+            .nwa
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("changed during approval")));
+    }
+
+    #[test]
+    fn push_registration_retry_delay_has_a_floor() {
+        assert_eq!(nwc_push_retry_delay(100, 100), Duration::from_secs(5));
+        assert_eq!(nwc_push_retry_delay(99, 100), Duration::from_secs(5));
+        assert_eq!(nwc_push_retry_delay(110, 100), Duration::from_secs(10));
     }
 
     #[test]
