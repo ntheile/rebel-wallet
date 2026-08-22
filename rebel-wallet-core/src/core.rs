@@ -4756,6 +4756,33 @@ mod tests {
         assert!(toast.contains("cleanup warnings"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn delete_wallet_removes_secrets_when_empty_ledger_cannot_reopen() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let (store, mut core) = recording_secret_core(data_dir.path());
+        core.nwc_ledger = None;
+        crate::wallet::remove_wallet_database_files(&crate::nwc_mobile_adapter::nwc_ledger_path(
+            data_dir.path(),
+        ))
+        .expect("remove initial ledger");
+        std::fs::set_permissions(data_dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("make data directory read-only");
+
+        core.delete_wallet();
+
+        std::fs::set_permissions(data_dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore data directory permissions");
+        assert_eq!(
+            store.deleted_keys(),
+            vec![WALLET_SEED_KEY.to_string(), NOSTR_SECRET_KEY.to_string()]
+        );
+        let toast = core.state.toast.as_deref().expect("cleanup warning toast");
+        assert!(toast.contains("could not reopen NWC authorization storage"));
+    }
+
     #[test]
     fn export_nostr_secret_reveals_in_state_not_toast() {
         struct NostrSecretStore;
