@@ -105,7 +105,7 @@ impl AppCore {
         self.zap_receipts.clear();
         self.profile_picture_downloads.clear();
         self.profile_info_requests.clear();
-        self.nwc_in_flight_wake_requests.clear();
+        self.nwc_wake_coordinator.reset();
 
         let mut state = AppState::initial();
         state.show_launch_splash = false;
