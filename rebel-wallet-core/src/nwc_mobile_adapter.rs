@@ -5,16 +5,15 @@ use std::time::Duration;
 use anyhow::Context;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey};
 use nwc_mobile::{
-    maximum_mobile_fee_sat, ClientSecretStore, ClientSecretStoreError, ConnectionId, FeePolicy,
-    HostConnectionAuthorization, HostError, HostErrorKind, LegacyHostConnection,
+    ClientSecretStore, ClientSecretStoreError, ConnectionId, HostError, HostErrorKind,
     NwaRequestPresentation, NwcEncryption, NwcMethod, NwcMobileService, NwcSecretKey,
-    SecretProvider, UnixTimestamp,
+    SecretProvider,
 };
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
 use zeroize::Zeroizing;
 
 use crate::core::NOSTR_SECRET_KEY;
-use crate::{NwaRequestState, NwcConnection, NwcPermission, SecretStore};
+use crate::{NwaRequestState, NwcPermission, SecretStore};
 
 const NWC_LEDGER_FILE: &str = "nwc-mobile.sqlite3";
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -32,43 +31,6 @@ pub(crate) fn open_nwc_service(
 
 pub(crate) fn nwc_ledger_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join(NWC_LEDGER_FILE)
-}
-
-/// Maps Rebel's persisted display model into the shared authorization boundary.
-pub(crate) fn connection_authorization(connection: &NwcConnection) -> HostConnectionAuthorization {
-    HostConnectionAuthorization::new(
-        connection.id.clone(),
-        connection.client_pubkey.clone(),
-        connection.service_pubkey.clone(),
-        connection
-            .relay
-            .split(|character: char| character.is_whitespace() || character == ',')
-            .map(str::trim)
-            .filter(|relay| !relay.is_empty())
-            .map(str::to_owned)
-            .collect(),
-        connection
-            .enabled_permissions()
-            .into_iter()
-            .map(NwcMethod::from)
-            .collect(),
-        connection.budget_sat,
-        connection.budget_interval.into(),
-        FeePolicy::CountTowardBudget {
-            maximum_fee_sat: maximum_mobile_fee_sat(connection.budget_sat),
-        },
-        NWC_ENCRYPTION,
-        connection.expires_at.map(UnixTimestamp::from_secs),
-    )
-}
-
-/// Preserves trusted accounting state only during one-time legacy migration.
-pub(crate) fn legacy_connection(connection: &NwcConnection) -> LegacyHostConnection {
-    LegacyHostConnection::new(
-        connection_authorization(connection),
-        UnixTimestamp::from_secs(connection.created_at),
-        connection.spent_sat,
-    )
 }
 
 /// Maps a validated, non-sensitive presentation into Rebel's view state.
