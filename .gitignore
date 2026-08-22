@@ -19,6 +19,11 @@ staging/
 ios/.build/
 ios/**/*.xcuserstate
 ios/**/xcuserdata/
+# Generated from the pinned nwc-mobile UniFFI component during iOS builds.
+ios/Bindings/nwc_mobile_uniffi.swift
+ios/Bindings/nwc_mobile_uniffiFFI.h
+ios/Bindings/nwc_mobile_uniffiFFI.modulemap
+ios/Frameworks/**/Headers/nwc_mobile_uniffiFFI.h
 android/app/src/main/jniLibs/
 android/.gradle/
 android/build/

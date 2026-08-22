@@ -11,7 +11,9 @@ use super::custom_address_flow::{
 use super::{nwc_client_secret_key, AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
 use crate::custom_address::amount_msats_to_sat;
 use crate::nwc_mobile_adapter::{nwc_ledger_path, open_nwc_service};
-use crate::persistence::{PersistedAppData, PersistedPriceCurrency, ServerConfig};
+use crate::persistence::{
+    PersistedAppData, PersistedNwcConnection, PersistedPriceCurrency, ServerConfig,
+};
 use crate::profile_cache::{
     hydrate_contact_picture, hydrate_own_profile_picture, sanitize_persisted_contact_pictures,
 };
@@ -316,11 +318,14 @@ impl AppCore {
                 }
                 self.payment_annotations = data.payment_annotations;
                 self.zap_receipts = data.zap_receipts;
-                self.state.nwc.connections = data.nwc_connections;
+                self.state.nwc.connections =
+                    self.migrate_persisted_nwc_secrets(data.nwc_connections);
                 self.migrate_nwc_connections();
-                self.hydrate_nwc_connection_uris();
                 self.hydrate_nwc_icon_urls();
                 self.prefetch_nwc_icons();
+                if self.nwc_registration_refresh_pending {
+                    self.save_app_data();
+                }
             }
             Err(e) => {
                 self.state.toast = Some(format!("Could not load local app data: {e}"));
@@ -360,8 +365,13 @@ impl AppCore {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| self.state.lightning_address.custom_name.clone());
-        let mut nwc_connections = self.state.nwc.connections.clone();
-        super::redact_persisted_nwc_connection_secrets(&mut nwc_connections);
+        let nwc_connections = self
+            .state
+            .nwc
+            .connections
+            .iter()
+            .map(PersistedNwcConnection::from)
+            .collect();
 
         let data = PersistedAppData {
             nostr,

@@ -67,7 +67,7 @@ final class NotificationService: UNNotificationServiceExtension {
 }
 
 private final class RebelNwcWakeCancellation: NwcWakeCancellation, @unchecked Sendable {
-    let rust = NwcExtensionCancellation()
+    let rust = MobileCancellation()
 
     func cancel() {
         rust.cancel()
@@ -92,7 +92,7 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
         }
 
         let result = await engine.executeWake(
-            request: NwcExtensionWakeRequest(
+            request: MobileWakeEnvelope(
                 relayUrl: payload.relayURL,
                 eventIdHex: payload.eventIDHex,
                 walletServicePublicKeyHex: payload.walletServicePublicKeyHex,
@@ -103,18 +103,20 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
             cancellation: cancellation.rust
         )
 
-        switch result.disposition {
-        case .completed, .alreadyProcessed, .rejected:
-            break
-        case .queuedForApplication, .retryAfter:
+        let notification: MobileNotificationHint
+        switch result {
+        case .completed(let hint), .alreadyProcessed(let hint), .rejected(_, let hint):
+            notification = hint
+        case .queuedForApplication(_, let hint), .retryAfter(_, _, let hint):
+            notification = hint
             enqueue(payload)
         }
         NwcWakeInbox.appendDebug(
             source: "NSE",
-            message: "Finished bounded NWC wake processing: \(result.disposition)"
+            message: "Finished bounded NWC wake processing: \(result)"
         )
 
-        switch result.notification {
+        switch notification {
         case .processing:
             return .processing
         case .completed:

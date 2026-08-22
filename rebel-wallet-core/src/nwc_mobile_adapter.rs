@@ -5,9 +5,10 @@ use std::time::Duration;
 use anyhow::Context;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey};
 use nwc_mobile::{
-    BudgetInterval, ConnectionId, FeePolicy, HostConnectionAuthorization, HostError, HostErrorKind,
-    LegacyHostConnection, NwaRequestPresentation, NwcEncryption, NwcMethod, NwcMobileService,
-    NwcSecretKey, SecretProvider, UnixTimestamp,
+    maximum_mobile_fee_sat, BudgetInterval, ConnectionDraft, ConnectionId, ConnectionSelection,
+    FeePolicy, HostConnectionAuthorization, HostError, HostErrorKind, LegacyHostConnection,
+    NwaRequestPresentation, NwcEncryption, NwcMethod, NwcMobileService, NwcSecretKey,
+    SecretProvider, UnixTimestamp,
 };
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
 use zeroize::Zeroizing;
@@ -54,11 +55,50 @@ pub(crate) fn connection_authorization(connection: &NwcConnection) -> HostConnec
         connection.budget_sat,
         budget_interval(connection.budget_interval),
         FeePolicy::CountTowardBudget {
-            maximum_fee_sat: maximum_nwc_fee_sat(connection.budget_sat),
+            maximum_fee_sat: maximum_mobile_fee_sat(connection.budget_sat),
         },
         NWC_ENCRYPTION,
         connection.expires_at.map(UnixTimestamp::from_secs),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn connection_draft(
+    connection_id: String,
+    client_pubkey: String,
+    service_pubkey: String,
+    relay_input: &str,
+    fallback_relay_input: &str,
+    budget_sat: u64,
+    interval: NwcBudgetInterval,
+    permissions: Vec<NwcPermission>,
+    expires_at: Option<u64>,
+) -> anyhow::Result<ConnectionDraft> {
+    let selection = ConnectionSelection::from_host_input(
+        relay_input,
+        fallback_relay_input,
+        permissions.into_iter().filter_map(permission_method),
+        budget_sat,
+        budget_interval(interval),
+    )?;
+    ConnectionDraft::new(
+        connection_id,
+        client_pubkey,
+        service_pubkey,
+        selection,
+        NWC_ENCRYPTION,
+        expires_at.map(UnixTimestamp::from_secs),
+    )
+    .map_err(Into::into)
+}
+
+pub(crate) fn draft_permissions(draft: &ConnectionDraft) -> Vec<NwcPermission> {
+    draft
+        .methods()
+        .iter()
+        .copied()
+        .filter_map(permission)
+        .collect()
 }
 
 /// Preserves trusted accounting state only during one-time legacy migration.
@@ -73,17 +113,16 @@ pub(crate) fn legacy_connection(connection: &NwcConnection) -> LegacyHostConnect
 /// Maps a validated, non-sensitive presentation into Rebel's view state.
 pub(crate) fn nwa_request_state(request: &NwaRequestPresentation) -> NwaRequestState {
     NwaRequestState {
-        id: request.id_hex().to_owned(),
-        client_pubkey: request.client_pubkey_hex().to_owned(),
+        request_id_hex: request.id_hex().to_owned(),
+        client_public_key_hex: request.client_pubkey_hex().to_owned(),
         display_name: request.display_name().to_owned(),
         icon_url: request.icon_url().map(str::to_owned),
-        icon_display_url: None,
         requesting_app_description: request.requesting_app_description().map(str::to_owned),
         callback_target_description: request.callback_target_description().to_owned(),
-        relay: request.relay_urls().join("\n"),
-        budget_sat: request.budget_limit_sat(),
+        relay_urls: request.relay_urls().to_vec(),
+        budget_limit_sat: request.budget_limit_sat(),
         budget_interval: rebel_budget_interval(request.budget_interval()),
-        permissions: request
+        methods: request
             .methods()
             .iter()
             .copied()
@@ -106,7 +145,7 @@ pub(crate) async fn publish_nwc_info_event(
         .context("invalid NWC client public key")?;
     let secret = NwcSecretKey::from_bytes(keys.secret_key().to_secret_bytes())
         .context("invalid NWC wallet service key")?;
-    let methods = NwcPermission::IMPLEMENTED
+    let methods = implemented_permissions()
         .into_iter()
         .filter(|permission| client_pubkey.is_none() || permissions.contains(permission))
         .filter_map(permission_method)
@@ -125,18 +164,25 @@ pub(crate) async fn publish_nwc_info_event(
 
 /// Maps implemented Rebel permissions into shared NIP-47 methods.
 pub(crate) const fn permission_method(permission: NwcPermission) -> Option<NwcMethod> {
-    match permission {
-        NwcPermission::GetInfo => Some(NwcMethod::GetInfo),
-        NwcPermission::GetBalance => Some(NwcMethod::GetBalance),
-        NwcPermission::MakeInvoice => Some(NwcMethod::MakeInvoice),
-        NwcPermission::PayInvoice => Some(NwcMethod::PayInvoice),
-        NwcPermission::LookupInvoice => Some(NwcMethod::LookupInvoice),
-        NwcPermission::ListTransactions => Some(NwcMethod::ListTransactions),
-        NwcPermission::PayKeysend
-        | NwcPermission::MakeHoldInvoice
-        | NwcPermission::CancelHoldInvoice
-        | NwcPermission::SettleHoldInvoice => None,
-    }
+    Some(match permission {
+        NwcPermission::GetInfo => NwcMethod::GetInfo,
+        NwcPermission::GetBalance => NwcMethod::GetBalance,
+        NwcPermission::MakeInvoice => NwcMethod::MakeInvoice,
+        NwcPermission::PayInvoice => NwcMethod::PayInvoice,
+        NwcPermission::LookupInvoice => NwcMethod::LookupInvoice,
+        NwcPermission::ListTransactions => NwcMethod::ListTransactions,
+    })
+}
+
+pub(crate) const fn implemented_permissions() -> [NwcPermission; 6] {
+    [
+        NwcPermission::GetInfo,
+        NwcPermission::GetBalance,
+        NwcPermission::PayInvoice,
+        NwcPermission::MakeInvoice,
+        NwcPermission::LookupInvoice,
+        NwcPermission::ListTransactions,
+    ]
 }
 
 const fn permission(method: NwcMethod) -> Option<NwcPermission> {
@@ -172,13 +218,6 @@ const fn rebel_budget_interval(interval: BudgetInterval) -> NwcBudgetInterval {
         BudgetInterval::Yearly => NwcBudgetInterval::Yearly,
         _ => NwcBudgetInterval::Never,
     }
-}
-
-fn maximum_nwc_fee_sat(budget_sat: u64) -> u64 {
-    if budget_sat == 0 {
-        return 0;
-    }
-    (budget_sat / 20).clamp(10, 1_000).min(budget_sat)
 }
 
 /// Loads the wallet-service secret from the platform secret store on demand.

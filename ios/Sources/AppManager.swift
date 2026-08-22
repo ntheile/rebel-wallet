@@ -104,7 +104,7 @@ final class AppManager: AppReconciler {
 
     private func acknowledgeCompletedNwcWakeRequests(nextState: AppState) {
         NwcWakeInbox.remove(eventIds: Set(
-            nextState.nwc.processedWakeRequests.map(\.eventId)
+            nextState.nwc.processedWakeRequests.map(\.eventIdHex)
         ))
     }
 
@@ -269,10 +269,11 @@ final class AppManager: AppReconciler {
         refreshNwcWakeDebugEntries()
         dispatch(.processNwcWakeRequests(requests: requests.map {
             NwcWakeRequest(
-                relay: $0.payload.relayURL,
-                eventId: $0.payload.eventIDHex,
-                walletServicePubkey: $0.payload.walletServicePublicKeyHex,
-                receivedAt: $0.receivedAtSeconds
+                relayUrl: $0.payload.relayURL,
+                eventIdHex: $0.payload.eventIDHex,
+                walletServicePublicKeyHex: $0.payload.walletServicePublicKeyHex,
+                embeddedEventJson: $0.payload.embeddedEventJSON,
+                receivedAtSeconds: $0.receivedAtSeconds
             )
         }))
     }

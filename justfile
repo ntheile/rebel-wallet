@@ -18,7 +18,7 @@ install-hooks:
 
 # Build Rust core for the host (needed for uniffi-bindgen).
 rust-build-host:
-  ./tools/cargo-with-xcode build -p {{CORE_CRATE}} --release
+  ./tools/cargo-with-xcode build --locked -p {{CORE_CRATE}} --release
 
 bindings:
   rmp bindings all
@@ -62,7 +62,7 @@ run-ios-phone $bundle_id="": ios-rust ios-xcframework ios-xcodeproj
   xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID"
 
 ios-gen-swift: rust-build-host
-  cargo run -p uniffi-bindgen -- generate \
+  cargo run --locked -p uniffi-bindgen -- generate \
     --library target/release/lib{{LIB_NAME}}.{{DYLIB_EXT}} \
     --language swift \
     --out-dir ios/Bindings \
@@ -83,7 +83,7 @@ ios-rust:
       -u LIBRARY_PATH -u NIX_LDFLAGS -u NIX_CFLAGS_COMPILE \
       DEVELOPER_DIR="$DEV_DIR" SDKROOT="$SDK" CC="$TOOLCHAIN_BIN/clang" \
       RUSTFLAGS="-C linker=$TOOLCHAIN_BIN/clang -C link-arg=$VFLAG -C link-arg=-isysroot -C link-arg=$SDK" \
-      cargo build -p {{CORE_CRATE}} --lib --target "$TARGET" --release --features regtest
+      cargo build --locked -p {{CORE_CRATE}} --lib --target "$TARGET" --release --features regtest
   done
 
 # Package static libs into an xcframework.
@@ -93,7 +93,9 @@ ios-xcframework: ios-gen-swift ios-rust
   rm -rf ios/Frameworks/{{XCF_NAME}}.xcframework staging
   mkdir -p staging/headers
   cp ios/Bindings/{{LIB_NAME}}FFI.h staging/headers/
-  cp ios/Bindings/{{LIB_NAME}}FFI.modulemap staging/headers/module.modulemap
+  cp ios/Bindings/nwc_mobile_uniffiFFI.h staging/headers/
+  cp ios/Bindings/nwc_mobile_uniffiFFI.modulemap staging/headers/module.modulemap
+  sed '1s/^/\n/' ios/Bindings/{{LIB_NAME}}FFI.modulemap >> staging/headers/module.modulemap
   ./tools/xcode-run xcodebuild -create-xcframework \
     -library target/aarch64-apple-ios/release/lib{{LIB_NAME}}.a -headers staging/headers \
     -library target/aarch64-apple-ios-sim/release/lib{{LIB_NAME}}.a -headers staging/headers \
