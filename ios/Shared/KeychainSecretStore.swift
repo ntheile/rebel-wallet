@@ -1,53 +1,22 @@
 import Foundation
-import Security
+import NwcMobileApple
 
 final class KeychainSecretStore: SecretStore {
-    private let service = "com.rebelwallet.app"
-    private let accessGroup = KeychainSecretStore.keychainAccessGroup
+    private let vault = NwcKeychainVault(
+        service: "com.rebelwallet.app",
+        accessGroup: KeychainSecretStore.keychainAccessGroup
+    )
 
     func getSecret(key: String) -> String? {
-        var query = baseQuery(key: key)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
+        vault.string(forKey: key)
     }
 
     func setSecret(key: String, value: String) -> Bool {
-        let data = Data(value.utf8)
-        var query = baseQuery(key: key)
-        let update: [String: Any] = [kSecValueData as String: data]
-
-        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if status == errSecSuccess {
-            return true
-        }
-
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        vault.setString(value, forKey: key)
     }
 
     func deleteSecret(key: String) -> Bool {
-        let status = SecItemDelete(baseQuery(key: key) as CFDictionary)
-        return status == errSecSuccess || status == errSecItemNotFound
-    }
-
-    private func baseQuery(key: String) -> [String: Any] {
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-        ]
-        if let accessGroup {
-            query[kSecAttrAccessGroup as String] = accessGroup
-        }
-        return query
+        vault.deleteValue(forKey: key)
     }
 
     private static var keychainAccessGroup: String? {

@@ -5,8 +5,8 @@ use std::time::Duration;
 use anyhow::Context;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey};
 use nwc_mobile::{
-    maximum_mobile_fee_sat, BudgetInterval, ConnectionDraft, ConnectionId, ConnectionSelection,
-    FeePolicy, HostConnectionAuthorization, HostError, HostErrorKind, LegacyHostConnection,
+    maximum_mobile_fee_sat, ClientSecretStore, ClientSecretStoreError, ConnectionId, FeePolicy,
+    HostConnectionAuthorization, HostError, HostErrorKind, LegacyHostConnection,
     NwaRequestPresentation, NwcEncryption, NwcMethod, NwcMobileService, NwcSecretKey,
     SecretProvider, UnixTimestamp,
 };
@@ -14,7 +14,7 @@ pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
 use zeroize::Zeroizing;
 
 use crate::core::NOSTR_SECRET_KEY;
-use crate::{NwaRequestState, NwcBudgetInterval, NwcConnection, NwcPermission, SecretStore};
+use crate::{NwaRequestState, NwcConnection, NwcPermission, SecretStore};
 
 const NWC_LEDGER_FILE: &str = "nwc-mobile.sqlite3";
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -50,55 +50,16 @@ pub(crate) fn connection_authorization(connection: &NwcConnection) -> HostConnec
         connection
             .enabled_permissions()
             .into_iter()
-            .filter_map(permission_method)
+            .map(NwcMethod::from)
             .collect(),
         connection.budget_sat,
-        budget_interval(connection.budget_interval),
+        connection.budget_interval.into(),
         FeePolicy::CountTowardBudget {
             maximum_fee_sat: maximum_mobile_fee_sat(connection.budget_sat),
         },
         NWC_ENCRYPTION,
         connection.expires_at.map(UnixTimestamp::from_secs),
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn connection_draft(
-    connection_id: String,
-    client_pubkey: String,
-    service_pubkey: String,
-    relay_input: &str,
-    fallback_relay_input: &str,
-    budget_sat: u64,
-    interval: NwcBudgetInterval,
-    permissions: Vec<NwcPermission>,
-    expires_at: Option<u64>,
-) -> anyhow::Result<ConnectionDraft> {
-    let selection = ConnectionSelection::from_host_input(
-        relay_input,
-        fallback_relay_input,
-        permissions.into_iter().filter_map(permission_method),
-        budget_sat,
-        budget_interval(interval),
-    )?;
-    ConnectionDraft::new(
-        connection_id,
-        client_pubkey,
-        service_pubkey,
-        selection,
-        NWC_ENCRYPTION,
-        expires_at.map(UnixTimestamp::from_secs),
-    )
-    .map_err(Into::into)
-}
-
-pub(crate) fn draft_permissions(draft: &ConnectionDraft) -> Vec<NwcPermission> {
-    draft
-        .methods()
-        .iter()
-        .copied()
-        .filter_map(permission)
-        .collect()
 }
 
 /// Preserves trusted accounting state only during one-time legacy migration.
@@ -111,25 +72,12 @@ pub(crate) fn legacy_connection(connection: &NwcConnection) -> LegacyHostConnect
 }
 
 /// Maps a validated, non-sensitive presentation into Rebel's view state.
-pub(crate) fn nwa_request_state(request: &NwaRequestPresentation) -> NwaRequestState {
-    NwaRequestState {
-        request_id_hex: request.id_hex().to_owned(),
-        client_public_key_hex: request.client_pubkey_hex().to_owned(),
-        display_name: request.display_name().to_owned(),
-        icon_url: request.icon_url().map(str::to_owned),
-        requesting_app_description: request.requesting_app_description().map(str::to_owned),
-        callback_target_description: request.callback_target_description().to_owned(),
-        relay_urls: request.relay_urls().to_vec(),
-        budget_limit_sat: request.budget_limit_sat(),
-        budget_interval: rebel_budget_interval(request.budget_interval()),
-        methods: request
-            .methods()
-            .iter()
-            .copied()
-            .filter_map(permission)
-            .collect(),
-        expires_at: request.expires_at().map(UnixTimestamp::as_secs),
-    }
+pub(crate) fn nwa_request_state(
+    request: NwaRequestPresentation,
+) -> anyhow::Result<NwaRequestState> {
+    request
+        .try_into()
+        .context("shared NWA presentation is not representable by the native contract")
 }
 
 /// Publishes a bounded public capability event through the shared transport.
@@ -148,7 +96,7 @@ pub(crate) async fn publish_nwc_info_event(
     let methods = implemented_permissions()
         .into_iter()
         .filter(|permission| client_pubkey.is_none() || permissions.contains(permission))
-        .filter_map(permission_method)
+        .map(NwcMethod::from)
         .collect::<Vec<_>>();
     nwc_mobile_nostr::publish_nwc_info_event(
         &relay,
@@ -162,18 +110,6 @@ pub(crate) async fn publish_nwc_info_event(
     .context("failed to publish NWC info event")
 }
 
-/// Maps implemented Rebel permissions into shared NIP-47 methods.
-pub(crate) const fn permission_method(permission: NwcPermission) -> Option<NwcMethod> {
-    Some(match permission {
-        NwcPermission::GetInfo => NwcMethod::GetInfo,
-        NwcPermission::GetBalance => NwcMethod::GetBalance,
-        NwcPermission::MakeInvoice => NwcMethod::MakeInvoice,
-        NwcPermission::PayInvoice => NwcMethod::PayInvoice,
-        NwcPermission::LookupInvoice => NwcMethod::LookupInvoice,
-        NwcPermission::ListTransactions => NwcMethod::ListTransactions,
-    })
-}
-
 pub(crate) const fn implemented_permissions() -> [NwcPermission; 6] {
     [
         NwcPermission::GetInfo,
@@ -183,41 +119,6 @@ pub(crate) const fn implemented_permissions() -> [NwcPermission; 6] {
         NwcPermission::LookupInvoice,
         NwcPermission::ListTransactions,
     ]
-}
-
-const fn permission(method: NwcMethod) -> Option<NwcPermission> {
-    match method {
-        NwcMethod::GetInfo => Some(NwcPermission::GetInfo),
-        NwcMethod::GetBalance => Some(NwcPermission::GetBalance),
-        NwcMethod::MakeInvoice => Some(NwcPermission::MakeInvoice),
-        NwcMethod::PayInvoice => Some(NwcPermission::PayInvoice),
-        NwcMethod::LookupInvoice => Some(NwcPermission::LookupInvoice),
-        NwcMethod::ListTransactions => Some(NwcPermission::ListTransactions),
-        _ => None,
-    }
-}
-
-const fn budget_interval(interval: NwcBudgetInterval) -> BudgetInterval {
-    match interval {
-        NwcBudgetInterval::Never => BudgetInterval::Never,
-        NwcBudgetInterval::Hourly => BudgetInterval::Hourly,
-        NwcBudgetInterval::Daily => BudgetInterval::Daily,
-        NwcBudgetInterval::Weekly => BudgetInterval::Weekly,
-        NwcBudgetInterval::Monthly => BudgetInterval::Monthly,
-        NwcBudgetInterval::Yearly => BudgetInterval::Yearly,
-    }
-}
-
-const fn rebel_budget_interval(interval: BudgetInterval) -> NwcBudgetInterval {
-    match interval {
-        BudgetInterval::Never => NwcBudgetInterval::Never,
-        BudgetInterval::Hourly => NwcBudgetInterval::Hourly,
-        BudgetInterval::Daily => NwcBudgetInterval::Daily,
-        BudgetInterval::Weekly => NwcBudgetInterval::Weekly,
-        BudgetInterval::Monthly => NwcBudgetInterval::Monthly,
-        BudgetInterval::Yearly => NwcBudgetInterval::Yearly,
-        _ => NwcBudgetInterval::Never,
-    }
 }
 
 /// Loads the wallet-service secret from the platform secret store on demand.
@@ -242,6 +143,33 @@ impl SecretProvider for RebelSecretProvider {
             SecretKey::parse(&encoded).map_err(|_| HostError::new(HostErrorKind::Internal))?;
         NwcSecretKey::from_bytes(secret.to_secret_bytes())
             .map_err(|_| HostError::new(HostErrorKind::Internal))
+    }
+}
+
+impl ClientSecretStore for RebelSecretProvider {
+    fn load_client_secret(
+        &self,
+        storage_key: &str,
+    ) -> Result<Option<String>, ClientSecretStoreError> {
+        Ok(self.secrets.get_secret(storage_key.to_owned()))
+    }
+
+    fn store_client_secret(
+        &self,
+        storage_key: &str,
+        secret: &str,
+    ) -> Result<(), ClientSecretStoreError> {
+        self.secrets
+            .set_secret(storage_key.to_owned(), secret.to_owned())
+            .then_some(())
+            .ok_or(ClientSecretStoreError)
+    }
+
+    fn delete_client_secret(&self, storage_key: &str) -> Result<(), ClientSecretStoreError> {
+        self.secrets
+            .delete_secret(storage_key.to_owned())
+            .then_some(())
+            .ok_or(ClientSecretStoreError)
     }
 }
 
