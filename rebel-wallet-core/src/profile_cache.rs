@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use crate::nostr_support::{metadata_from_state, public_key_from_npub_or_hex};
@@ -167,6 +168,18 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProfileCacheEntry> 
 
 pub(crate) fn ensure_profile_picture_dir(data_dir: &Path) {
     let dir = profile_picture_dir(data_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if entry.path().extension().and_then(|ext| ext.to_str()) == Some("tmp") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+pub(crate) fn ensure_nwc_icon_dir(data_dir: &Path) {
+    let dir = nwc_icon_dir(data_dir);
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -366,6 +379,43 @@ pub(crate) async fn download_profile_picture(
     Ok((pubkey, remote_url))
 }
 
+pub(crate) async fn download_nwc_icon(
+    client: reqwest::Client,
+    data_dir: PathBuf,
+    remote_url: String,
+    semaphore: Arc<Semaphore>,
+) -> anyhow::Result<String> {
+    let _permit = semaphore.acquire().await?;
+    let response = client
+        .get(&remote_url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?
+        .error_for_status()?;
+    if response.content_length().unwrap_or_default() > MAX_PROFILE_IMAGE_BYTES as u64 {
+        anyhow::bail!("NWC icon too large");
+    }
+    let bytes = response.bytes().await?;
+    if bytes.len() > MAX_PROFILE_IMAGE_BYTES {
+        anyhow::bail!("NWC icon too large");
+    }
+    let dest = nwc_icon_path(&data_dir, &remote_url);
+    resize_and_write_profile_picture(&bytes, &dest)?;
+    Ok(remote_url)
+}
+
+pub(crate) fn nwc_icon_file_url(data_dir: &Path, remote_url: &str) -> Option<String> {
+    let path = nwc_icon_path(data_dir, remote_url);
+    let meta = path.metadata().ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    Some(format!("file://{}?v={}", path.display(), mtime))
+}
+
 fn resize_and_write_profile_picture(bytes: &[u8], dest: &Path) -> anyhow::Result<()> {
     let output = resize_profile_picture_to_jpeg(bytes)?;
     let tmp = dest.with_extension("tmp");
@@ -408,6 +458,15 @@ pub(crate) fn normalize_profile_picture_to_jpeg(bytes: &[u8]) -> anyhow::Result<
 
 fn profile_picture_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("profile_pictures")
+}
+
+fn nwc_icon_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("nwc_icons")
+}
+
+fn nwc_icon_path(data_dir: &Path, remote_url: &str) -> PathBuf {
+    let digest = Sha256::digest(remote_url.as_bytes());
+    nwc_icon_dir(data_dir).join(format!("{digest:x}"))
 }
 
 fn now_unix() -> u64 {

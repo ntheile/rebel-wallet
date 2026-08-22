@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::custom_address::validate_custom_address_name;
-use crate::{MAINNET_ESPLORA, MAINNET_SERVER, SIGNET_ESPLORA, SIGNET_SERVER};
+use crate::{
+    MAINNET_ESPLORA, MAINNET_SERVER, REGTEST_ESPLORA, REGTEST_SERVER, SIGNET_ESPLORA, SIGNET_SERVER,
+};
 
 mod send;
 
@@ -27,6 +29,174 @@ pub struct AppState {
     pub toast: Option<String>,
     pub busy: BusyState,
     pub capability_request: Option<CapabilityRequest>,
+    pub push_notifications: PushNotificationState,
+    pub nwa: NwaState,
+    pub nwc: NwcState,
+}
+
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
+pub struct NwaState {
+    pub request: Option<NwaRequestState>,
+    pub approving: bool,
+    pub error_message: Option<String>,
+    pub callback_pending: bool,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwaRequestState {
+    pub id: String,
+    pub client_pubkey: String,
+    pub display_name: String,
+    pub icon_url: Option<String>,
+    pub icon_display_url: Option<String>,
+    pub requesting_app_description: Option<String>,
+    pub callback_target_description: String,
+    pub relay: String,
+    pub budget_sat: u64,
+    pub budget_interval: NwcBudgetInterval,
+    pub permissions: Vec<NwcPermission>,
+    pub expires_at: Option<u64>,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct PushNotificationState {
+    pub apns_device_token: Option<String>,
+    pub registration_status: String,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwcState {
+    pub connections: Vec<NwcConnection>,
+    pub default_relay: String,
+    pub pending_wake_requests: Vec<NwcWakeRequest>,
+    pub processed_wake_requests: Vec<NwcProcessedWakeRequest>,
+    pub last_wake_status: String,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NwcConnection {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default, skip)]
+    pub icon_display_url: Option<String>,
+    pub relay: String,
+    #[serde(default, skip_serializing)]
+    pub uri: String,
+    #[serde(default)]
+    pub wallet_managed_secret: bool,
+    pub service_pubkey: String,
+    pub client_pubkey: String,
+    pub budget_sat: u64,
+    pub spent_sat: u64,
+    pub budget_display: String,
+    pub spent_display: String,
+    #[serde(default)]
+    pub budget_interval: NwcBudgetInterval,
+    #[serde(default)]
+    pub budget_interval_display: String,
+    #[serde(default)]
+    pub permissions: Vec<NwcPermission>,
+    #[serde(default)]
+    pub permissions_configured: bool,
+    pub allow_get_balance: bool,
+    pub allow_pay_invoice: bool,
+    pub created_at: u64,
+    #[serde(default, skip)]
+    pub last_used_at: Option<u64>,
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+    #[serde(default)]
+    pub budget_period_started_at: u64,
+    #[serde(default)]
+    pub pending_info_event_relays: Vec<String>,
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NwcPermission {
+    PayInvoice,
+    PayKeysend,
+    MakeInvoice,
+    LookupInvoice,
+    ListTransactions,
+    GetBalance,
+    GetInfo,
+    MakeHoldInvoice,
+    CancelHoldInvoice,
+    SettleHoldInvoice,
+}
+
+impl NwcPermission {
+    pub(crate) const IMPLEMENTED: [Self; 6] = [
+        Self::GetInfo,
+        Self::GetBalance,
+        Self::PayInvoice,
+        Self::MakeInvoice,
+        Self::LookupInvoice,
+        Self::ListTransactions,
+    ];
+}
+
+impl NwcConnection {
+    pub(crate) fn enabled_permissions(&self) -> Vec<NwcPermission> {
+        if self.permissions_configured {
+            return self.permissions.clone();
+        }
+
+        let mut permissions = vec![NwcPermission::GetInfo];
+        if self.allow_get_balance {
+            permissions.push(NwcPermission::GetBalance);
+        }
+        if self.allow_pay_invoice {
+            permissions.push(NwcPermission::PayInvoice);
+        }
+        permissions
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NwcBudgetInterval {
+    #[default]
+    Never,
+    Hourly,
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+impl NwcBudgetInterval {
+    pub(crate) fn display_name(&self) -> &'static str {
+        match self {
+            Self::Never => "Never",
+            Self::Hourly => "Hourly",
+            Self::Daily => "Daily",
+            Self::Weekly => "Weekly",
+            Self::Monthly => "Monthly",
+            Self::Yearly => "Yearly",
+        }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwcWakeRequest {
+    pub relay: String,
+    pub event_id: String,
+    pub wallet_service_pubkey: String,
+    pub received_at: u64,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwcProcessedWakeRequest {
+    pub relay: String,
+    pub event_id: String,
+    pub client_pubkey: String,
+    pub method: String,
+    pub status: String,
+    pub amount_sat: u64,
+    pub received_at: u64,
+    pub processed_at: u64,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -92,12 +262,16 @@ pub enum Screen {
     Send,
     Receive,
     Profile,
+    Nwc,
     LightningAddress,
     Backup,
     Restore,
     Network,
     Currency,
     ContactDetail { contact_id: String },
+    NwcWakeLogs,
+    NwcWakeStatus,
+    NwcConnectionDetail { connection_id: String },
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
@@ -120,6 +294,7 @@ pub enum WalletNetwork {
     #[default]
     Mainnet,
     Signet,
+    Regtest,
 }
 
 impl WalletNetwork {
@@ -127,6 +302,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "Mainnet",
             Self::Signet => "Signet",
+            Self::Regtest => "Regtest",
         }
     }
 
@@ -134,6 +310,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "Real bitcoin network",
             Self::Signet => "Test bitcoin network",
+            Self::Regtest => "Local development network",
         }
     }
 
@@ -141,6 +318,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => bitcoin::Network::Bitcoin,
             Self::Signet => bitcoin::Network::Signet,
+            Self::Regtest => bitcoin::Network::Regtest,
         }
     }
 
@@ -148,6 +326,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "rebel-wallet-mainnet.sqlite",
             Self::Signet => "rebel-wallet-signet.sqlite",
+            Self::Regtest => "rebel-wallet-regtest.sqlite",
         }
     }
 
@@ -155,6 +334,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => MAINNET_SERVER,
             Self::Signet => SIGNET_SERVER,
+            Self::Regtest => REGTEST_SERVER,
         }
     }
 
@@ -166,6 +346,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => MAINNET_ESPLORA,
             Self::Signet => SIGNET_ESPLORA,
+            Self::Regtest => REGTEST_ESPLORA,
         }
     }
 }
@@ -587,6 +768,23 @@ impl AppState {
             toast: None,
             busy: BusyState::default(),
             capability_request: None,
+            push_notifications: PushNotificationState {
+                apns_device_token: None,
+                registration_status: "Not requested".to_string(),
+            },
+            nwa: NwaState {
+                request: None,
+                approving: false,
+                error_message: None,
+                callback_pending: false,
+            },
+            nwc: NwcState {
+                connections: vec![],
+                default_relay: "wss://relay.getalby.com\nwss://relay2.getalby.com".to_string(),
+                pending_wake_requests: vec![],
+                processed_wake_requests: vec![],
+                last_wake_status: "No wake requests".to_string(),
+            },
         }
     }
 
@@ -657,6 +855,16 @@ impl AppState {
         };
 
         send::refresh_send_derived(self);
+
+        for connection in &mut self.nwc.connections {
+            if !connection.permissions_configured {
+                connection.permissions = connection.enabled_permissions();
+            }
+            connection.budget_display = format_sats(connection.budget_sat);
+            connection.spent_display = format_sats(connection.spent_sat);
+            connection.budget_interval_display =
+                connection.budget_interval.display_name().to_string();
+        }
 
         self.lightning_address.arkzap_address = self
             .lightning_address
@@ -743,7 +951,11 @@ fn supported_price_currencies() -> Vec<CurrencyOption> {
 }
 
 fn supported_networks() -> Vec<NetworkOption> {
-    [WalletNetwork::Mainnet, WalletNetwork::Signet]
+    let mut networks = vec![WalletNetwork::Mainnet, WalletNetwork::Signet];
+    if cfg!(feature = "regtest") {
+        networks.push(WalletNetwork::Regtest);
+    }
+    networks
         .into_iter()
         .map(|network| NetworkOption {
             name: network.display_name().to_string(),
@@ -1103,7 +1315,10 @@ mod tests {
         let mut state = AppState::initial();
         state.refresh_derived();
 
-        assert_eq!(state.supported_networks.len(), 2);
+        assert_eq!(
+            state.supported_networks.len(),
+            if cfg!(feature = "regtest") { 3 } else { 2 }
+        );
         assert!(state
             .supported_networks
             .iter()
@@ -1113,12 +1328,23 @@ mod tests {
             .iter()
             .any(|network| network.network == WalletNetwork::Mainnet));
         assert_eq!(
+            state
+                .supported_networks
+                .iter()
+                .any(|network| network.network == WalletNetwork::Regtest),
+            cfg!(feature = "regtest")
+        );
+        assert_eq!(
             WalletNetwork::Signet.db_file_name(),
             "rebel-wallet-signet.sqlite"
         );
         assert_eq!(
             WalletNetwork::Mainnet.db_file_name(),
             "rebel-wallet-mainnet.sqlite"
+        );
+        assert_eq!(
+            WalletNetwork::Regtest.db_file_name(),
+            "rebel-wallet-regtest.sqlite"
         );
         assert_eq!(WalletNetwork::Signet.server_access_token(), None);
         assert_eq!(WalletNetwork::Mainnet.server_access_token(), None);
@@ -1412,5 +1638,53 @@ mod tests {
             Some("ark1example@arkzap.me")
         );
         assert_eq!(state.nostr.lud16, "saved@example.com");
+    }
+
+    #[test]
+    fn nwc_connection_secrets_are_migration_only_and_legacy_budgets_are_lifetime() {
+        let connection = NwcConnection {
+            id: "nwc-client".to_string(),
+            name: "Client".to_string(),
+            icon_url: None,
+            icon_display_url: None,
+            relay: "wss://relay.example.com".to_string(),
+            uri: "nostr+walletconnect://secret".to_string(),
+            wallet_managed_secret: false,
+            service_pubkey: "service".to_string(),
+            client_pubkey: "client".to_string(),
+            budget_sat: 1_000,
+            spent_sat: 100,
+            budget_display: "1,000 sats".to_string(),
+            spent_display: "100 sats".to_string(),
+            budget_interval: NwcBudgetInterval::Daily,
+            budget_interval_display: "Daily".to_string(),
+            permissions: vec![NwcPermission::GetInfo],
+            permissions_configured: true,
+            allow_get_balance: false,
+            allow_pay_invoice: false,
+            created_at: 1,
+            last_used_at: None,
+            expires_at: None,
+            budget_period_started_at: 1,
+            pending_info_event_relays: Vec::new(),
+        };
+
+        let mut persisted = serde_json::to_value(&connection).expect("serialize connection");
+        assert!(persisted.get("uri").is_none());
+
+        let object = persisted.as_object_mut().expect("connection object");
+        object.insert(
+            "uri".to_string(),
+            serde_json::Value::String("nostr+walletconnect://legacy-secret".to_string()),
+        );
+        object.remove("budget_interval");
+        let migrated: NwcConnection =
+            serde_json::from_value(persisted).expect("deserialize legacy connection");
+
+        assert_eq!(
+            migrated.uri, "nostr+walletconnect://legacy-secret",
+            "legacy URI must remain available for one-time Keychain migration"
+        );
+        assert_eq!(migrated.budget_interval, NwcBudgetInterval::Never);
     }
 }

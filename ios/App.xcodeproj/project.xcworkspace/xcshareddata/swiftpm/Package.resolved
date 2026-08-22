@@ -1,0 +1,14 @@
+{
+  "originHash" : "e840f87e50b1bb187db71c06741a5bf326b565137d050e92075fdf0c60269662",
+  "pins" : [
+    {
+      "identity" : "nwc-mobile",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ntheile/nwc-mobile",
+      "state" : {
+        "revision" : "a581ebee3f52c82d46c5271636e27a763339a2a7"
+      }
+    }
+  ],
+  "version" : 3
+}

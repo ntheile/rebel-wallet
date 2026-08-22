@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{NostrState, PriceCurrency, WalletNetwork, WalletState};
+use crate::{NostrState, NwcConnection, PriceCurrency, WalletNetwork, WalletState};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PersistedAppData {
@@ -25,6 +25,8 @@ pub(crate) struct PersistedAppData {
     pub(crate) payment_annotations: Vec<PaymentAnnotation>,
     #[serde(default)]
     pub(crate) zap_receipts: Vec<ZapReceiptRecord>,
+    #[serde(default)]
+    pub(crate) nwc_connections: Vec<NwcConnection>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -176,6 +178,7 @@ mod tests {
         assert!(data.pending_custom_lightning_address.is_none());
         assert!(data.payment_annotations.is_empty());
         assert!(data.zap_receipts.is_empty());
+        assert!(data.nwc_connections.is_empty());
         assert!(!data.nostr.deleted);
     }
 

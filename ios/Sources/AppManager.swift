@@ -1,35 +1,56 @@
 import Foundation
+import NwcMobileApple
 import Observation
-import Security
 import UIKit
+import UserNotifications
 
 @MainActor
 @Observable
 final class AppManager: AppReconciler {
     let rust: FfiApp
     var state: AppState
+    var nwcWakeDebugEntries: [NwcWakeDebugEntry]
+    var nwcConnectionExport: NwcConnectionExport?
     private var lastRevApplied: UInt64
+    private var lastNwcWakeStatusLogged: String
+    private var lastReceiveNotificationKey: String?
     private var receiveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var notificationObservers: [NSObjectProtocol] = []
 
-    init() {
-        let fm = FileManager.default
-        let dataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let cacheDirUrl = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("RebelWallet")
-        let dataDir = dataDirUrl.path
-        let cacheDir = cacheDirUrl.path
-        try? fm.createDirectory(at: dataDirUrl, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: cacheDirUrl, withIntermediateDirectories: true)
-        Self.removeLegacyProfileCache(from: dataDirUrl)
-
+    init(storagePaths: AppStoragePaths) {
+        let dataDir = storagePaths.dataDir
+        let cacheDir = storagePaths.cacheDir
         let rust = FfiApp(dataDir: dataDir, cacheDir: cacheDir, secretStore: KeychainSecretStore())
         self.rust = rust
 
         let initial = rust.state()
-        self.state = initial
-        self.lastRevApplied = initial.rev
+        state = initial
+        nwcWakeDebugEntries = NwcWakeInbox.debugEntries()
+        lastRevApplied = initial.rev
+        lastNwcWakeStatusLogged = initial.nwc.lastWakeStatus
+        lastReceiveNotificationKey = Self.receiveNotificationKey(initial.receive)
 
         rust.listenForUpdates(reconciler: self)
+        observePushNotificationRegistration()
+        observeNwcWakeInbox()
         rust.dispatch(action: .bootstrap)
+        if let deviceToken = NwcPushPlatformContext.cachedDeviceToken {
+            syncPushNotificationRegistration(status: "Registered", deviceToken: deviceToken)
+        }
+        NwcWakeInbox.removeLegacySnapshot()
+        drainQueuedNwcWakeRequests()
+    }
+
+    convenience init() {
+        self.init(storagePaths: AppStoragePreparer.prepareSynchronously())
+    }
+
+    nonisolated static func prepareStorage() async -> AppStoragePaths {
+        await AppStoragePreparer.prepare()
+    }
+
+    nonisolated static func prepareStorageSynchronously() -> AppStoragePaths {
+        AppStoragePreparer.prepareSynchronously()
     }
 
     nonisolated func reconcile(update: AppUpdate) {
@@ -40,8 +61,11 @@ final class AppManager: AppReconciler {
 
     private func apply(update: AppUpdate) {
         switch update {
-        case .fullState(let s):
+        case let .fullState(s):
             if s.rev <= lastRevApplied { return }
+            acknowledgeCompletedNwcWakeRequests(nextState: s)
+            recordNwcWakeDebugChanges(nextState: s)
+            notifyIfReceiveCompleted(nextState: s)
             lastRevApplied = s.rev
             state = s
             // If a Lightning receive completed (e.g. while backgrounded), release the
@@ -49,8 +73,102 @@ final class AppManager: AppReconciler {
             if !isAwaitingLightningReceive {
                 endReceiveBackgroundTask()
             }
-        case .haptic(let feedback):
+        case let .haptic(feedback):
             Haptics.play(feedback)
+        case let .openUrl(_, url):
+            Task {
+                let opened: Bool
+                if let target = URL(string: url) {
+                    opened = await NwaCallbackOpener.open(target)
+                } else {
+                    opened = false
+                }
+                dispatch(.completeNwaCallbackOpen(opened: opened))
+            }
+        case let .nwcConnectionExportReady(_, connectionId, name, uri, copyToClipboard, presentQr):
+            if copyToClipboard {
+                UIPasteboard.general.setItems(
+                    [[UIPasteboard.typeAutomatic: uri]],
+                    options: [
+                        .localOnly: true,
+                        .expirationDate: Date().addingTimeInterval(120),
+                    ]
+                )
+                Haptics.play(.impactLight)
+            }
+            if presentQr {
+                nwcConnectionExport = NwcConnectionExport(id: connectionId, name: name, uri: uri)
+            }
+        }
+    }
+
+    private func acknowledgeCompletedNwcWakeRequests(nextState: AppState) {
+        NwcWakeInbox.remove(eventIds: Set(
+            nextState.nwc.processedWakeRequests.map(\.eventId)
+        ))
+    }
+
+    private func recordNwcWakeDebugChanges(nextState: AppState) {
+        if state.setup != .ready, nextState.setup == .ready, !nextState.nwc.pendingWakeRequests.isEmpty {
+            NwcWakeInbox.appendDebug(
+                source: "Rust",
+                message: "Wallet ready; retrying \(nextState.nwc.pendingWakeRequests.count) pending NWC wake request\(nextState.nwc.pendingWakeRequests.count == 1 ? "" : "s")"
+            )
+        }
+
+        let status = nextState.nwc.lastWakeStatus
+        if status != lastNwcWakeStatusLogged {
+            lastNwcWakeStatusLogged = status
+            NwcWakeInbox.appendDebug(source: "Rust", message: status)
+        }
+
+        refreshNwcWakeDebugEntries()
+    }
+
+    private func notifyIfReceiveCompleted(nextState: AppState) {
+        guard let key = Self.receiveNotificationKey(nextState.receive) else { return }
+        guard key != lastReceiveNotificationKey else { return }
+
+        lastReceiveNotificationKey = key
+        schedulePaymentReceivedNotification(receive: nextState.receive)
+    }
+
+    private static func receiveNotificationKey(_ receive: ReceiveState) -> String? {
+        guard receive.phase == .success else { return nil }
+
+        if let paymentHash = receive.lightningPaymentHash, receive.lightningPaid {
+            return "lightning:\(paymentHash)"
+        }
+        if let arkAddress = receive.arkAddress {
+            return "ark:\(arkAddress):\(receive.amountSat)"
+        }
+        return nil
+    }
+
+    private func schedulePaymentReceivedNotification(receive: ReceiveState) {
+        let content = UNMutableNotificationContent()
+        content.title = "Payment received"
+        if receive.amountSat > 0 {
+            content.body = "Received \(receive.amountSat.formatted()) sats"
+        } else {
+            content.body = "Received payment"
+        }
+        content.sound = .default
+        content.threadIdentifier = "wallet-receive"
+        content.userInfo = [
+            "type": "payment_received",
+        ]
+
+        let request = UNNotificationRequest(
+            identifier: "payment-received-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                NSLog("RebelWallet failed to schedule receive notification: %@", String(describing: error))
+            }
         }
     }
 
@@ -89,12 +207,83 @@ final class AppManager: AppReconciler {
         dispatch(.requestHaptic(feedback: feedback))
     }
 
-    private static func removeLegacyProfileCache(from dataDirUrl: URL) {
-        let fm = FileManager.default
-        for fileName in ["profiles.sqlite3", "profiles.sqlite3-wal", "profiles.sqlite3-shm"] {
-            try? fm.removeItem(at: dataDirUrl.appendingPathComponent(fileName))
+    func handleOpenURL(_ url: URL) {
+        let allowedSchemes = ["nostr+walletauth", "nostr+walletauth+rebelwallet"]
+        guard let scheme = url.scheme?.lowercased(), allowedSchemes.contains(scheme) else { return }
+        dispatch(.openNwaRequest(uri: url.absoluteString))
+    }
+
+    private func observePushNotificationRegistration() {
+        let observer = NotificationCenter.default.addObserver(
+            forName: PushNotificationEvents.registrationDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let status = notification.userInfo?[PushNotificationEvents.statusKey] as? String
+            let deviceToken = notification.userInfo?[PushNotificationEvents.deviceTokenKey] as? String
+
+            Task { @MainActor [weak self] in
+                self?.syncPushNotificationRegistration(
+                    status: status ?? "Unknown",
+                    deviceToken: deviceToken
+                )
+            }
         }
-        try? fm.removeItem(at: dataDirUrl.appendingPathComponent("profile_pictures"))
+        notificationObservers.append(observer)
+    }
+
+    private func syncPushNotificationRegistration(status: String, deviceToken: String?) {
+        let effectiveDeviceToken = deviceToken ?? NwcPushPlatformContext.cachedDeviceToken
+        dispatch(.setPushNotificationRegistration(
+            apnsDeviceToken: effectiveDeviceToken,
+            registrationStatus: status,
+            wakeServerUrl: NwcPushPlatformContext.serverURL,
+            appId: Bundle.main.bundleIdentifier ?? "com.rebelwallet.app",
+            environment: NwcPushPlatformContext.apnsEnvironment,
+            installId: NwcPushPlatformContext.installId
+        ))
+    }
+
+    private func observeNwcWakeInbox() {
+        let observer = NotificationCenter.default.addObserver(
+            forName: NwcWakeInboxEvents.didChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshNwcWakeDebugEntries()
+                self?.drainQueuedNwcWakeRequests()
+            }
+        }
+        notificationObservers.append(observer)
+    }
+
+    func drainQueuedNwcWakeRequests() {
+        let requests = NwcWakeInbox.pendingRequests()
+        guard !requests.isEmpty else { return }
+
+        NwcWakeInbox.appendDebug(
+            source: "App",
+            message: "Forwarded \(requests.count) durable nwc_wake request\(requests.count == 1 ? "" : "s") to Rust"
+        )
+        refreshNwcWakeDebugEntries()
+        dispatch(.processNwcWakeRequests(requests: requests.map {
+            NwcWakeRequest(
+                relay: $0.payload.relayURL,
+                eventId: $0.payload.eventIDHex,
+                walletServicePubkey: $0.payload.walletServicePublicKeyHex,
+                receivedAt: $0.receivedAtSeconds
+            )
+        }))
+    }
+
+    func refreshNwcWakeDebugEntries() {
+        nwcWakeDebugEntries = Array(NwcWakeInbox.debugEntries().reversed())
+    }
+
+    func clearNwcWakeDebugEntries() {
+        NwcWakeInbox.clearDebugEntries()
+        refreshNwcWakeDebugEntries()
     }
 
     func syncWalletForRefresh() async {
@@ -126,46 +315,75 @@ final class AppManager: AppReconciler {
     }
 }
 
-final class KeychainSecretStore: SecretStore {
-    private let service = "com.rebelwallet.app"
+struct AppStoragePaths {
+    let dataDir: String
+    let cacheDir: String
+}
 
-    func getSecret(key: String) -> String? {
-        var query = baseQuery(key: key)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
+private enum AppStoragePreparer {
+    static func prepare() async -> AppStoragePaths {
+        await Task.detached(priority: .userInitiated) {
+            prepareSynchronously()
+        }.value
+    }
 
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            return nil
+    static func prepareSynchronously() -> AppStoragePaths {
+        let fm = FileManager.default
+        let legacyDataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let legacyCacheDirUrl = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("RebelWallet")
+        let appGroupId = Bundle.main.object(forInfoDictionaryKey: "RebelWalletAppGroupIdentifier") as? String
+        let appGroupRootUrl = appGroupId.flatMap { fm.containerURL(forSecurityApplicationGroupIdentifier: $0) }
+        guard let sharedRootUrl = appGroupRootUrl?.appendingPathComponent("RustCore", isDirectory: true) else {
+            Self.removeLegacyProfileCache(from: legacyDataDirUrl)
+            return AppStoragePaths(dataDir: legacyDataDirUrl.path, cacheDir: legacyCacheDirUrl.path)
         }
-        return String(data: data, encoding: .utf8)
-    }
+        let sharedDataDirUrl = sharedRootUrl.appendingPathComponent("ApplicationSupport", isDirectory: true)
+        let sharedCacheDirUrl = sharedRootUrl.appendingPathComponent("Caches", isDirectory: true)
 
-    func setSecret(key: String, value: String) -> Bool {
-        let data = Data(value.utf8)
-        var query = baseQuery(key: key)
-        let update: [String: Any] = [kSecValueData as String: data]
-
-        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if status == errSecSuccess {
-            return true
+        do {
+            try fm.createDirectory(at: sharedDataDirUrl, withIntermediateDirectories: true)
+            try fm.createDirectory(at: sharedCacheDirUrl, withIntermediateDirectories: true)
+            try Self.migrateLegacyData(from: legacyDataDirUrl, to: sharedDataDirUrl)
+            Self.removeLegacyProfileCache(from: sharedDataDirUrl)
+            return AppStoragePaths(dataDir: sharedDataDirUrl.path, cacheDir: sharedCacheDirUrl.path)
+        } catch {
+            Self.removeLegacyProfileCache(from: legacyDataDirUrl)
+            return AppStoragePaths(dataDir: legacyDataDirUrl.path, cacheDir: legacyCacheDirUrl.path)
         }
-
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
     }
 
-    func deleteSecret(key: String) -> Bool {
-        SecItemDelete(baseQuery(key: key) as CFDictionary) == errSecSuccess
+    private static func removeLegacyProfileCache(from dataDirUrl: URL) {
+        let fm = FileManager.default
+        for fileName in ["profiles.sqlite3", "profiles.sqlite3-wal", "profiles.sqlite3-shm"] {
+            try? fm.removeItem(at: dataDirUrl.appendingPathComponent(fileName))
+        }
+        try? fm.removeItem(at: dataDirUrl.appendingPathComponent("profile_pictures"))
     }
 
-    private func baseQuery(key: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key
-        ]
+    private static func migrateLegacyData(from legacyDataDirUrl: URL, to dataDirUrl: URL) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: legacyDataDirUrl.path) else { return }
+        let items = try fm.contentsOfDirectory(
+            at: legacyDataDirUrl,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        var copiedItems: [URL] = []
+        do {
+            for sourceUrl in items {
+                let values = try sourceUrl.resourceValues(forKeys: [.isRegularFileKey])
+                guard values.isRegularFile == true else { continue }
+                let destinationUrl = dataDirUrl.appendingPathComponent(sourceUrl.lastPathComponent)
+                guard !fm.fileExists(atPath: destinationUrl.path) else { continue }
+                try fm.copyItem(at: sourceUrl, to: destinationUrl)
+                copiedItems.append(destinationUrl)
+            }
+        } catch {
+            for copiedItem in copiedItems {
+                try? fm.removeItem(at: copiedItem)
+            }
+            throw error
+        }
     }
 }

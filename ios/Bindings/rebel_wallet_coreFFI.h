@@ -245,28 +245,28 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_APP_RECONCILER_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_APP_RECONCILER_METHOD0
-typedef void (*UniffiCallbackInterfaceAppReconcilerMethod0)(uint64_t, RustBuffer, void* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceAppReconcilerMethod0)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_SECRET_STORE_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_SECRET_STORE_METHOD0
-typedef void (*UniffiCallbackInterfaceSecretStoreMethod0)(uint64_t, RustBuffer, RustBuffer* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceSecretStoreMethod0)(uint64_t, RustBuffer, RustBuffer* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_SECRET_STORE_METHOD1
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_SECRET_STORE_METHOD1
-typedef void (*UniffiCallbackInterfaceSecretStoreMethod1)(uint64_t, RustBuffer, RustBuffer, int8_t* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceSecretStoreMethod1)(uint64_t, RustBuffer, RustBuffer, int8_t* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_SECRET_STORE_METHOD2
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_SECRET_STORE_METHOD2
-typedef void (*UniffiCallbackInterfaceSecretStoreMethod2)(uint64_t, RustBuffer, int8_t* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceSecretStoreMethod2)(uint64_t, RustBuffer, int8_t* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -326,6 +326,52 @@ RustBuffer uniffi_rebel_wallet_core_fn_method_ffiapp_normalize_profile_image_to_
 RustBuffer uniffi_rebel_wallet_core_fn_method_ffiapp_state(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_CLONE_NWCEXTENSIONCANCELLATION
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_CLONE_NWCEXTENSIONCANCELLATION
+uint64_t uniffi_rebel_wallet_core_fn_clone_nwcextensioncancellation(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_FREE_NWCEXTENSIONCANCELLATION
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_FREE_NWCEXTENSIONCANCELLATION
+void uniffi_rebel_wallet_core_fn_free_nwcextensioncancellation(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_CONSTRUCTOR_NWCEXTENSIONCANCELLATION_NEW
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_CONSTRUCTOR_NWCEXTENSIONCANCELLATION_NEW
+uint64_t uniffi_rebel_wallet_core_fn_constructor_nwcextensioncancellation_new(RustCallStatus *_Nonnull out_status
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_METHOD_NWCEXTENSIONCANCELLATION_CANCEL
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_METHOD_NWCEXTENSIONCANCELLATION_CANCEL
+void uniffi_rebel_wallet_core_fn_method_nwcextensioncancellation_cancel(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_METHOD_NWCEXTENSIONCANCELLATION_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_METHOD_NWCEXTENSIONCANCELLATION_IS_CANCELLED
+int8_t uniffi_rebel_wallet_core_fn_method_nwcextensioncancellation_is_cancelled(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_CLONE_NWCEXTENSIONENGINE
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_CLONE_NWCEXTENSIONENGINE
+uint64_t uniffi_rebel_wallet_core_fn_clone_nwcextensionengine(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_FREE_NWCEXTENSIONENGINE
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_FREE_NWCEXTENSIONENGINE
+void uniffi_rebel_wallet_core_fn_free_nwcextensionengine(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_CONSTRUCTOR_NWCEXTENSIONENGINE_NEW
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_CONSTRUCTOR_NWCEXTENSIONENGINE_NEW
+uint64_t uniffi_rebel_wallet_core_fn_constructor_nwcextensionengine_new(RustBuffer data_dir, uint64_t secret_store, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_METHOD_NWCEXTENSIONENGINE_EXECUTE_WAKE
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_METHOD_NWCEXTENSIONENGINE_EXECUTE_WAKE
+uint64_t uniffi_rebel_wallet_core_fn_method_nwcextensionengine_execute_wake(uint64_t ptr, RustBuffer request, uint64_t execution_milliseconds, uint64_t cancellation
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
 void uniffi_rebel_wallet_core_fn_init_callback_vtable_appreconciler(const UniffiVTableCallbackInterfaceAppReconciler* _Nonnull vtable
@@ -334,6 +380,16 @@ void uniffi_rebel_wallet_core_fn_init_callback_vtable_appreconciler(const Uniffi
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_INIT_CALLBACK_VTABLE_SECRETSTORE
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_INIT_CALLBACK_VTABLE_SECRETSTORE
 void uniffi_rebel_wallet_core_fn_init_callback_vtable_secretstore(const UniffiVTableCallbackInterfaceSecretStore* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_FUNC_NWC_RELAY_INPUT_IS_VALID
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_FUNC_NWC_RELAY_INPUT_IS_VALID
+int8_t uniffi_rebel_wallet_core_fn_func_nwc_relay_input_is_valid(RustBuffer value, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_FUNC_PARSE_NWC_WAKE_PAYLOAD_JSON
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_FN_FUNC_PARSE_NWC_WAKE_PAYLOAD_JSON
+RustBuffer uniffi_rebel_wallet_core_fn_func_parse_nwc_wake_payload_json(RustBuffer payload_json, uint64_t received_at_seconds, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_REBEL_WALLET_CORE_RUSTBUFFER_ALLOC
@@ -596,64 +652,106 @@ void ffi_rebel_wallet_core_rust_future_free_void(uint64_t handle
 void ffi_rebel_wallet_core_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_FUNC_NWC_RELAY_INPUT_IS_VALID
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_FUNC_NWC_RELAY_INPUT_IS_VALID
+uint16_t uniffi_rebel_wallet_core_checksum_func_nwc_relay_input_is_valid(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_FUNC_PARSE_NWC_WAKE_PAYLOAD_JSON
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_FUNC_PARSE_NWC_WAKE_PAYLOAD_JSON
+uint16_t uniffi_rebel_wallet_core_checksum_func_parse_nwc_wake_payload_json(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_FFIAPP_DISPATCH
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_FFIAPP_DISPATCH
 uint16_t uniffi_rebel_wallet_core_checksum_method_ffiapp_dispatch(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_FFIAPP_LISTEN_FOR_UPDATES
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_FFIAPP_LISTEN_FOR_UPDATES
 uint16_t uniffi_rebel_wallet_core_checksum_method_ffiapp_listen_for_updates(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_FFIAPP_NORMALIZE_PROFILE_IMAGE_TO_JPEG
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_FFIAPP_NORMALIZE_PROFILE_IMAGE_TO_JPEG
 uint16_t uniffi_rebel_wallet_core_checksum_method_ffiapp_normalize_profile_image_to_jpeg(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_FFIAPP_STATE
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_FFIAPP_STATE
 uint16_t uniffi_rebel_wallet_core_checksum_method_ffiapp_state(void
-    
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_NWCEXTENSIONCANCELLATION_CANCEL
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_NWCEXTENSIONCANCELLATION_CANCEL
+uint16_t uniffi_rebel_wallet_core_checksum_method_nwcextensioncancellation_cancel(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_NWCEXTENSIONCANCELLATION_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_NWCEXTENSIONCANCELLATION_IS_CANCELLED
+uint16_t uniffi_rebel_wallet_core_checksum_method_nwcextensioncancellation_is_cancelled(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_NWCEXTENSIONENGINE_EXECUTE_WAKE
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_NWCEXTENSIONENGINE_EXECUTE_WAKE
+uint16_t uniffi_rebel_wallet_core_checksum_method_nwcextensionengine_execute_wake(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_CONSTRUCTOR_FFIAPP_NEW
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_CONSTRUCTOR_FFIAPP_NEW
 uint16_t uniffi_rebel_wallet_core_checksum_constructor_ffiapp_new(void
-    
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_CONSTRUCTOR_NWCEXTENSIONCANCELLATION_NEW
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_CONSTRUCTOR_NWCEXTENSIONCANCELLATION_NEW
+uint16_t uniffi_rebel_wallet_core_checksum_constructor_nwcextensioncancellation_new(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_CONSTRUCTOR_NWCEXTENSIONENGINE_NEW
+#define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_CONSTRUCTOR_NWCEXTENSIONENGINE_NEW
+uint16_t uniffi_rebel_wallet_core_checksum_constructor_nwcextensionengine_new(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_APPRECONCILER_RECONCILE
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_APPRECONCILER_RECONCILE
 uint16_t uniffi_rebel_wallet_core_checksum_method_appreconciler_reconcile(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_SECRETSTORE_GET_SECRET
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_SECRETSTORE_GET_SECRET
 uint16_t uniffi_rebel_wallet_core_checksum_method_secretstore_get_secret(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_SECRETSTORE_SET_SECRET
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_SECRETSTORE_SET_SECRET
 uint16_t uniffi_rebel_wallet_core_checksum_method_secretstore_set_secret(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_SECRETSTORE_DELETE_SECRET
 #define UNIFFI_FFIDEF_UNIFFI_REBEL_WALLET_CORE_CHECKSUM_METHOD_SECRETSTORE_DELETE_SECRET
 uint16_t uniffi_rebel_wallet_core_checksum_method_secretstore_delete_secret(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_REBEL_WALLET_CORE_UNIFFI_CONTRACT_VERSION
 #define UNIFFI_FFIDEF_FFI_REBEL_WALLET_CORE_UNIFFI_CONTRACT_VERSION
 uint32_t ffi_rebel_wallet_core_uniffi_contract_version(void
-    
+
 );
 #endif
 

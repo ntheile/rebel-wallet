@@ -4,12 +4,17 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use flume::{Receiver, Sender};
-
 mod actions;
 mod activity;
 mod core;
 mod custom_address;
 mod nostr_support;
+mod nwa;
+mod nwc;
+mod nwc_extension;
+mod nwc_mobile_adapter;
+mod nwc_mobile_registry;
+mod nwc_push;
 mod payments;
 mod persistence;
 mod price;
@@ -21,21 +26,33 @@ mod wallet;
 mod zaps;
 
 pub use actions::AppAction;
+pub use nwc_extension::{
+    NwcExtensionCancellation, NwcExtensionDisposition, NwcExtensionEngine,
+    NwcExtensionNotification, NwcExtensionWakeRequest, NwcExtensionWakeResult,
+};
 use profile_cache::normalize_profile_picture_to_jpeg;
 pub use state::{
     ActivityIconKind, ActivityItem, AppState, BusyState, CapabilityRequest, CapabilityRequestKind,
     Contact, CurrencyOption, LightningAddressRegistrationPhase, LightningAddressState, MainTab,
-    NetworkOption, NostrMessage, NostrState, PriceCurrency, ReceiveMethod, ReceivePhase,
-    ReceiveState, Router, Screen, SendDestinationKind, SendPhase, SendState, SetupState,
-    WalletNetwork, WalletState,
+    NetworkOption, NostrMessage, NostrState, NwaRequestState, NwaState, NwcBudgetInterval,
+    NwcConnection, NwcPermission, NwcProcessedWakeRequest, NwcState, NwcWakeRequest, PriceCurrency,
+    PushNotificationState, ReceiveMethod, ReceivePhase, ReceiveState, Router, Screen,
+    SendDestinationKind, SendPhase, SendState, SetupState, WalletNetwork, WalletState,
 };
 pub use updates::{AppUpdate, HapticFeedback};
 pub(crate) use updates::{AsyncMsg, CoreMsg};
 
 uniffi::setup_scaffolding!();
 
+#[uniffi::export]
+pub fn nwc_relay_input_is_valid(value: String) -> bool {
+    core::nwc_relay_input_is_valid(&value)
+}
+
 pub(crate) const SIGNET_SERVER: &str = "https://ark.signet.2nd.dev";
 pub(crate) const SIGNET_ESPLORA: &str = "https://esplora.signet.2nd.dev";
+pub(crate) const REGTEST_SERVER: &str = "http://127.0.0.1:3535";
+pub(crate) const REGTEST_ESPLORA: &str = "http://127.0.0.1:3000";
 pub(crate) const MAINNET_SERVER: &str = "https://ark.second.tech";
 pub(crate) const MAINNET_ESPLORA: &str = "https://mempool.second.tech/api";
 
@@ -77,9 +94,9 @@ impl FfiApp {
         let tx_for_bootstrap = core_tx.clone();
 
         core::spawn_actor(
-            data_dir,
+            data_dir.clone(),
             cache_dir,
-            secrets,
+            secrets.clone(),
             tx_for_bootstrap,
             core_rx,
             shared_for_core,

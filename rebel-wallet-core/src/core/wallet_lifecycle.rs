@@ -8,8 +8,9 @@ use zeroize::Zeroizing;
 use super::custom_address_flow::{
     lightning_address_local_part, pending_custom_lightning_address_matches_name,
 };
-use super::{AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
+use super::{nwc_client_secret_key, AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
 use crate::custom_address::amount_msats_to_sat;
+use crate::nwc_mobile_adapter::{nwc_ledger_path, open_nwc_ledger};
 use crate::persistence::{PersistedAppData, PersistedPriceCurrency, ServerConfig};
 use crate::profile_cache::{
     hydrate_contact_picture, hydrate_own_profile_picture, sanitize_persisted_contact_pictures,
@@ -23,6 +24,7 @@ impl AppCore {
         self.load_app_data();
         self.refresh_cached_contact_profiles_on_startup();
         self.load_nostr_key();
+        self.sync_nwc_push_registrations();
         self.refresh_price();
         if let Some(mnemonic) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
             self.state.busy.bootstrapping = true;
@@ -67,11 +69,27 @@ impl AppCore {
         // unlock is confirmed gone, so a failed cleanup cannot orphan the
         // databases behind an already-deleted seed.
         let mut errors = Vec::new();
-        for network in [WalletNetwork::Mainnet, WalletNetwork::Signet] {
+        let nwc_secrets = self
+            .state
+            .nwc
+            .connections
+            .iter()
+            .map(|connection| (connection.client_pubkey.clone(), connection.name.clone()))
+            .collect::<Vec<_>>();
+        for network in [
+            WalletNetwork::Mainnet,
+            WalletNetwork::Signet,
+            WalletNetwork::Regtest,
+        ] {
             let db_path = self.data_dir.join(network.db_file_name());
             if let Err(e) = remove_wallet_database_files(&db_path) {
                 errors.push(format!("{e:#}"));
             }
+        }
+        self.nwc_ledger = None;
+        let nwc_database_path = nwc_ledger_path(&self.data_dir);
+        if let Err(error) = remove_wallet_database_files(&nwc_database_path) {
+            errors.push(format!("{error:#}"));
         }
 
         match std::fs::remove_file(&self.app_data_path) {
@@ -87,32 +105,90 @@ impl AppCore {
         self.zap_receipts.clear();
         self.profile_picture_downloads.clear();
         self.profile_info_requests.clear();
+        self.nwc_wake_coordinator.reset();
 
         let mut state = AppState::initial();
         state.show_launch_splash = false;
         self.state = state;
+
+        self.nwc_ledger = open_nwc_ledger(&self.data_dir).ok();
+        self.nwc_registry_ready = self.nwc_ledger.is_some();
+        let mut warnings = Vec::new();
+        if self.nwc_ledger.is_none() {
+            warnings.push("could not reopen NWC authorization storage".to_string());
+        }
 
         if errors.is_empty() {
             if !self.secrets.delete_secret(WALLET_SEED_KEY.to_string()) {
                 errors.push("wallet seed".to_string());
             }
             let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
+            for (client_pubkey, name) in nwc_secrets {
+                if !self
+                    .secrets
+                    .delete_secret(nwc_client_secret_key(&client_pubkey))
+                {
+                    errors.push(format!("NWC secret for {name}"));
+                }
+            }
         }
 
-        if errors.is_empty() {
+        warnings.extend(errors);
+
+        if warnings.is_empty() {
             self.state.toast = Some("Wallet deleted. Start over to create or restore.".to_string());
             self.request_haptic(HapticFeedback::NotificationSuccess);
         } else {
             self.state.toast = Some(format!(
                 "Wallet reset with cleanup warnings: {}",
-                errors.join(", ")
+                warnings.join(", ")
             ));
             self.request_haptic(HapticFeedback::NotificationWarning);
         }
     }
 
-    pub(super) fn select_network(&mut self, network: WalletNetwork) {
-        let server_config = ServerConfig::for_network(network);
+    pub(super) fn select_network(
+        &mut self,
+        network: WalletNetwork,
+        server_address: Option<String>,
+        esplora_address: Option<String>,
+    ) {
+        if supported_wallet_network(network) != network {
+            self.state.toast = Some("Regtest is unavailable in this build.".to_string());
+            self.request_haptic(HapticFeedback::NotificationWarning);
+            return;
+        }
+        let server_config = match network {
+            WalletNetwork::Regtest => {
+                let server_address =
+                    server_address.unwrap_or_else(|| network.server_address().to_string());
+                let esplora_address =
+                    esplora_address.unwrap_or_else(|| network.esplora_address().to_string());
+                let server_address = match validate_server_url(&server_address, "ASP") {
+                    Ok(address) => address,
+                    Err(message) => {
+                        self.state.toast = Some(message);
+                        self.request_haptic(HapticFeedback::NotificationWarning);
+                        return;
+                    }
+                };
+                let esplora_address = match validate_server_url(&esplora_address, "Esplora") {
+                    Ok(address) => address,
+                    Err(message) => {
+                        self.state.toast = Some(message);
+                        self.request_haptic(HapticFeedback::NotificationWarning);
+                        return;
+                    }
+                };
+                ServerConfig {
+                    network,
+                    server_address,
+                    server_access_token: network.server_access_token().map(str::to_string),
+                    esplora_address,
+                }
+            }
+            WalletNetwork::Mainnet | WalletNetwork::Signet => ServerConfig::for_network(network),
+        };
         let server_address = server_config.server_address;
         let esplora_address = server_config.esplora_address;
 
@@ -185,8 +261,14 @@ impl AppCore {
                 } else {
                     data.receive_memo
                 };
-                self.state.wallet.network = data.network;
-                let server_config = ServerConfig::for_network(self.state.wallet.network);
+                self.state.wallet.network = supported_wallet_network(data.network);
+                let server_config = if self.state.wallet.network == WalletNetwork::Regtest
+                    && data.servers.network == WalletNetwork::Regtest
+                {
+                    data.servers
+                } else {
+                    ServerConfig::for_network(self.state.wallet.network)
+                };
                 self.state.wallet.server_address = server_config.server_address;
                 self.state.wallet.esplora_address = server_config.esplora_address;
                 self.state.wallet.price_currency = data.price_currency.currency;
@@ -233,6 +315,11 @@ impl AppCore {
                 }
                 self.payment_annotations = data.payment_annotations;
                 self.zap_receipts = data.zap_receipts;
+                self.state.nwc.connections = data.nwc_connections;
+                self.migrate_nwc_connections();
+                self.hydrate_nwc_connection_uris();
+                self.hydrate_nwc_icon_urls();
+                self.prefetch_nwc_icons();
             }
             Err(e) => {
                 self.state.toast = Some(format!("Could not load local app data: {e}"));
@@ -272,6 +359,9 @@ impl AppCore {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| self.state.lightning_address.custom_name.clone());
+        let mut nwc_connections = self.state.nwc.connections.clone();
+        super::redact_persisted_nwc_connection_secrets(&mut nwc_connections);
+
         let data = PersistedAppData {
             nostr,
             receive_amount_sat: self.state.receive.amount_sat,
@@ -287,12 +377,50 @@ impl AppCore {
             pending_custom_lightning_address,
             payment_annotations: self.payment_annotations.clone(),
             zap_receipts: self.zap_receipts.clone(),
+            nwc_connections,
         };
         if let Ok(raw) = serde_json::to_string_pretty(&data) {
             let _ = std::fs::create_dir_all(&self.data_dir);
             let _ = std::fs::write(&self.app_data_path, raw);
         }
     }
+}
+
+fn validate_server_url(value: &str, label: &str) -> Result<String, String> {
+    let value = value.trim();
+    let url = reqwest::Url::parse(value).map_err(|_| format!("Enter a valid {label} URL."))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(format!("Enter a valid HTTP or HTTPS {label} URL."));
+    }
+    if url.scheme() == "http" && !url.host_str().is_some_and(is_local_network_host) {
+        return Err(format!(
+            "Plain HTTP {label} URLs must use a loopback or private host."
+        ));
+    }
+    Ok(value.trim_end_matches('/').to_string())
+}
+
+fn supported_wallet_network(network: WalletNetwork) -> WalletNetwork {
+    if network == WalletNetwork::Regtest && !cfg!(feature = "regtest") {
+        WalletNetwork::Mainnet
+    } else {
+        network
+    }
+}
+
+fn is_local_network_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| match address {
+            std::net::IpAddr::V4(address) => address.is_loopback() || address.is_private(),
+            std::net::IpAddr::V6(address) => address.is_loopback() || address.is_unique_local(),
+        })
 }
 
 fn load_wallet_metadata_value(
@@ -340,4 +468,39 @@ fn ensure_wallet_metadata_table(conn: &rusqlite::Connection) -> rusqlite::Result
         [],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{supported_wallet_network, validate_server_url};
+    use crate::WalletNetwork;
+
+    #[test]
+    fn validates_and_normalizes_server_urls() {
+        assert_eq!(
+            validate_server_url("  http://192.168.1.10:3535/  ", "ASP"),
+            Ok("http://192.168.1.10:3535".to_string())
+        );
+        assert!(validate_server_url("http://localhost:3535", "ASP").is_ok());
+        assert!(validate_server_url("http://[::1]:3535", "ASP").is_ok());
+        assert!(validate_server_url("http://203.0.113.10:3535", "ASP").is_err());
+        assert!(validate_server_url("http://example.com", "ASP").is_err());
+        assert!(validate_server_url("https://example.com", "ASP").is_ok());
+        assert!(validate_server_url("ftp://example.com", "ASP").is_err());
+        assert!(validate_server_url("not a url", "Esplora").is_err());
+    }
+
+    #[test]
+    fn regtest_is_available_only_in_feature_builds() {
+        let expected = if cfg!(feature = "regtest") {
+            WalletNetwork::Regtest
+        } else {
+            WalletNetwork::Mainnet
+        };
+        assert_eq!(supported_wallet_network(WalletNetwork::Regtest), expected);
+        assert_eq!(
+            supported_wallet_network(WalletNetwork::Signet),
+            WalletNetwork::Signet
+        );
+    }
 }
