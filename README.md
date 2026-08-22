@@ -38,9 +38,9 @@ NWC_WAKE_SERVER_URL=https://YOUR_NOTIFICATION_SERVER
 
 Use `just ios-xcodeproj` instead of running `xcodegen generate` directly so `.env.sample`, `.env`, and the optional ignored `.env.local` override are loaded before the Xcode project is regenerated.
 
-Rust-generated Swift bindings and XCFramework headers are build artifacts and
-are intentionally not committed. `just ios-full` and `just run-ios-phone`
-regenerate them before invoking Xcode.
+Rust-generated Swift bindings and XCFramework metadata are committed so a
+checkout can be opened in Xcode immediately. After changing the Rust FFI
+surface, run `just ios-full` and commit the regenerated artifacts.
 
 To build, install, and launch on a connected iPhone, use:
 
