@@ -44,6 +44,11 @@ pub(crate) use updates::{AsyncMsg, CoreMsg};
 
 uniffi::setup_scaffolding!();
 
+#[uniffi::export]
+pub fn nwc_relay_input_is_valid(value: String) -> bool {
+    core::nwc_relay_input_is_valid(&value)
+}
+
 pub(crate) const SIGNET_SERVER: &str = "https://ark.signet.2nd.dev";
 pub(crate) const SIGNET_ESPLORA: &str = "https://esplora.signet.2nd.dev";
 pub(crate) const REGTEST_SERVER: &str = "http://127.0.0.1:3535";

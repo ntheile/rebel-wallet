@@ -5897,6 +5897,30 @@ fileprivate struct FfiConverterOptionTypeNwaRequestState: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeNwcExtensionWakeRequest: FfiConverterRustBuffer {
+    typealias SwiftType = NwcExtensionWakeRequest?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNwcExtensionWakeRequest.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNwcExtensionWakeRequest.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -6216,6 +6240,21 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
         print("uniffiFutureContinuationCallback invalid handle")
     }
 }
+public func nwcRelayInputIsValid(value: String) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_rebel_wallet_core_fn_func_nwc_relay_input_is_valid(
+        FfiConverterString.lower(value),$0
+    )
+})
+}
+public func parseNwcWakePayloadJson(payloadJson: String, receivedAtSeconds: UInt64) -> NwcExtensionWakeRequest?  {
+    return try!  FfiConverterOptionTypeNwcExtensionWakeRequest.lift(try! rustCall() {
+    uniffi_rebel_wallet_core_fn_func_parse_nwc_wake_payload_json(
+        FfiConverterString.lower(payloadJson),
+        FfiConverterUInt64.lower(receivedAtSeconds),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -6231,6 +6270,12 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_rebel_wallet_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_rebel_wallet_core_checksum_func_nwc_relay_input_is_valid() != 42975) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_rebel_wallet_core_checksum_func_parse_nwc_wake_payload_json() != 8334) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_dispatch() != 784) {
         return InitializationResult.apiChecksumMismatch

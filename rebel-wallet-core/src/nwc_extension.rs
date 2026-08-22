@@ -23,6 +23,7 @@ use crate::{SecretStore, WalletNetwork};
 
 const APP_DATA_FILE: &str = "rebel-app-data.json";
 const MAX_EXTENSION_EXECUTION_MILLISECONDS: u64 = 30_000;
+const MAX_PUSH_PAYLOAD_JSON_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, uniffi::Record)]
 pub struct NwcExtensionWakeRequest {
@@ -44,6 +45,59 @@ impl fmt::Debug for NwcExtensionWakeRequest {
             .field("received_at_seconds", &self.received_at_seconds)
             .finish()
     }
+}
+
+#[uniffi::export]
+pub fn parse_nwc_wake_payload_json(
+    payload_json: String,
+    received_at_seconds: u64,
+) -> Option<NwcExtensionWakeRequest> {
+    if payload_json.len() > MAX_PUSH_PAYLOAD_JSON_BYTES {
+        return None;
+    }
+    let payload: serde_json::Value = serde_json::from_str(&payload_json).ok()?;
+    let object = payload.as_object()?;
+    if let Some(protocol) = object.get("protocol") {
+        if protocol.as_str() != Some("nwc_wake") {
+            return None;
+        }
+    }
+
+    fn string_field(
+        object: &serde_json::Map<String, serde_json::Value>,
+        canonical: &str,
+        legacy: &str,
+    ) -> Option<String> {
+        match object.get(canonical) {
+            Some(value) => value.as_str().map(str::to_string),
+            None => object.get(legacy)?.as_str().map(str::to_string),
+        }
+    }
+
+    fn optional_string_field(
+        object: &serde_json::Map<String, serde_json::Value>,
+        canonical: &str,
+        legacy: &str,
+    ) -> Result<Option<String>, ()> {
+        match object.get(canonical).or_else(|| object.get(legacy)) {
+            Some(value) => value.as_str().map(str::to_string).map(Some).ok_or(()),
+            None => Ok(None),
+        }
+    }
+
+    let request = NwcExtensionWakeRequest {
+        relay_url: string_field(object, "nwc_relay", "relay")?,
+        event_id_hex: string_field(object, "nwc_event_id", "event_id")?,
+        wallet_service_public_key_hex: string_field(
+            object,
+            "nwc_wallet_service_pubkey",
+            "wallet_service_pubkey",
+        )?,
+        embedded_event_json: optional_string_field(object, "nwc_event_json", "nwc_event").ok()?,
+        received_at_seconds,
+    };
+    validated_input(request.clone()).ok()?;
+    Some(request)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -347,6 +401,52 @@ mod tests {
         let mut oversized = request();
         oversized.embedded_event_json = Some("x".repeat(64 * 1024 + 1));
         assert!(validated_input(oversized).is_err());
+    }
+
+    #[test]
+    fn push_payload_parsing_is_rust_owned_and_fails_closed() {
+        let canonical = serde_json::json!({
+            "nwc_relay": "wss://relay.example/path",
+            "nwc_event_id": HEX,
+            "nwc_wallet_service_pubkey": HEX,
+            "nwc_event_json": "{}"
+        });
+        let parsed =
+            parse_nwc_wake_payload_json(canonical.to_string(), 42).expect("canonical payload");
+        assert_eq!(parsed.received_at_seconds, 42);
+        assert_eq!(parsed.relay_url, "wss://relay.example/path");
+
+        let legacy = serde_json::json!({
+            "protocol": "nwc_wake",
+            "relay": "wss://relay.example/path",
+            "event_id": HEX,
+            "wallet_service_pubkey": HEX,
+            "nwc_event": "{}"
+        });
+        assert!(parse_nwc_wake_payload_json(legacy.to_string(), 42).is_some());
+
+        for rejected in [
+            serde_json::json!({}),
+            serde_json::json!({
+                "protocol": "other",
+                "nwc_relay": "wss://relay.example/path",
+                "nwc_event_id": HEX,
+                "nwc_wallet_service_pubkey": HEX
+            }),
+            serde_json::json!({
+                "nwc_relay": 7,
+                "relay": "wss://relay.example/path",
+                "nwc_event_id": HEX,
+                "nwc_wallet_service_pubkey": HEX
+            }),
+            serde_json::json!({
+                "nwc_relay": "ws://relay.example/path",
+                "nwc_event_id": HEX,
+                "nwc_wallet_service_pubkey": HEX
+            }),
+        ] {
+            assert!(parse_nwc_wake_payload_json(rejected.to_string(), 42).is_none());
+        }
     }
 
     #[test]

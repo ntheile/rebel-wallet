@@ -103,6 +103,7 @@ pub struct NwcConnection {
     pub allow_get_balance: bool,
     pub allow_pay_invoice: bool,
     pub created_at: u64,
+    #[serde(default, skip)]
     pub last_used_at: Option<u64>,
     #[serde(default)]
     pub expires_at: Option<u64>,

@@ -86,16 +86,10 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
         if let wake = StoredNwcWakeRequest(userInfo: response.notification.request.content.userInfo) {
             NwcWakeInbox.appendDebug(
                 source: "App",
-                message: "Notification tapped event_id=\(wake.eventId) relay=\(wake.relay)"
+                message: "Notification tapped; queued NWC wake request"
             )
             NwcWakeInbox.enqueue(wake)
-            os_log(
-                "RebelWallet opened nwc_wake notification event_id=%{private}@ relay=%{private}@",
-                log: .default,
-                type: .debug,
-                wake.eventId,
-                wake.relay
-            )
+            os_log("RebelWallet opened NWC wake notification", log: .default, type: .debug)
         } else {
             NwcWakeInbox.appendDebug(
                 source: "App",
