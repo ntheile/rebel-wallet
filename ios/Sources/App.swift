@@ -25,7 +25,7 @@ struct RebelWalletApp: App {
                 }
                 .onOpenURL { url in
                     if let manager {
-                        manager.handleOpenURL(url)
+                        manager.nwc.handleOpenURL(url)
                     } else {
                         pendingOpenURL = url
                     }
@@ -63,13 +63,13 @@ struct RebelWalletApp: App {
             runActivePhaseWork(loadedManager)
         }
         if let pendingOpenURL {
-            loadedManager.handleOpenURL(pendingOpenURL)
+            loadedManager.nwc.handleOpenURL(pendingOpenURL)
             self.pendingOpenURL = nil
         }
     }
 
     private func runActivePhaseWork(_ manager: AppManager) {
-        manager.drainQueuedNwcWakeRequests()
+        manager.nwc.drainQueuedWakeRequests()
         manager.dispatch(.foregrounded)
         // Re-attempt claiming an in-flight Lightning receive in case the
         // payment landed while the app was suspended.

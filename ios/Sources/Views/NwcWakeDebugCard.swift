@@ -90,7 +90,7 @@ struct NwcWakeLogsView: View {
 
     var body: some View {
         List {
-            ForEach(manager.nwcWakeDebugEntries) { entry in
+            ForEach(manager.nwc.wakeDebugEntries) { entry in
                 NwcWakeLogRow(entry: entry)
                     .listRowBackground(surfaceBackground)
                     .listRowSeparatorTint(borderColor)
@@ -103,7 +103,7 @@ struct NwcWakeLogsView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
-                    manager.refreshNwcWakeDebugEntries()
+                    manager.nwc.refreshWakeDebugEntries()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -111,17 +111,17 @@ struct NwcWakeLogsView: View {
                 .help("Refresh logs")
 
                 Button(role: .destructive) {
-                    manager.clearNwcWakeDebugEntries()
+                    manager.nwc.clearWakeDebugEntries()
                 } label: {
                     Image(systemName: "trash")
                 }
-                .disabled(manager.nwcWakeDebugEntries.isEmpty)
+                .disabled(manager.nwc.wakeDebugEntries.isEmpty)
                 .accessibilityLabel("Clear logs")
                 .help("Clear logs")
             }
         }
         .overlay {
-            if manager.nwcWakeDebugEntries.isEmpty {
+            if manager.nwc.wakeDebugEntries.isEmpty {
                 ContentUnavailableView(
                     "No Logs",
                     systemImage: "list.bullet.rectangle",
@@ -130,10 +130,10 @@ struct NwcWakeLogsView: View {
             }
         }
         .refreshable {
-            manager.refreshNwcWakeDebugEntries()
+            manager.nwc.refreshWakeDebugEntries()
         }
         .onAppear {
-            manager.refreshNwcWakeDebugEntries()
+            manager.nwc.refreshWakeDebugEntries()
         }
     }
 }
