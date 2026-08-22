@@ -1056,10 +1056,14 @@ impl AppCore {
             .context("NWC authorization storage is unavailable")
             .and_then(|service| {
                 deleted_connections.iter().try_for_each(|connection| {
-                    service
+                    let revoked = service
                         .revoke_application_connection(&connection.id, &provider)
-                        .context("could not revoke the NWC authorization")
-                        .map(drop)
+                        .context("could not revoke the NWC authorization")?;
+                    anyhow::ensure!(
+                        revoked.client_secret_deleted(),
+                        "could not delete the NWC client secret"
+                    );
+                    Ok(())
                 })
             });
         if let Err(error) = revocation_result {

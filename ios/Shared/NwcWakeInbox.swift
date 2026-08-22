@@ -119,14 +119,18 @@ enum NwcWakeInbox {
             accessGroup: keychainAccessGroup
         )
         if let store = wakeStore() {
-            store.removeLegacyState(
+            if !store.removeLegacyState(
                 defaultsKeys: [snapshotKey, legacyProcessedEventIdsKey],
                 keychainEntries: [(vault: vault, key: snapshotKey)]
-            )
+            ) {
+                NSLog("Could not remove legacy nwc_wake Keychain state; cleanup will retry")
+            }
         } else {
             appGroupDefaults()?.removeObject(forKey: snapshotKey)
             appGroupDefaults()?.removeObject(forKey: legacyProcessedEventIdsKey)
-            vault.deleteValue(forKey: snapshotKey)
+            if !vault.deleteValue(forKey: snapshotKey) {
+                NSLog("Could not remove legacy nwc_wake Keychain state; cleanup will retry")
+            }
         }
     }
 
