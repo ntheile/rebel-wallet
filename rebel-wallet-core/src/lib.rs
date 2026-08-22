@@ -17,6 +17,7 @@ mod core;
 mod custom_address;
 mod nostr_support;
 mod nwc_extension;
+mod nwc_legacy_persistence;
 mod nwc_mobile_adapter;
 mod nwc_push;
 mod payments;

@@ -10,10 +10,9 @@ use super::custom_address_flow::{
 };
 use super::{nwc_client_secret_key, AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
 use crate::custom_address::amount_msats_to_sat;
+use crate::nwc_legacy_persistence::PersistedNwcConnection;
 use crate::nwc_mobile_adapter::{nwc_ledger_path, open_nwc_service};
-use crate::persistence::{
-    PersistedAppData, PersistedNwcConnection, PersistedPriceCurrency, ServerConfig,
-};
+use crate::persistence::{PersistedAppData, PersistedPriceCurrency, ServerConfig};
 use crate::profile_cache::{
     hydrate_contact_picture, hydrate_own_profile_picture, sanitize_persisted_contact_pictures,
 };

@@ -904,8 +904,6 @@ fn grouped_digits(amount: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::PersistedNwcConnection;
-    use crate::{NwcBudgetInterval, NwcConnection, NwcPermission};
 
     #[test]
     fn formats_unsigned_and_signed_sats() {
@@ -1489,52 +1487,5 @@ mod tests {
             Some("ark1example@arkzap.me")
         );
         assert_eq!(state.nostr.lud16, "saved@example.com");
-    }
-
-    #[test]
-    fn nwc_connection_secrets_are_migration_only_and_legacy_budgets_are_lifetime() {
-        let connection = NwcConnection {
-            id: "nwc-client".to_string(),
-            name: "Client".to_string(),
-            icon_url: None,
-            icon_display_url: None,
-            relay: "wss://relay.example.com".to_string(),
-            wallet_managed_secret: false,
-            service_pubkey: "service".to_string(),
-            client_pubkey: "client".to_string(),
-            budget_sat: 1_000,
-            spent_sat: 100,
-            budget_display: "1,000 sats".to_string(),
-            spent_display: "100 sats".to_string(),
-            budget_interval: NwcBudgetInterval::Daily,
-            budget_interval_display: "Daily".to_string(),
-            permissions: vec![NwcPermission::GetInfo],
-            created_at: 1,
-            last_used_at: None,
-            expires_at: None,
-            budget_period_started_at: 1,
-            pending_info_event_relays: Vec::new(),
-        };
-
-        let persisted_connection = PersistedNwcConnection::from(&connection);
-        let mut persisted =
-            serde_json::to_value(&persisted_connection).expect("serialize connection");
-        assert!(persisted.get("uri").is_none());
-
-        let object = persisted.as_object_mut().expect("connection object");
-        object.insert(
-            "uri".to_string(),
-            serde_json::Value::String("nostr+walletconnect://legacy-secret".to_string()),
-        );
-        object.remove("budget_interval");
-        let legacy: PersistedNwcConnection =
-            serde_json::from_value(persisted).expect("deserialize legacy connection");
-
-        assert_eq!(
-            legacy.uri, "nostr+walletconnect://legacy-secret",
-            "legacy URI must remain available for one-time Keychain migration"
-        );
-        let migrated = legacy.into_view();
-        assert_eq!(migrated.budget_interval, NwcBudgetInterval::Never);
     }
 }
