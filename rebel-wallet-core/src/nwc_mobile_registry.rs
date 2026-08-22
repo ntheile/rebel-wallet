@@ -7,6 +7,11 @@ use nwc_mobile::{
 
 use crate::{NwcBudgetInterval, NwcConnection, NwcPermission};
 
+// Existing Rebel Wallet connection URIs and clients advertise NIP-04. A future
+// NIP-44 migration must update info-event advertisement, new registry entries,
+// and persisted-connection migration together before changing this policy.
+pub(crate) const NWC_ENCRYPTION: NwcEncryption = NwcEncryption::LegacyNip04;
+
 pub(crate) struct MigrationResult {
     pub(crate) revoked_client_pubkeys: Vec<String>,
 }
@@ -148,7 +153,7 @@ impl RegistryConnection {
             self.wallet_service_pubkey.clone(),
             self.relays.clone(),
             self.policy.clone(),
-            NwcEncryption::LegacyNip04,
+            NWC_ENCRYPTION,
             WakePolicy::default(),
         )
         .map(|connection| connection.with_expiration(self.expires_at.map(UnixTimestamp::from_secs)))
@@ -161,7 +166,7 @@ impl RegistryConnection {
             && active.wallet_service_pubkey() == &self.wallet_service_pubkey
             && active.relays() == self.relays
             && active.policy() == &self.policy
-            && active.encryption() == NwcEncryption::LegacyNip04
+            && active.encryption() == NWC_ENCRYPTION
             && active.created_at() == UnixTimestamp::from_secs(created_at)
             && active.expires_at() == self.expires_at.map(UnixTimestamp::from_secs)
     }
