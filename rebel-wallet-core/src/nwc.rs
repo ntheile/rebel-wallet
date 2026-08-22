@@ -3,13 +3,12 @@ use std::time::Duration;
 use anyhow::Context;
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nwc_mobile::{
-    build_nwc_info_event, Clock, NeverCancelled, NwcEncryption, NwcMethod, NwcSecretKey,
-    OperationBudget, OperationContext, PublicKey as MobilePublicKey, RelayTransport,
-    SecureRelayUrl, SystemClock,
+    build_nwc_info_event, Clock, NeverCancelled, NwcMethod, NwcSecretKey, OperationBudget,
+    OperationContext, PublicKey as MobilePublicKey, RelayTransport, SecureRelayUrl, SystemClock,
 };
 use nwc_mobile_nostr::NostrRelayTransport;
 
-use crate::nwc_mobile_registry::permission_method;
+use crate::nwc_mobile_registry::{permission_method, NWC_ENCRYPTION};
 use crate::NwcPermission;
 
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -49,7 +48,7 @@ async fn publish_info_event(
         &secret,
         client_pubkey.as_ref(),
         methods,
-        NwcEncryption::LegacyNip04,
+        NWC_ENCRYPTION,
         SystemClock.now(),
     )
     .context("failed to sign NWC info event")?;
