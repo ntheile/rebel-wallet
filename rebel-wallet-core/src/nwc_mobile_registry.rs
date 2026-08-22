@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context};
 use nwc_mobile::{
     ActiveConnection, BudgetInterval, BudgetPolicy, Clock, ConnectionId, ConnectionManager,
-    ConnectionPolicy, FeePolicy, NewConnection, NwcEncryption, NwcMethod, PublicKey,
-    SecureRelayUrl, StoredConnection, UnixTimestamp, WakeLedger, WakePolicy,
+    ConnectionPolicy, FeePolicy, LegacyConnectionImport, NewConnection, NwcEncryption, NwcMethod,
+    PublicKey, SecureRelayUrl, StoredConnection, UnixTimestamp, WakeLedger, WakePolicy,
 };
 
 use crate::{NwcBudgetInterval, NwcConnection, NwcPermission};
@@ -31,42 +31,34 @@ pub(crate) fn migrate_connections(
 ) -> anyhow::Result<MigrationResult> {
     let clock = MigrationClock(UnixTimestamp::from_secs(now));
     let manager = ConnectionManager::new(ledger, &clock);
-    let mut revoked_ids = Vec::new();
-    let mut revoked_client_pubkeys = Vec::new();
-
-    for connection in connections.iter() {
-        let specification = RegistryConnection::try_from(connection)?;
-        match manager
-            .connection(&specification.id)
-            .context("could not read the NWC connection registry")?
-        {
-            None => {
-                manager
-                    .import_legacy(
-                        specification.new_connection()?,
-                        UnixTimestamp::from_secs(connection.created_at),
-                        connection.spent_sat,
-                    )
-                    .context("could not import an existing NWC connection")?;
-            }
-            Some(StoredConnection::Active(active)) => {
-                if !specification.matches(&active, connection.created_at) {
-                    return Err(anyhow!(
-                        "persisted NWC connection does not match its durable authorization"
-                    ));
-                }
-            }
-            Some(StoredConnection::Tombstoned(_)) => {
-                revoked_ids.push(connection.id.clone());
-                revoked_client_pubkeys.push(connection.client_pubkey.clone());
-            }
-            Some(_) => return Err(anyhow!("unsupported NWC authorization state")),
-        }
-    }
+    let imports = connections
+        .iter()
+        .map(|connection| {
+            RegistryConnection::try_from(connection).and_then(|specification| {
+                Ok(LegacyConnectionImport::new(
+                    specification.new_connection()?,
+                    UnixTimestamp::from_secs(connection.created_at),
+                    connection.spent_sat,
+                ))
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let migration = manager
+        .migrate_legacy_batch(imports)
+        .context("could not migrate the NWC connection registry")?;
+    let revoked_ids = migration
+        .revoked_connection_ids()
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect::<Vec<_>>();
 
     connections.retain(|connection| !revoked_ids.contains(&connection.id));
     Ok(MigrationResult {
-        revoked_client_pubkeys,
+        revoked_client_pubkeys: migration
+            .revoked_client_pubkeys()
+            .iter()
+            .map(PublicKey::to_hex)
+            .collect(),
     })
 }
 
@@ -158,17 +150,6 @@ impl RegistryConnection {
         )
         .map(|connection| connection.with_expiration(self.expires_at.map(UnixTimestamp::from_secs)))
         .context("invalid NWC connection authorization")
-    }
-
-    fn matches(&self, active: &ActiveConnection, created_at: u64) -> bool {
-        active.id() == &self.id
-            && active.client_pubkey() == &self.client_pubkey
-            && active.wallet_service_pubkey() == &self.wallet_service_pubkey
-            && active.relays() == self.relays
-            && active.policy() == &self.policy
-            && active.encryption() == NWC_ENCRYPTION
-            && active.created_at() == UnixTimestamp::from_secs(created_at)
-            && active.expires_at() == self.expires_at.map(UnixTimestamp::from_secs)
     }
 }
 
