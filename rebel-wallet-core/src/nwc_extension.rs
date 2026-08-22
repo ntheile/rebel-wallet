@@ -1,29 +1,27 @@
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bip39::Mnemonic;
 use nostr_sdk::prelude::ToBech32;
 use nwc_mobile::{
-    CancellationSignal, EventId, NotificationHint, OperationBudget, PublicKey, QueueReason,
-    RejectionCode, UnixTimestamp, WakeDisposition, WakeEngine, WakeInput, WakePolicy,
+    AtomicCancellation, CancellationSignal, NotificationHint, QueueReason, RejectionCode,
+    WakeDisposition, WakeDispositionKind, WakeEnvelope,
 };
+use nwc_mobile_bark::execute_bark_wake;
+use nwc_mobile_tokio::{run_bounded_background_wake, BackgroundWakeWindow};
 use zeroize::Zeroizing;
 
 use crate::core::{derive_nostr_keys_from_mnemonic, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
-use crate::nwc_mobile_adapter::{
-    open_nwc_ledger, NostrRelayTransport, RebelSecretProvider, RebelWalletBackend,
-};
+use crate::nwc_mobile_adapter::{open_nwc_ledger, NostrRelayTransport, RebelSecretProvider};
 use crate::persistence::{PersistedAppData, ServerConfig};
 use crate::wallet::{open_bark_wallet, WalletOpenMode};
 use crate::{SecretStore, WalletNetwork};
 
 const APP_DATA_FILE: &str = "rebel-app-data.json";
 const MAX_EXTENSION_EXECUTION_MILLISECONDS: u64 = 30_000;
-const MAX_PUSH_PAYLOAD_JSON_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, uniffi::Record)]
 pub struct NwcExtensionWakeRequest {
@@ -36,14 +34,31 @@ pub struct NwcExtensionWakeRequest {
 
 impl fmt::Debug for NwcExtensionWakeRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("NwcExtensionWakeRequest")
-            .field("relay_url", &"[redacted]")
-            .field("event_id_hex", &"[redacted]")
-            .field("wallet_service_public_key_hex", &"[redacted]")
-            .field("has_embedded_event", &self.embedded_event_json.is_some())
-            .field("received_at_seconds", &self.received_at_seconds)
-            .finish()
+        WakeEnvelope::from(self.clone()).fmt(formatter)
+    }
+}
+
+impl From<NwcExtensionWakeRequest> for WakeEnvelope {
+    fn from(request: NwcExtensionWakeRequest) -> Self {
+        Self::new(
+            request.relay_url,
+            request.event_id_hex,
+            request.wallet_service_public_key_hex,
+            request.embedded_event_json,
+            request.received_at_seconds,
+        )
+    }
+}
+
+impl From<WakeEnvelope> for NwcExtensionWakeRequest {
+    fn from(envelope: WakeEnvelope) -> Self {
+        Self {
+            relay_url: envelope.relay_url().to_string(),
+            event_id_hex: envelope.event_id_hex().to_string(),
+            wallet_service_public_key_hex: envelope.wallet_service_public_key_hex().to_string(),
+            embedded_event_json: envelope.embedded_event_json().map(str::to_string),
+            received_at_seconds: envelope.received_at_seconds(),
+        }
     }
 }
 
@@ -52,52 +67,9 @@ pub fn parse_nwc_wake_payload_json(
     payload_json: String,
     received_at_seconds: u64,
 ) -> Option<NwcExtensionWakeRequest> {
-    if payload_json.len() > MAX_PUSH_PAYLOAD_JSON_BYTES {
-        return None;
-    }
-    let payload: serde_json::Value = serde_json::from_str(&payload_json).ok()?;
-    let object = payload.as_object()?;
-    if let Some(protocol) = object.get("protocol") {
-        if protocol.as_str() != Some("nwc_wake") {
-            return None;
-        }
-    }
-
-    fn string_field(
-        object: &serde_json::Map<String, serde_json::Value>,
-        canonical: &str,
-        legacy: &str,
-    ) -> Option<String> {
-        match object.get(canonical) {
-            Some(value) => value.as_str().map(str::to_string),
-            None => object.get(legacy)?.as_str().map(str::to_string),
-        }
-    }
-
-    fn optional_string_field(
-        object: &serde_json::Map<String, serde_json::Value>,
-        canonical: &str,
-        legacy: &str,
-    ) -> Result<Option<String>, ()> {
-        match object.get(canonical).or_else(|| object.get(legacy)) {
-            Some(value) => value.as_str().map(str::to_string).map(Some).ok_or(()),
-            None => Ok(None),
-        }
-    }
-
-    let request = NwcExtensionWakeRequest {
-        relay_url: string_field(object, "nwc_relay", "relay")?,
-        event_id_hex: string_field(object, "nwc_event_id", "event_id")?,
-        wallet_service_public_key_hex: string_field(
-            object,
-            "nwc_wallet_service_pubkey",
-            "wallet_service_pubkey",
-        )?,
-        embedded_event_json: optional_string_field(object, "nwc_event_json", "nwc_event").ok()?,
-        received_at_seconds,
-    };
-    validated_input(request.clone()).ok()?;
-    Some(request)
+    WakeEnvelope::parse_json(&payload_json, received_at_seconds)
+        .ok()
+        .map(Into::into)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -124,7 +96,7 @@ pub struct NwcExtensionWakeResult {
 
 #[derive(Debug, uniffi::Object)]
 pub struct NwcExtensionCancellation {
-    cancelled: AtomicBool,
+    inner: AtomicCancellation,
 }
 
 #[uniffi::export]
@@ -132,22 +104,22 @@ impl NwcExtensionCancellation {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            cancelled: AtomicBool::new(false),
+            inner: AtomicCancellation::new(),
         })
     }
 
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.inner.cancel();
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.inner.is_cancelled()
     }
 }
 
 impl CancellationSignal for NwcExtensionCancellation {
     fn is_cancelled(&self) -> bool {
-        self.is_cancelled()
+        self.inner.is_cancelled()
     }
 }
 
@@ -178,20 +150,14 @@ impl NwcExtensionEngine {
         {
             return rejected_result();
         }
-        if cancellation.is_cancelled() {
-            return queued_result();
-        }
-
         let total_budget = Duration::from_millis(execution_milliseconds);
-        match tokio::time::timeout(
-            total_budget,
-            self.execute_wake_inner(request, total_budget, cancellation),
+        let execution_cancellation = cancellation.clone();
+        disposition_result(
+            run_bounded_background_wake(total_budget, cancellation.as_ref(), |window| {
+                self.execute_wake_inner(request, window, execution_cancellation)
+            })
+            .await,
         )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => queued_result(),
-        }
     }
 }
 
@@ -199,17 +165,16 @@ impl NwcExtensionEngine {
     async fn execute_wake_inner(
         &self,
         request: NwcExtensionWakeRequest,
-        total_budget: Duration,
+        window: BackgroundWakeWindow,
         cancellation: Arc<NwcExtensionCancellation>,
-    ) -> NwcExtensionWakeResult {
-        let started_at = Instant::now();
-        let input = match validated_input(request) {
+    ) -> WakeDisposition {
+        let input = match WakeEnvelope::from(request).validate() {
             Ok(input) => input,
-            Err(()) => return rejected_result(),
+            Err(_) => return rejected_disposition(),
         };
         let server_config = match extension_server_config(&self.data_dir) {
             Some(config) => config,
-            None => return queued_result(),
+            None => return queued_disposition(),
         };
         let mnemonic = match self
             .secrets
@@ -218,13 +183,13 @@ impl NwcExtensionEngine {
             .and_then(|seed| Mnemonic::from_str(seed.as_str()).ok())
         {
             Some(mnemonic) => mnemonic,
-            None => return queued_result(),
+            None => return queued_disposition(),
         };
         if !ensure_nostr_secret(self.secrets.as_ref(), &mnemonic) {
-            return queued_result();
+            return queued_disposition();
         }
         if cancellation.is_cancelled() {
-            return queued_result();
+            return queued_disposition();
         }
 
         let wallet = match open_bark_wallet(
@@ -236,57 +201,33 @@ impl NwcExtensionEngine {
         .await
         {
             Ok(opened) => opened.wallet,
-            Err(_) => return queued_result(),
+            Err(_) => return queued_disposition(),
         };
         if cancellation.is_cancelled() {
-            return queued_result();
+            return queued_disposition();
         }
 
-        let remaining = total_budget.saturating_sub(started_at.elapsed());
-        let budget = match OperationBudget::new(remaining) {
-            Ok(budget) => budget,
-            Err(_) => return queued_result(),
+        let budget = match window.operation_budget() {
+            Some(budget) => budget,
+            None => return queued_disposition(),
         };
-        let service_pubkey = input.wallet_service_pubkey().clone();
         let ledger = match open_nwc_ledger(&self.data_dir) {
             Ok(ledger) => ledger,
-            Err(_) => return queued_result(),
+            Err(_) => return queued_disposition(),
         };
-        let wallet = RebelWalletBackend::new(wallet, service_pubkey);
         let relays = NostrRelayTransport;
         let secrets = RebelSecretProvider::new(self.secrets.clone());
-        let clock = nwc_mobile::SystemClock;
-        let engine = WakeEngine::new(
+        execute_bark_wake(
             &ledger,
-            &wallet,
+            wallet,
             &relays,
             &secrets,
-            &clock,
-            WakePolicy::default(),
-        );
-        disposition_result(engine.execute(input, budget, cancellation.as_ref()).await)
+            input,
+            budget,
+            cancellation.as_ref(),
+        )
+        .await
     }
-}
-
-fn validated_input(request: NwcExtensionWakeRequest) -> Result<WakeInput, ()> {
-    let relay = nwc_mobile::SecureRelayUrl::parse(&request.relay_url).map_err(|_| ())?;
-    let event_id = EventId::from_hex(&request.event_id_hex).map_err(|_| ())?;
-    let wallet_service_pubkey =
-        PublicKey::from_hex(&request.wallet_service_public_key_hex).map_err(|_| ())?;
-    if request
-        .embedded_event_json
-        .as_ref()
-        .is_some_and(|event| event.len() > 64 * 1024)
-    {
-        return Err(());
-    }
-    Ok(WakeInput::new(
-        relay.as_str().to_string(),
-        event_id,
-        wallet_service_pubkey,
-        request.embedded_event_json,
-        UnixTimestamp::from_secs(request.received_at_seconds),
-    ))
 }
 
 fn extension_server_config(data_dir: &std::path::Path) -> Option<ServerConfig> {
@@ -319,28 +260,18 @@ fn ensure_nostr_secret(secrets: &dyn SecretStore, mnemonic: &Mnemonic) -> bool {
 }
 
 fn disposition_result(disposition: WakeDisposition) -> NwcExtensionWakeResult {
-    match disposition {
-        WakeDisposition::Completed { notification } => NwcExtensionWakeResult {
-            disposition: NwcExtensionDisposition::Completed,
-            notification: notification.into(),
-        },
-        WakeDisposition::AlreadyProcessed { notification } => NwcExtensionWakeResult {
-            disposition: NwcExtensionDisposition::AlreadyProcessed,
-            notification: notification.into(),
-        },
-        WakeDisposition::QueuedForApplication { notification, .. } => NwcExtensionWakeResult {
-            disposition: NwcExtensionDisposition::QueuedForApplication,
-            notification: notification.into(),
-        },
-        WakeDisposition::RetryAfter { notification, .. } => NwcExtensionWakeResult {
-            disposition: NwcExtensionDisposition::RetryAfter,
-            notification: notification.into(),
-        },
-        WakeDisposition::Rejected { notification, .. } => NwcExtensionWakeResult {
-            disposition: NwcExtensionDisposition::Rejected,
-            notification: notification.into(),
-        },
-        _ => queued_result(),
+    let notification = disposition.notification().into();
+    let disposition = match disposition.kind() {
+        WakeDispositionKind::Completed => NwcExtensionDisposition::Completed,
+        WakeDispositionKind::AlreadyProcessed => NwcExtensionDisposition::AlreadyProcessed,
+        WakeDispositionKind::QueuedForApplication => NwcExtensionDisposition::QueuedForApplication,
+        WakeDispositionKind::RetryAfter => NwcExtensionDisposition::RetryAfter,
+        WakeDispositionKind::Rejected => NwcExtensionDisposition::Rejected,
+        _ => NwcExtensionDisposition::QueuedForApplication,
+    };
+    NwcExtensionWakeResult {
+        disposition,
+        notification,
     }
 }
 
@@ -355,18 +286,16 @@ impl From<NotificationHint> for NwcExtensionNotification {
     }
 }
 
-fn queued_result() -> NwcExtensionWakeResult {
-    disposition_result(WakeDisposition::QueuedForApplication {
-        reason: QueueReason::WalletUnavailable,
-        notification: NotificationHint::OpenApplication,
-    })
+fn rejected_result() -> NwcExtensionWakeResult {
+    disposition_result(rejected_disposition())
 }
 
-fn rejected_result() -> NwcExtensionWakeResult {
-    disposition_result(WakeDisposition::Rejected {
-        code: RejectionCode::InvalidWakePayload,
-        notification: NotificationHint::OpenApplication,
-    })
+fn queued_disposition() -> WakeDisposition {
+    WakeDisposition::queued(QueueReason::WalletUnavailable)
+}
+
+fn rejected_disposition() -> WakeDisposition {
+    WakeDisposition::rejected(RejectionCode::InvalidWakePayload)
 }
 
 #[cfg(test)]
@@ -386,25 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_native_wake_before_wallet_or_secret_access() {
-        let input = validated_input(request()).expect("valid request");
-        assert_eq!(input.relay(), "wss://relay.example/path");
-        assert_eq!(input.event_id().to_hex(), HEX);
-    }
-
-    #[test]
-    fn rejects_insecure_relays_and_oversized_embedded_events() {
-        let mut insecure = request();
-        insecure.relay_url = "ws://relay.example".to_string();
-        assert!(validated_input(insecure).is_err());
-
-        let mut oversized = request();
-        oversized.embedded_event_json = Some("x".repeat(64 * 1024 + 1));
-        assert!(validated_input(oversized).is_err());
-    }
-
-    #[test]
-    fn push_payload_parsing_is_rust_owned_and_fails_closed() {
+    fn shared_push_parser_is_exposed_through_uniffi_wrapper() {
         let canonical = serde_json::json!({
             "nwc_relay": "wss://relay.example/path",
             "nwc_event_id": HEX,
@@ -416,37 +327,7 @@ mod tests {
         assert_eq!(parsed.received_at_seconds, 42);
         assert_eq!(parsed.relay_url, "wss://relay.example/path");
 
-        let legacy = serde_json::json!({
-            "protocol": "nwc_wake",
-            "relay": "wss://relay.example/path",
-            "event_id": HEX,
-            "wallet_service_pubkey": HEX,
-            "nwc_event": "{}"
-        });
-        assert!(parse_nwc_wake_payload_json(legacy.to_string(), 42).is_some());
-
-        for rejected in [
-            serde_json::json!({}),
-            serde_json::json!({
-                "protocol": "other",
-                "nwc_relay": "wss://relay.example/path",
-                "nwc_event_id": HEX,
-                "nwc_wallet_service_pubkey": HEX
-            }),
-            serde_json::json!({
-                "nwc_relay": 7,
-                "relay": "wss://relay.example/path",
-                "nwc_event_id": HEX,
-                "nwc_wallet_service_pubkey": HEX
-            }),
-            serde_json::json!({
-                "nwc_relay": "ws://relay.example/path",
-                "nwc_event_id": HEX,
-                "nwc_wallet_service_pubkey": HEX
-            }),
-        ] {
-            assert!(parse_nwc_wake_payload_json(rejected.to_string(), 42).is_none());
-        }
+        assert!(parse_nwc_wake_payload_json("{}".to_string(), 42).is_none());
     }
 
     #[test]
