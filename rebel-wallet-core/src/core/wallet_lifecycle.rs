@@ -113,8 +113,9 @@ impl AppCore {
 
         self.nwc_ledger = open_nwc_ledger(&self.data_dir).ok();
         self.nwc_registry_ready = self.nwc_ledger.is_some();
+        let mut warnings = Vec::new();
         if self.nwc_ledger.is_none() {
-            errors.push("NWC authorization storage".to_string());
+            warnings.push("could not reopen NWC authorization storage".to_string());
         }
 
         if errors.is_empty() {
@@ -132,13 +133,15 @@ impl AppCore {
             }
         }
 
-        if errors.is_empty() {
+        warnings.extend(errors);
+
+        if warnings.is_empty() {
             self.state.toast = Some("Wallet deleted. Start over to create or restore.".to_string());
             self.request_haptic(HapticFeedback::NotificationSuccess);
         } else {
             self.state.toast = Some(format!(
                 "Wallet reset with cleanup warnings: {}",
-                errors.join(", ")
+                warnings.join(", ")
             ));
             self.request_haptic(HapticFeedback::NotificationWarning);
         }
