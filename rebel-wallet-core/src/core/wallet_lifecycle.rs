@@ -10,7 +10,7 @@ use super::custom_address_flow::{
 };
 use super::{nwc_client_secret_key, AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
 use crate::custom_address::amount_msats_to_sat;
-use crate::nwc_mobile_adapter::{nwc_ledger_path, open_nwc_ledger};
+use crate::nwc_mobile_adapter::{nwc_ledger_path, open_nwc_service};
 use crate::persistence::{PersistedAppData, PersistedPriceCurrency, ServerConfig};
 use crate::profile_cache::{
     hydrate_contact_picture, hydrate_own_profile_picture, sanitize_persisted_contact_pictures,
@@ -86,7 +86,7 @@ impl AppCore {
                 errors.push(format!("{e:#}"));
             }
         }
-        self.nwc_ledger = None;
+        self.nwc_service = None;
         let nwc_database_path = nwc_ledger_path(&self.data_dir);
         if let Err(error) = remove_wallet_database_files(&nwc_database_path) {
             errors.push(format!("{error:#}"));
@@ -111,10 +111,9 @@ impl AppCore {
         state.show_launch_splash = false;
         self.state = state;
 
-        self.nwc_ledger = open_nwc_ledger(&self.data_dir).ok();
-        self.nwc_registry_ready = self.nwc_ledger.is_some();
+        self.nwc_service = open_nwc_service(&self.data_dir).ok();
         let mut warnings = Vec::new();
-        if self.nwc_ledger.is_none() {
+        if self.nwc_service.is_none() {
             warnings.push("could not reopen NWC authorization storage".to_string());
         }
 

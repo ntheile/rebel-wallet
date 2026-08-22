@@ -87,7 +87,7 @@ ios-rust:
   done
 
 # Package static libs into an xcframework.
-ios-xcframework:
+ios-xcframework: ios-gen-swift
   #!/usr/bin/env bash
   set -e
   rm -rf ios/Frameworks/{{XCF_NAME}}.xcframework staging
@@ -100,7 +100,7 @@ ios-xcframework:
     -output ios/Frameworks/{{XCF_NAME}}.xcframework
   rm -rf staging
 
-ios-xcodeproj:
+ios-xcodeproj: ios-xcframework
   #!/usr/bin/env bash
   set -euo pipefail
   set -a
@@ -111,7 +111,7 @@ ios-xcodeproj:
   cd ios && xcodegen generate
 
 # Build the iOS app for simulator.
-ios-build:
+ios-build: ios-xcodeproj
   ./tools/xcode-run xcodebuild build \
     -project ios/App.xcodeproj -scheme App \
     -destination "generic/platform=iOS Simulator" \
