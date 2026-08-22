@@ -48,13 +48,14 @@ use crate::nostr_support::{
     profile_contact_from_metadata_json_with_petname, public_key_from_npub_or_hex,
     upload_profile_picture,
 };
+use crate::nwc_legacy_persistence::PersistedNwcConnection;
 use crate::nwc_mobile_adapter::{
     legacy_connection, nwa_request_state, open_nwc_service, publish_nwc_info_event,
     NostrRelayTransport, RebelSecretProvider, NWC_ENCRYPTION,
 };
 use crate::nwc_push::{run_registration_worker, NwcPushConfig};
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
-use crate::persistence::{PaymentAnnotation, PersistedNwcConnection, ZapReceiptRecord};
+use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
 use crate::price::fetch_bitcoin_price;
 use crate::profile_cache::{
     clear_profile_cache, clear_profile_picture_dir, ensure_nwc_icon_dir,
