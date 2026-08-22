@@ -17,6 +17,8 @@ pnpm-debug.log*
 flake.lock
 staging/
 ios/.build/
+ios/Bindings/
+ios/Frameworks/*.xcframework/
 ios/**/*.xcuserstate
 ios/**/xcuserdata/
 android/app/src/main/jniLibs/

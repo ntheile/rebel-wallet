@@ -20,8 +20,7 @@ Nostr, persistence, and routing state.
 ```bash
 brew install xcodegen
 cargo check -p rebel-wallet-core
-just ios-build
-just ios-xcodeproj
+just ios-full
 ```
 
 Shared iOS signing defaults are documented in `.env.sample`. Copy it to the ignored `.env` file and set your machine-specific values:
@@ -38,6 +37,10 @@ NWC_WAKE_SERVER_URL=https://YOUR_NOTIFICATION_SERVER
 ```
 
 Use `just ios-xcodeproj` instead of running `xcodegen generate` directly so `.env.sample`, `.env`, and the optional ignored `.env.local` override are loaded before the Xcode project is regenerated.
+
+Rust-generated Swift bindings and XCFramework headers are build artifacts and
+are intentionally not committed. `just ios-full` and `just run-ios-phone`
+regenerate them before invoking Xcode.
 
 To build, install, and launch on a connected iPhone, use:
 

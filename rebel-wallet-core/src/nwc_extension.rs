@@ -15,7 +15,7 @@ use nwc_mobile_tokio::{run_bounded_background_wake, BackgroundWakeWindow};
 use zeroize::Zeroizing;
 
 use crate::core::{derive_nostr_keys_from_mnemonic, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
-use crate::nwc_mobile_adapter::{open_nwc_ledger, NostrRelayTransport, RebelSecretProvider};
+use crate::nwc_mobile_adapter::{open_nwc_service, NostrRelayTransport, RebelSecretProvider};
 use crate::persistence::{PersistedAppData, ServerConfig};
 use crate::wallet::{open_bark_wallet, WalletOpenMode};
 use crate::{SecretStore, WalletNetwork};
@@ -211,14 +211,14 @@ impl NwcExtensionEngine {
             Some(budget) => budget,
             None => return queued_disposition(),
         };
-        let ledger = match open_nwc_ledger(&self.data_dir) {
-            Ok(ledger) => ledger,
+        let service = match open_nwc_service(&self.data_dir) {
+            Ok(service) => service,
             Err(_) => return queued_disposition(),
         };
         let relays = NostrRelayTransport;
         let secrets = RebelSecretProvider::new(self.secrets.clone());
         execute_bark_wake(
-            &ledger,
+            service.ledger(),
             wallet,
             &relays,
             &secrets,
