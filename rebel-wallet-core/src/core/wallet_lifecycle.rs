@@ -150,6 +150,11 @@ impl AppCore {
         server_address: Option<String>,
         esplora_address: Option<String>,
     ) {
+        if supported_wallet_network(network) != network {
+            self.state.toast = Some("Regtest is unavailable in this build.".to_string());
+            self.request_haptic(HapticFeedback::NotificationWarning);
+            return;
+        }
         let server_config = match network {
             WalletNetwork::Regtest => {
                 let server_address =
@@ -253,7 +258,7 @@ impl AppCore {
                 } else {
                     data.receive_memo
                 };
-                self.state.wallet.network = data.network;
+                self.state.wallet.network = supported_wallet_network(data.network);
                 let server_config = if self.state.wallet.network == WalletNetwork::Regtest
                     && data.servers.network == WalletNetwork::Regtest
                 {
@@ -384,7 +389,35 @@ fn validate_server_url(value: &str, label: &str) -> Result<String, String> {
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(format!("Enter a valid HTTP or HTTPS {label} URL."));
     }
+    if url.scheme() == "http" && !url.host_str().is_some_and(is_local_network_host) {
+        return Err(format!(
+            "Plain HTTP {label} URLs must use a loopback or private host."
+        ));
+    }
     Ok(value.trim_end_matches('/').to_string())
+}
+
+fn supported_wallet_network(network: WalletNetwork) -> WalletNetwork {
+    if network == WalletNetwork::Regtest && !cfg!(feature = "regtest") {
+        WalletNetwork::Mainnet
+    } else {
+        network
+    }
+}
+
+fn is_local_network_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| match address {
+            std::net::IpAddr::V4(address) => address.is_loopback() || address.is_private(),
+            std::net::IpAddr::V6(address) => address.is_loopback() || address.is_unique_local(),
+        })
 }
 
 fn load_wallet_metadata_value(
@@ -436,7 +469,8 @@ fn ensure_wallet_metadata_table(conn: &rusqlite::Connection) -> rusqlite::Result
 
 #[cfg(test)]
 mod tests {
-    use super::validate_server_url;
+    use super::{supported_wallet_network, validate_server_url};
+    use crate::WalletNetwork;
 
     #[test]
     fn validates_and_normalizes_server_urls() {
@@ -444,7 +478,26 @@ mod tests {
             validate_server_url("  http://192.168.1.10:3535/  ", "ASP"),
             Ok("http://192.168.1.10:3535".to_string())
         );
+        assert!(validate_server_url("http://localhost:3535", "ASP").is_ok());
+        assert!(validate_server_url("http://[::1]:3535", "ASP").is_ok());
+        assert!(validate_server_url("http://203.0.113.10:3535", "ASP").is_err());
+        assert!(validate_server_url("http://example.com", "ASP").is_err());
+        assert!(validate_server_url("https://example.com", "ASP").is_ok());
         assert!(validate_server_url("ftp://example.com", "ASP").is_err());
         assert!(validate_server_url("not a url", "Esplora").is_err());
+    }
+
+    #[test]
+    fn regtest_is_available_only_in_feature_builds() {
+        let expected = if cfg!(feature = "regtest") {
+            WalletNetwork::Regtest
+        } else {
+            WalletNetwork::Mainnet
+        };
+        assert_eq!(supported_wallet_network(WalletNetwork::Regtest), expected);
+        assert_eq!(
+            supported_wallet_network(WalletNetwork::Signet),
+            WalletNetwork::Signet
+        );
     }
 }
