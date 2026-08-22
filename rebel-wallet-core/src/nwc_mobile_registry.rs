@@ -2,8 +2,8 @@ use anyhow::{anyhow, Context};
 use nwc_mobile::{
     ActiveConnection, ApprovedNwaConnection, BudgetInterval, BudgetPolicy, Clock, ConnectionId,
     ConnectionManager, ConnectionPolicy, FeePolicy, LegacyConnectionImport, NewConnection,
-    NwaApproval, NwaRequest, NwcEncryption, NwcMethod, PublicKey, SecureRelayUrl, StoredConnection,
-    UnixTimestamp, WakeLedger, WakePolicy,
+    NwaRequest, NwcEncryption, NwcMethod, PublicKey, StoredConnection, UnixTimestamp, WakeLedger,
+    WakePolicy,
 };
 
 use crate::{NwcBudgetInterval, NwcConnection, NwcPermission};
@@ -35,13 +35,11 @@ pub(crate) fn migrate_connections(
     let imports = connections
         .iter()
         .map(|connection| {
-            RegistryConnection::try_from(connection).and_then(|specification| {
-                Ok(LegacyConnectionImport::new(
-                    specification.new_connection()?,
-                    UnixTimestamp::from_secs(connection.created_at),
-                    connection.spent_sat,
-                ))
-            })
+            Ok(LegacyConnectionImport::new(
+                new_connection(connection)?,
+                UnixTimestamp::from_secs(connection.created_at),
+                connection.spent_sat,
+            ))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let migration = manager
@@ -94,11 +92,10 @@ pub(crate) fn insert_connection(
             "new NWC connection contains legacy accounting state"
         ));
     }
-    let specification = RegistryConnection::try_from(connection)?;
     let clock = MigrationClock(UnixTimestamp::from_secs(now));
     ConnectionManager::new(ledger, &clock)
         .import_legacy(
-            specification.new_connection()?,
+            new_connection(connection)?,
             UnixTimestamp::from_secs(connection.created_at),
             0,
         )
@@ -115,24 +112,13 @@ pub(crate) fn approve_nwa_connection(
     if connection.spent_sat != 0 {
         return Err(anyhow!("new NWA connection contains accounting state"));
     }
-    let specification = RegistryConnection::try_from(connection)?;
-    if specification.client_pubkey != *request.client_pubkey()
-        || specification.expires_at != request.expires_at().map(UnixTimestamp::as_secs)
-    {
-        return Err(anyhow!("NWA approval does not match the reviewed request"));
-    }
-    let approval = NwaApproval::new(
-        request.id(),
-        specification.id,
-        specification.wallet_service_pubkey,
-        specification.relays,
-        specification.policy,
-        NWC_ENCRYPTION,
-        lud16.map(str::to_owned),
-    );
     let clock = MigrationClock(UnixTimestamp::from_secs(now));
     ConnectionManager::new(ledger, &clock)
-        .approve_nwa(request, approval, WakePolicy::default())
+        .approve_nwa_connection(
+            request,
+            new_connection(connection)?,
+            lud16.map(str::to_owned),
+        )
         .context("could not persist the NWA authorization")
 }
 
@@ -160,72 +146,39 @@ pub(crate) fn tombstone_connection(
     }
 }
 
-struct RegistryConnection {
-    id: ConnectionId,
-    client_pubkey: PublicKey,
-    wallet_service_pubkey: PublicKey,
-    relays: Vec<SecureRelayUrl>,
-    policy: ConnectionPolicy,
-    expires_at: Option<u64>,
-}
-
-impl RegistryConnection {
-    fn new_connection(&self) -> anyhow::Result<NewConnection> {
-        NewConnection::new(
-            self.id.clone(),
-            self.client_pubkey.clone(),
-            self.wallet_service_pubkey.clone(),
-            self.relays.clone(),
-            self.policy.clone(),
-            NWC_ENCRYPTION,
-            WakePolicy::default(),
-        )
-        .map(|connection| connection.with_expiration(self.expires_at.map(UnixTimestamp::from_secs)))
-        .context("invalid NWC connection authorization")
-    }
-}
-
-impl TryFrom<&NwcConnection> for RegistryConnection {
-    type Error = anyhow::Error;
-
-    fn try_from(connection: &NwcConnection) -> Result<Self, Self::Error> {
-        let id = ConnectionId::parse(connection.id.clone()).context("invalid NWC connection id")?;
-        let client_pubkey = PublicKey::from_hex(&connection.client_pubkey)
-            .context("invalid NWC client public key")?;
-        let wallet_service_pubkey = PublicKey::from_hex(&connection.service_pubkey)
-            .context("invalid NWC wallet-service public key")?;
-        let relays = connection
-            .relay
-            .split(|character: char| character.is_whitespace() || character == ',')
-            .map(str::trim)
-            .filter(|relay| !relay.is_empty())
-            .map(SecureRelayUrl::parse)
-            .collect::<Result<Vec<_>, _>>()
-            .context("invalid or insecure NWC relay")?;
-        let methods = connection
-            .enabled_permissions()
-            .into_iter()
-            .filter_map(permission_method)
-            .collect::<Vec<_>>();
-        let policy = ConnectionPolicy::new(
-            methods,
-            BudgetPolicy::new(
-                connection.budget_sat,
-                budget_interval(connection.budget_interval),
-                FeePolicy::CountTowardBudget {
-                    maximum_fee_sat: maximum_nwc_fee_sat(connection.budget_sat),
-                },
-            ),
-        );
-        Ok(Self {
-            id,
-            client_pubkey,
-            wallet_service_pubkey,
-            relays,
-            policy,
-            expires_at: connection.expires_at,
-        })
-    }
+fn new_connection(connection: &NwcConnection) -> anyhow::Result<NewConnection> {
+    let relays = connection
+        .relay
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .map(str::trim)
+        .filter(|relay| !relay.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let methods = connection
+        .enabled_permissions()
+        .into_iter()
+        .filter_map(permission_method);
+    let policy = ConnectionPolicy::new(
+        methods,
+        BudgetPolicy::new(
+            connection.budget_sat,
+            budget_interval(connection.budget_interval),
+            FeePolicy::CountTowardBudget {
+                maximum_fee_sat: maximum_nwc_fee_sat(connection.budget_sat),
+            },
+        ),
+    );
+    NewConnection::from_host_strings(
+        connection.id.clone(),
+        &connection.client_pubkey,
+        &connection.service_pubkey,
+        relays,
+        policy,
+        NWC_ENCRYPTION,
+        WakePolicy::default(),
+    )
+    .map(|parsed| parsed.with_expiration(connection.expires_at.map(UnixTimestamp::from_secs)))
+    .context("invalid NWC connection authorization")
 }
 
 pub(crate) fn permission_method(permission: NwcPermission) -> Option<NwcMethod> {
@@ -415,15 +368,15 @@ mod tests {
     fn insecure_legacy_relays_fail_closed() {
         let mut legacy = connection("nwc-insecure");
         legacy.relay = "ws://relay.example.com".to_string();
-        assert!(RegistryConnection::try_from(&legacy).is_err());
+        assert!(new_connection(&legacy).is_err());
     }
 
     #[test]
     fn relay_path_trailing_slashes_remain_part_of_the_allowlist() {
         let mut legacy = connection("nwc-relay-path");
         legacy.relay = "wss://relay.example.com/nwc/".to_string();
-        let specification = RegistryConnection::try_from(&legacy).expect("connection");
-        assert_eq!(specification.relays[0].as_str(), legacy.relay);
+        let parsed = new_connection(&legacy).expect("connection");
+        assert_eq!(parsed.relays()[0].as_str(), legacy.relay);
     }
 
     #[test]
