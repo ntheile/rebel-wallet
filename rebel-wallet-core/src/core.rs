@@ -27,10 +27,10 @@ use nostr_sdk::prelude::{
     FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, Tag, ToBech32,
 };
 use nwc_mobile::{
-    parse_connection_relays, ForegroundWakeCoordinator, ForegroundWakeDecision,
-    ForegroundWakeOutcome, ForegroundWakeRetryCause, MobileServiceError, NeverCancelled,
-    NwaApprovalError, NwcMobileService, OperationBudget, WakeEnvelope, WalletConnectionRequest,
-    DEFAULT_MAXIMUM_CONNECTION_RELAYS,
+    parse_connection_relays, ApplicationRegistrationCoordinator, ForegroundWakeCoordinator,
+    ForegroundWakeDecision, ForegroundWakeOutcome, ForegroundWakeRetryCause, MobileServiceError,
+    NeverCancelled, NwaApprovalError, NwaCallbackCoordinator, NwcMobileService, OperationBudget,
+    WakeEnvelope, WalletConnectionRequest, DEFAULT_MAXIMUM_CONNECTION_RELAYS,
 };
 use nwc_mobile_bark::execute_bark_wake;
 use nwc_mobile_uniffi::MobileConnectionMetadata;
@@ -73,7 +73,9 @@ use crate::{
 
 mod custom_address_flow;
 mod nwa_flow;
+mod nwc_connection_flow;
 mod nwc_icon_cache;
+mod nwc_registration_flow;
 mod profile_prefetch;
 mod send_flow;
 mod wallet_lifecycle;
@@ -406,11 +408,9 @@ struct AppCore {
     nwc_in_flight_info_events: HashSet<String>,
     nwc_service: Option<NwcMobileService>,
     nwc_service_ready: bool,
-    pending_nwa_callback: Option<String>,
+    nwa_callback: NwaCallbackCoordinator,
     nwc_push_config: NwcPushConfig,
-    nwc_registration_in_flight: bool,
-    nwc_registration_refresh_pending: bool,
-    nwc_registration_retry_nonce: u64,
+    nwc_registration: ApplicationRegistrationCoordinator,
     rev: u64,
     next_capability_id: u64,
     send_fee_estimate_request_id: u64,
@@ -459,11 +459,9 @@ impl AppCore {
             nwc_in_flight_info_events: HashSet::new(),
             nwc_service,
             nwc_service_ready,
-            pending_nwa_callback: None,
+            nwa_callback: NwaCallbackCoordinator::default(),
             nwc_push_config: NwcPushConfig::default(),
-            nwc_registration_in_flight: false,
-            nwc_registration_refresh_pending: false,
-            nwc_registration_retry_nonce: 0,
+            nwc_registration: ApplicationRegistrationCoordinator::default(),
             rev: 0,
             next_capability_id: 0,
             send_fee_estimate_request_id: 0,
@@ -696,7 +694,7 @@ impl AppCore {
                     wake_enabled,
                 );
                 if self.nwc_push_config != config {
-                    self.nwc_registration_refresh_pending = true;
+                    self.nwc_registration.mark_refresh_pending();
                     self.nwc_push_config = config;
                 }
                 self.sync_nwc_push_registrations();
@@ -1202,7 +1200,7 @@ impl AppCore {
         }
         if migration_attempted {
             // The next normal persistence pass writes the secret-free compatibility DTO.
-            self.nwc_registration_refresh_pending = true;
+            self.nwc_registration.mark_refresh_pending();
         }
         views
     }
@@ -1860,7 +1858,7 @@ impl AppCore {
                 error,
             } => self.finish_nwc_push_registration(applied, deferred, next_attempt_at, error),
             AsyncMsg::NwcPushRetryDue { nonce } => {
-                if nonce == self.nwc_registration_retry_nonce {
+                if self.nwc_registration.retry_is_current(nonce) {
                     self.sync_nwc_push_registrations();
                 }
             }
