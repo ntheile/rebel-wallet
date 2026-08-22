@@ -8,7 +8,7 @@ options:
 packages:
   NwcMobileApple:
     url: https://github.com/ntheile/nwc-mobile
-    revision: 1b4fda4e77b6987a33af2fc847cb4a518ab57071
+    revision: b6279b41a8486e5debd5a8a53e728c1de03e22af
 
 settings:
   base:
