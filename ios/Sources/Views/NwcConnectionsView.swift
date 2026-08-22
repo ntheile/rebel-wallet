@@ -265,7 +265,7 @@ private struct NwcCreateConnectionView: View {
         .onAppear {
             relay = manager.state.nwc.defaultRelay
         }
-        .onChange(of: manager.nwcConnectionExport?.id) { _, exportId in
+        .onChange(of: manager.nwc.connectionExport?.id) { _, exportId in
             guard awaitingCreatedExport else { return }
             if exportId != nil {
                 presentedCreatedExport = true

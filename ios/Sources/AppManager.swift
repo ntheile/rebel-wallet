@@ -1,5 +1,4 @@
 import Foundation
-import NwcMobileApple
 import Observation
 import UIKit
 import UserNotifications
@@ -8,14 +7,11 @@ import UserNotifications
 @Observable
 final class AppManager: AppReconciler {
     let rust: FfiApp
+    let nwc: NwcAppManager
     var state: AppState
-    var nwcWakeDebugEntries: [NwcWakeDebugEntry]
-    var nwcConnectionExport: NwcConnectionExport?
     private var lastRevApplied: UInt64
-    private var lastNwcWakeStatusLogged: String
     private var lastReceiveNotificationKey: String?
     private var receiveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
-    private var notificationObservers: [NSObjectProtocol] = []
 
     init(storagePaths: AppStoragePaths) {
         let dataDir = storagePaths.dataDir
@@ -25,20 +21,16 @@ final class AppManager: AppReconciler {
 
         let initial = rust.state()
         state = initial
-        nwcWakeDebugEntries = NwcWakeInbox.debugEntries()
+        nwc = NwcAppManager(initialState: initial) { action in
+            rust.dispatch(action: action)
+        }
         lastRevApplied = initial.rev
-        lastNwcWakeStatusLogged = initial.nwc.lastWakeStatus
         lastReceiveNotificationKey = Self.receiveNotificationKey(initial.receive)
 
         rust.listenForUpdates(reconciler: self)
-        observePushNotificationRegistration()
-        observeNwcWakeInbox()
+        nwc.startObserving()
         rust.dispatch(action: .bootstrap)
-        if let deviceToken = NwcPushPlatformContext.cachedDeviceToken {
-            syncPushNotificationRegistration(status: "Registered", deviceToken: deviceToken)
-        }
-        NwcWakeInbox.removeLegacySnapshot()
-        drainQueuedNwcWakeRequests()
+        nwc.restorePlatformState()
     }
 
     convenience init() {
@@ -63,8 +55,7 @@ final class AppManager: AppReconciler {
         switch update {
         case let .fullState(s):
             if s.rev <= lastRevApplied { return }
-            acknowledgeCompletedNwcWakeRequests(nextState: s)
-            recordNwcWakeDebugChanges(nextState: s)
+            nwc.reconcile(previousState: state, nextState: s)
             notifyIfReceiveCompleted(nextState: s)
             lastRevApplied = s.rev
             state = s
@@ -76,53 +67,16 @@ final class AppManager: AppReconciler {
         case let .haptic(feedback):
             Haptics.play(feedback)
         case let .openUrl(_, url):
-            Task {
-                let opened: Bool
-                if let target = URL(string: url) {
-                    opened = await NwaCallbackOpener.open(target)
-                } else {
-                    opened = false
-                }
-                dispatch(.completeNwaCallbackOpen(opened: opened))
-            }
+            nwc.openCallback(url: url)
         case let .nwcConnectionExportReady(_, connectionId, name, uri, copyToClipboard, presentQr):
-            if copyToClipboard {
-                UIPasteboard.general.setItems(
-                    [[UIPasteboard.typeAutomatic: uri]],
-                    options: [
-                        .localOnly: true,
-                        .expirationDate: Date().addingTimeInterval(120),
-                    ]
-                )
-                Haptics.play(.impactLight)
-            }
-            if presentQr {
-                nwcConnectionExport = NwcConnectionExport(id: connectionId, name: name, uri: uri)
-            }
-        }
-    }
-
-    private func acknowledgeCompletedNwcWakeRequests(nextState: AppState) {
-        NwcWakeInbox.remove(eventIds: Set(
-            nextState.nwc.processedWakeRequests.map(\.eventIdHex)
-        ))
-    }
-
-    private func recordNwcWakeDebugChanges(nextState: AppState) {
-        if state.setup != .ready, nextState.setup == .ready, !nextState.nwc.pendingWakeRequests.isEmpty {
-            NwcWakeInbox.appendDebug(
-                source: "Rust",
-                message: "Wallet ready; retrying \(nextState.nwc.pendingWakeRequests.count) pending NWC wake request\(nextState.nwc.pendingWakeRequests.count == 1 ? "" : "s")"
+            nwc.presentConnectionExport(
+                connectionId: connectionId,
+                name: name,
+                uri: uri,
+                copyToClipboard: copyToClipboard,
+                presentQr: presentQr
             )
         }
-
-        let status = nextState.nwc.lastWakeStatus
-        if status != lastNwcWakeStatusLogged {
-            lastNwcWakeStatusLogged = status
-            NwcWakeInbox.appendDebug(source: "Rust", message: status)
-        }
-
-        refreshNwcWakeDebugEntries()
     }
 
     private func notifyIfReceiveCompleted(nextState: AppState) {
@@ -205,86 +159,6 @@ final class AppManager: AppReconciler {
 
     func requestHaptic(_ feedback: HapticFeedback) {
         dispatch(.requestHaptic(feedback: feedback))
-    }
-
-    func handleOpenURL(_ url: URL) {
-        let allowedSchemes = ["nostr+walletauth", "nostr+walletauth+rebelwallet"]
-        guard let scheme = url.scheme?.lowercased(), allowedSchemes.contains(scheme) else { return }
-        dispatch(.openNwaRequest(uri: url.absoluteString))
-    }
-
-    private func observePushNotificationRegistration() {
-        let observer = NotificationCenter.default.addObserver(
-            forName: PushNotificationEvents.registrationDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            let status = notification.userInfo?[PushNotificationEvents.statusKey] as? String
-            let deviceToken = notification.userInfo?[PushNotificationEvents.deviceTokenKey] as? String
-
-            Task { @MainActor [weak self] in
-                self?.syncPushNotificationRegistration(
-                    status: status ?? "Unknown",
-                    deviceToken: deviceToken
-                )
-            }
-        }
-        notificationObservers.append(observer)
-    }
-
-    private func syncPushNotificationRegistration(status: String, deviceToken: String?) {
-        let effectiveDeviceToken = deviceToken ?? NwcPushPlatformContext.cachedDeviceToken
-        dispatch(.setPushNotificationRegistration(
-            apnsDeviceToken: effectiveDeviceToken,
-            registrationStatus: status,
-            wakeServerUrl: NwcPushPlatformContext.serverURL,
-            appId: Bundle.main.bundleIdentifier ?? "com.rebelwallet.app",
-            environment: NwcPushPlatformContext.apnsEnvironment,
-            installId: NwcPushPlatformContext.installId
-        ))
-    }
-
-    private func observeNwcWakeInbox() {
-        let observer = NotificationCenter.default.addObserver(
-            forName: NwcWakeInboxEvents.didChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refreshNwcWakeDebugEntries()
-                self?.drainQueuedNwcWakeRequests()
-            }
-        }
-        notificationObservers.append(observer)
-    }
-
-    func drainQueuedNwcWakeRequests() {
-        let requests = NwcWakeInbox.pendingRequests()
-        guard !requests.isEmpty else { return }
-
-        NwcWakeInbox.appendDebug(
-            source: "App",
-            message: "Forwarded \(requests.count) durable nwc_wake request\(requests.count == 1 ? "" : "s") to Rust"
-        )
-        refreshNwcWakeDebugEntries()
-        dispatch(.processNwcWakeRequests(requests: requests.map {
-            NwcWakeRequest(
-                relayUrl: $0.payload.relayURL,
-                eventIdHex: $0.payload.eventIDHex,
-                walletServicePublicKeyHex: $0.payload.walletServicePublicKeyHex,
-                embeddedEventJson: $0.payload.embeddedEventJSON,
-                receivedAtSeconds: $0.receivedAtSeconds
-            )
-        }))
-    }
-
-    func refreshNwcWakeDebugEntries() {
-        nwcWakeDebugEntries = Array(NwcWakeInbox.debugEntries().reversed())
-    }
-
-    func clearNwcWakeDebugEntries() {
-        NwcWakeInbox.clearDebugEntries()
-        refreshNwcWakeDebugEntries()
     }
 
     func syncWalletForRefresh() async {

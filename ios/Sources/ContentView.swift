@@ -48,8 +48,8 @@ struct ContentView: View {
                 .interactiveDismissDisabled()
         }
         .sheet(item: Binding(
-            get: { manager.nwcConnectionExport },
-            set: { manager.nwcConnectionExport = $0 }
+            get: { manager.nwc.connectionExport },
+            set: { manager.nwc.connectionExport = $0 }
         )) { connection in
             NwcConnectionQRCodeSheet(connection: connection, initiallyCopied: true)
                 .presentationDetents([.large])
