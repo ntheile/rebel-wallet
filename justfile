@@ -87,7 +87,7 @@ ios-rust:
   done
 
 # Package static libs into an xcframework.
-ios-xcframework: ios-gen-swift
+ios-xcframework: ios-gen-swift ios-rust
   #!/usr/bin/env bash
   set -e
   rm -rf ios/Frameworks/{{XCF_NAME}}.xcframework staging

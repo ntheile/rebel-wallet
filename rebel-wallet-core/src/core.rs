@@ -488,6 +488,7 @@ struct AppCore {
     nwc_wake_coordinator: ForegroundWakeCoordinator<String>,
     nwc_in_flight_info_events: HashSet<String>,
     nwc_service: Option<NwcMobileService>,
+    nwc_service_ready: bool,
     pending_nwa_callback: Option<String>,
     nwc_push_config: NwcPushConfig,
     nwc_registration_in_flight: bool,
@@ -511,6 +512,7 @@ impl AppCore {
         ensure_profile_picture_dir(&cache_dir);
         ensure_nwc_icon_dir(&cache_dir);
         let nwc_service = open_nwc_service(&data_dir).ok();
+        let nwc_service_ready = nwc_service.is_some();
         Self {
             state: AppState::initial(),
             app_data_path: data_dir.join("rebel-app-data.json"),
@@ -539,6 +541,7 @@ impl AppCore {
             nwc_wake_coordinator: ForegroundWakeCoordinator::default(),
             nwc_in_flight_info_events: HashSet::new(),
             nwc_service,
+            nwc_service_ready,
             pending_nwa_callback: None,
             nwc_push_config: NwcPushConfig::default(),
             nwc_registration_in_flight: false,
@@ -965,6 +968,7 @@ impl AppCore {
     }
 
     fn migrate_nwc_connections(&mut self) {
+        self.nwc_service_ready = false;
         let Some(service) = self.nwc_service.as_ref() else {
             self.state.nwc.last_wake_status =
                 "NWC authorization storage is unavailable".to_string();
@@ -979,6 +983,7 @@ impl AppCore {
             .collect();
         match service.migrate_legacy_connections(legacy) {
             Ok(result) => {
+                self.nwc_service_ready = true;
                 let revoked_ids = result.revoked_connection_ids();
                 self.state
                     .nwc
@@ -1031,7 +1036,7 @@ impl AppCore {
         budget_interval: NwcBudgetInterval,
         permissions: Vec<NwcPermission>,
     ) {
-        if self.nwc_service.is_none() {
+        if !self.nwc_service_ready {
             self.state.toast = Some("NWC authorization storage is unavailable.".to_string());
             self.request_haptic(HapticFeedback::NotificationError);
             return;
@@ -1441,7 +1446,7 @@ impl AppCore {
     }
 
     fn process_pending_nwc_wake_requests(&mut self) {
-        if self.nwc_service.is_none() {
+        if !self.nwc_service_ready {
             self.state.nwc.last_wake_status =
                 "NWC wake queued: authorization storage is unavailable".to_string();
             return;
@@ -3538,6 +3543,7 @@ mod tests {
     fn pending_wake_processing_fails_closed_until_service_is_ready() {
         let (_data_dir, _cache_dir, mut core) = test_core();
         core.nwc_service = None;
+        core.nwc_service_ready = false;
         core.state.nwc.pending_wake_requests.push(NwcWakeRequest {
             relay: "wss://relay.example.com".to_string(),
             event_id: "event".to_string(),
@@ -3553,6 +3559,25 @@ mod tests {
             .nwc
             .last_wake_status
             .contains("authorization storage is unavailable"));
+    }
+
+    #[test]
+    fn failed_authorization_migration_keeps_pending_wakes_queued() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.state.nwc.connections = vec![test_nwc_connection("invalid-client-public-key")];
+        core.state.nwc.pending_wake_requests.push(NwcWakeRequest {
+            relay: "wss://relay.example.com".to_string(),
+            event_id: "event".to_string(),
+            wallet_service_pubkey: "wallet".to_string(),
+            received_at: 100,
+        });
+
+        core.migrate_nwc_connections();
+        core.process_pending_nwc_wake_requests();
+
+        assert!(!core.nwc_service_ready);
+        assert!(!core.nwc_wake_coordinator.is_in_flight(&"event".to_string()));
+        assert_eq!(core.state.nwc.pending_wake_requests.len(), 1);
     }
 
     #[test]

@@ -89,7 +89,7 @@ impl AppCore {
             self.set_nwa_error("The Nostr Wallet Auth request is no longer available.");
             return;
         };
-        if self.nwc_service.is_none() {
+        if !self.nwc_service_ready {
             self.set_nwa_error("NWC authorization storage is unavailable.");
             return;
         }

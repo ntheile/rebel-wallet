@@ -87,6 +87,7 @@ impl AppCore {
             }
         }
         self.nwc_service = None;
+        self.nwc_service_ready = false;
         let nwc_database_path = nwc_ledger_path(&self.data_dir);
         if let Err(error) = remove_wallet_database_files(&nwc_database_path) {
             errors.push(format!("{error:#}"));
@@ -112,6 +113,7 @@ impl AppCore {
         self.state = state;
 
         self.nwc_service = open_nwc_service(&self.data_dir).ok();
+        self.nwc_service_ready = self.nwc_service.is_some();
         let mut warnings = Vec::new();
         if self.nwc_service.is_none() {
             warnings.push("could not reopen NWC authorization storage".to_string());
