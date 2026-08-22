@@ -95,6 +95,8 @@ const MAX_NWC_RELAYS_PER_CONNECTION: usize = 2;
 const NWC_RELAY_STORAGE_SEPARATOR: &str = "\n";
 const NWC_INFO_EVENT_PUBLISH_ATTEMPTS: usize = 3;
 const NWC_REGISTRATION_MIN_RETRY_SECONDS: u64 = 5;
+const MAX_NWC_WAKE_RETRY_ATTEMPTS: u8 = 5;
+const NWC_QUEUED_RETRY_BASE_SECONDS: u64 = 2;
 const NWC_FOREGROUND_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const NOSTR_DERIVATION_PATH: &str = "m/44'/1237'/0'/0/0";
 
@@ -103,6 +105,13 @@ fn nwc_push_retry_delay(next_attempt_at: u64, now: u64) -> Duration {
         next_attempt_at
             .saturating_sub(now)
             .max(NWC_REGISTRATION_MIN_RETRY_SECONDS),
+    )
+}
+
+fn nwc_queued_retry_delay(attempt: u8) -> Duration {
+    let exponent = u32::from(attempt.saturating_sub(1));
+    Duration::from_secs(
+        NWC_QUEUED_RETRY_BASE_SECONDS.saturating_mul(2_u64.saturating_pow(exponent)),
     )
 }
 
@@ -484,6 +493,7 @@ struct AppCore {
     payment_annotations: Vec<PaymentAnnotation>,
     zap_receipts: Vec<ZapReceiptRecord>,
     nwc_in_flight_wake_requests: HashSet<String>,
+    nwc_wake_retry_attempts: HashMap<String, u8>,
     nwc_in_flight_info_events: HashSet<String>,
     nwc_ledger: Option<WakeLedger>,
     nwc_registry_ready: bool,
@@ -538,6 +548,7 @@ impl AppCore {
             payment_annotations: Vec::new(),
             zap_receipts: Vec::new(),
             nwc_in_flight_wake_requests: HashSet::new(),
+            nwc_wake_retry_attempts: HashMap::new(),
             nwc_in_flight_info_events: HashSet::new(),
             nwc_ledger,
             nwc_registry_ready,
@@ -1486,6 +1497,7 @@ impl AppCore {
 
     fn finish_nwc_wake(&mut self, request: NwcWakeRequest, status: &str, success: bool) {
         self.nwc_in_flight_wake_requests.remove(&request.event_id);
+        self.nwc_wake_retry_attempts.remove(&request.event_id);
         self.state
             .nwc
             .pending_wake_requests
@@ -1507,10 +1519,25 @@ impl AppCore {
         self.cap_processed_nwc_wake_requests();
         if success {
             self.request_haptic(HapticFeedback::NotificationSuccess);
-        } else if status.starts_with("rejected") || status == "unsupported_disposition" {
+        } else if status.starts_with("rejected")
+            || matches!(status, "unsupported_disposition" | "retry_exhausted")
+        {
             self.request_haptic(HapticFeedback::NotificationWarning);
         }
         self.process_pending_nwc_wake_requests();
+    }
+
+    fn next_nwc_wake_retry_attempt(&mut self, event_id: &str) -> Option<u8> {
+        let attempt = self
+            .nwc_wake_retry_attempts
+            .entry(event_id.to_string())
+            .or_default();
+        if *attempt >= MAX_NWC_WAKE_RETRY_ATTEMPTS {
+            None
+        } else {
+            *attempt += 1;
+            Some(*attempt)
+        }
     }
 
     fn schedule_nwc_wake_retry(&self, generation: u64, event_id: String, delay: Duration) {
@@ -1921,19 +1948,30 @@ impl AppCore {
                     self.finish_nwc_wake(request, &format!("rejected:{code:?}"), false)
                 }
                 WakeDisposition::RetryAfter { delay, reason, .. } => {
-                    self.state.nwc.last_wake_status =
-                        format!("NWC wake retry scheduled: {reason:?}");
-                    self.schedule_nwc_wake_retry(generation, request.event_id, delay);
-                    self.process_pending_nwc_wake_requests();
+                    if self
+                        .next_nwc_wake_retry_attempt(&request.event_id)
+                        .is_some()
+                    {
+                        self.state.nwc.last_wake_status =
+                            format!("NWC wake retry scheduled: {reason:?}");
+                        self.schedule_nwc_wake_retry(generation, request.event_id, delay);
+                        self.process_pending_nwc_wake_requests();
+                    } else {
+                        self.finish_nwc_wake(request, "retry_exhausted", false);
+                    }
                 }
                 WakeDisposition::QueuedForApplication { reason, .. } => {
-                    self.state.nwc.last_wake_status = format!("NWC wake queued: {reason:?}");
-                    self.schedule_nwc_wake_retry(
-                        generation,
-                        request.event_id,
-                        Duration::from_secs(2),
-                    );
-                    self.process_pending_nwc_wake_requests();
+                    if let Some(attempt) = self.next_nwc_wake_retry_attempt(&request.event_id) {
+                        self.state.nwc.last_wake_status = format!("NWC wake queued: {reason:?}");
+                        self.schedule_nwc_wake_retry(
+                            generation,
+                            request.event_id,
+                            nwc_queued_retry_delay(attempt),
+                        );
+                        self.process_pending_nwc_wake_requests();
+                    } else {
+                        self.finish_nwc_wake(request, "retry_exhausted", false);
+                    }
                 }
                 _ => self.finish_nwc_wake(request, "unsupported_disposition", false),
             },
@@ -1943,6 +1981,7 @@ impl AppCore {
                 error,
             } => {
                 self.nwc_in_flight_wake_requests.remove(&event_id);
+                self.nwc_wake_retry_attempts.remove(&event_id);
                 self.state.nwc.last_wake_status = format!("NWC wake failed: {error}");
                 self.state
                     .nwc
@@ -2494,6 +2533,7 @@ impl AppCore {
         self.wallet_retry_kind = None;
         self.has_pending_rounds = false;
         self.nwc_in_flight_wake_requests.clear();
+        self.nwc_wake_retry_attempts.clear();
         self.state.wallet.sync_error = None;
         self.cancel_refresh_poll(true);
         self.refresh_wallet_busy_state();
@@ -3543,7 +3583,45 @@ mod tests {
 
         assert_eq!(core.state.nwc.pending_wake_requests.len(), 1);
         assert!(core.nwc_in_flight_wake_requests.contains("event"));
+        assert_eq!(core.nwc_wake_retry_attempts.get("event"), Some(&1));
         assert!(core.state.nwc.processed_wake_requests.is_empty());
+    }
+
+    #[test]
+    fn exhausted_wake_retries_leave_the_queue_and_enter_history() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        let request = NwcWakeRequest {
+            relay: "wss://relay.example.com".to_string(),
+            event_id: "event".to_string(),
+            wallet_service_pubkey: "wallet".to_string(),
+            received_at: 100,
+        };
+        core.state.nwc.pending_wake_requests.push(request.clone());
+        core.nwc_in_flight_wake_requests
+            .insert(request.event_id.clone());
+        core.nwc_wake_retry_attempts
+            .insert(request.event_id.clone(), MAX_NWC_WAKE_RETRY_ATTEMPTS);
+
+        core.handle_async(AsyncMsg::NwcWakeEngineFinished {
+            generation: core.wallet_generation,
+            request,
+            disposition: WakeDisposition::QueuedForApplication {
+                reason: nwc_mobile::QueueReason::WalletUnavailable,
+                notification: nwc_mobile::NotificationHint::OpenApplication,
+            },
+        });
+
+        assert!(core.state.nwc.pending_wake_requests.is_empty());
+        assert!(core.nwc_in_flight_wake_requests.is_empty());
+        assert!(core.nwc_wake_retry_attempts.is_empty());
+        assert_eq!(core.state.nwc.processed_wake_requests.len(), 1);
+        assert_eq!(
+            core.state.nwc.processed_wake_requests[0].status,
+            "retry_exhausted"
+        );
+        assert!(core
+            .pending_haptics
+            .contains(&HapticFeedback::NotificationWarning));
     }
 
     #[test]
@@ -3606,6 +3684,13 @@ mod tests {
         assert_eq!(nwc_push_retry_delay(100, 100), Duration::from_secs(5));
         assert_eq!(nwc_push_retry_delay(99, 100), Duration::from_secs(5));
         assert_eq!(nwc_push_retry_delay(110, 100), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn queued_wake_retry_delay_uses_exponential_backoff() {
+        assert_eq!(nwc_queued_retry_delay(1), Duration::from_secs(2));
+        assert_eq!(nwc_queued_retry_delay(2), Duration::from_secs(4));
+        assert_eq!(nwc_queued_retry_delay(5), Duration::from_secs(32));
     }
 
     #[test]
