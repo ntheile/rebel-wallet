@@ -2,8 +2,7 @@ use anyhow::{anyhow, Context};
 use nwc_mobile::{
     ActiveConnection, ApprovedNwaConnection, BudgetInterval, BudgetPolicy, Clock, ConnectionId,
     ConnectionManager, ConnectionPolicy, FeePolicy, LegacyConnectionImport, NewConnection,
-    NwaRequest, NwcEncryption, NwcMethod, PublicKey, StoredConnection, UnixTimestamp, WakeLedger,
-    WakePolicy,
+    NwaRequest, NwcEncryption, NwcMethod, PublicKey, UnixTimestamp, WakeLedger, WakePolicy,
 };
 
 use crate::{NwcBudgetInterval, NwcConnection, NwcPermission};
@@ -127,23 +126,11 @@ pub(crate) fn tombstone_connection(
     connection: &NwcConnection,
     now: u64,
 ) -> anyhow::Result<()> {
-    let id = ConnectionId::parse(connection.id.clone()).context("invalid NWC connection id")?;
     let clock = MigrationClock(UnixTimestamp::from_secs(now));
-    let manager = ConnectionManager::new(ledger, &clock);
-    match manager
-        .connection(&id)
-        .context("could not read the NWC connection registry")?
-    {
-        Some(StoredConnection::Active(active)) => {
-            manager
-                .revoke(&id, active.revision())
-                .context("could not revoke the NWC authorization")?;
-            Ok(())
-        }
-        Some(StoredConnection::Tombstoned(_)) => Ok(()),
-        Some(_) => Err(anyhow!("unsupported NWC authorization state")),
-        None => Err(anyhow!("NWC authorization was not found in the registry")),
-    }
+    ConnectionManager::new(ledger, &clock)
+        .revoke_host_connection(&connection.id)
+        .context("could not revoke the NWC authorization")?;
+    Ok(())
 }
 
 fn new_connection(connection: &NwcConnection) -> anyhow::Result<NewConnection> {
