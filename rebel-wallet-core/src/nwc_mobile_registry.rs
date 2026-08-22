@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context};
 use nwc_mobile::{
-    ActiveConnection, BudgetInterval, BudgetPolicy, Clock, ConnectionId, ConnectionManager,
-    ConnectionPolicy, FeePolicy, LegacyConnectionImport, NewConnection, NwcEncryption, NwcMethod,
-    PublicKey, SecureRelayUrl, StoredConnection, UnixTimestamp, WakeLedger, WakePolicy,
+    ActiveConnection, ApprovedNwaConnection, BudgetInterval, BudgetPolicy, Clock, ConnectionId,
+    ConnectionManager, ConnectionPolicy, FeePolicy, LegacyConnectionImport, NewConnection,
+    NwaApproval, NwaRequest, NwcEncryption, NwcMethod, PublicKey, SecureRelayUrl, StoredConnection,
+    UnixTimestamp, WakeLedger, WakePolicy,
 };
 
 use crate::{NwcBudgetInterval, NwcConnection, NwcPermission};
@@ -102,6 +103,37 @@ pub(crate) fn insert_connection(
             0,
         )
         .context("could not persist the NWC authorization")
+}
+
+pub(crate) fn approve_nwa_connection(
+    ledger: &WakeLedger,
+    request: NwaRequest,
+    connection: &NwcConnection,
+    lud16: Option<&str>,
+    now: u64,
+) -> anyhow::Result<ApprovedNwaConnection> {
+    if connection.spent_sat != 0 {
+        return Err(anyhow!("new NWA connection contains accounting state"));
+    }
+    let specification = RegistryConnection::try_from(connection)?;
+    if specification.client_pubkey != *request.client_pubkey()
+        || specification.expires_at != request.expires_at().map(UnixTimestamp::as_secs)
+    {
+        return Err(anyhow!("NWA approval does not match the reviewed request"));
+    }
+    let approval = NwaApproval::new(
+        request.id(),
+        specification.id,
+        specification.wallet_service_pubkey,
+        specification.relays,
+        specification.policy,
+        NWC_ENCRYPTION,
+        lud16.map(str::to_owned),
+    );
+    let clock = MigrationClock(UnixTimestamp::from_secs(now));
+    ConnectionManager::new(ledger, &clock)
+        .approve_nwa(request, approval, WakePolicy::default())
+        .context("could not persist the NWA authorization")
 }
 
 pub(crate) fn tombstone_connection(
@@ -234,7 +266,7 @@ fn maximum_nwc_fee_sat(budget_sat: u64) -> u64 {
 mod tests {
     use std::time::Duration;
 
-    use nwc_mobile::{ClaimOutcome, EventId, TerminalKind};
+    use nwc_mobile::{ClaimOutcome, EventId, NwaParsePolicy, TerminalKind};
 
     use super::*;
 
@@ -293,6 +325,33 @@ mod tests {
             }
         );
         assert_eq!(connections.len(), 1);
+    }
+
+    #[test]
+    fn nwa_approval_uses_shared_authority_validation_and_callback() {
+        let directory = tempfile::tempdir().expect("directory");
+        let ledger = WakeLedger::open(directory.path().join("mobile.sqlite3")).expect("ledger");
+        let request = NwaRequest::parse(
+            &format!(
+                "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com%2Fnwc&max_amount=1000000&budget_renewal=daily&request_methods=get_info+pay_invoice&return_to=https%3A%2F%2Fapp.example.com%2Fnwa&state=0123456789abcdef0123456789abcdef"
+            ),
+            UnixTimestamp::from_secs(100),
+            &NwaParsePolicy::default(),
+        )
+        .expect("request");
+        let mut connection = connection("nwc-nwa");
+        connection.spent_sat = 0;
+        connection.expires_at = None;
+
+        let approved =
+            approve_nwa_connection(&ledger, request, &connection, Some("name@example.com"), 200)
+                .expect("approval");
+
+        assert_eq!(approved.connection().id().as_str(), "nwc-nwa");
+        let callback = approved.callback_url().expect("callback");
+        assert!(callback.starts_with("https://app.example.com/nwa#"));
+        assert!(callback.contains("status=approved"));
+        assert!(!callback.contains("secret="));
     }
 
     #[test]

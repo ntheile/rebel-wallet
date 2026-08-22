@@ -69,67 +69,41 @@ impl AppCore {
                 return;
             }
         };
-        let relays = parse_nwc_relay_urls(&connection.relay, "")
-            .unwrap_or_default()
-            .into_iter()
-            .map(|relay| relay.to_string())
-            .collect::<Vec<_>>();
-        let lud16 = self.state.lightning_address.address.as_deref();
-        let callback_url =
-            match request.approved_callback(&connection.service_pubkey, &relays, lud16) {
-                Ok(callback_url) => callback_url,
-                Err(error) => {
-                    self.set_nwa_error(&format!("Could not build the app callback: {error:#}"));
-                    return;
-                }
-            };
-
         self.state.nwa.approving = true;
         self.state.nwa.error_message = None;
-        self.finish_nwa_approval(connection, callback_url);
+        self.finish_nwa_approval(connection);
     }
 
-    pub(super) fn finish_nwa_approval(
-        &mut self,
-        connection: NwcConnection,
-        callback_url: Option<String>,
-    ) {
-        let approval_matches_pending_request = self
-            .pending_nwa_request
-            .as_ref()
-            .and_then(|request| {
-                public_key_from_npub_or_hex(&request.state.client_pubkey)
-                    .ok()
-                    .map(|pubkey| pubkey.to_hex() == connection.client_pubkey)
-            })
-            .unwrap_or(false);
-        if !approval_matches_pending_request {
-            self.set_nwa_error("The Nostr Wallet Auth request changed during approval.");
+    pub(super) fn finish_nwa_approval(&mut self, mut connection: NwcConnection) {
+        let Some(request) = self.pending_nwa_request.clone() else {
+            self.set_nwa_error("The Nostr Wallet Auth request is no longer available.");
             return;
-        }
+        };
         if !self.nwc_registry_ready {
             self.set_nwa_error("NWC authorization storage is unavailable.");
             return;
         }
         let now = now_unix();
-        if connection
-            .expires_at
-            .is_some_and(|expires_at| expires_at <= now)
-        {
-            self.set_nwa_error("The Nostr Wallet Auth request expired during approval.");
-            return;
-        }
-        let registry_result = self
+        let lud16 = self.state.lightning_address.address.as_deref();
+        let approval = self
             .nwc_ledger
             .as_ref()
             .context("NWC authorization storage is unavailable")
-            .and_then(|ledger| {
-                insert_nwc_registry_connection(ledger, &connection, now).map(|_| ())
-            });
-        if let Err(error) = registry_result {
-            self.set_nwa_error(&format!("Could not persist NWC authorization: {error:#}"));
-            return;
-        }
+            .and_then(|ledger| request.approve(ledger, &connection, lud16, now));
+        let approval = match approval {
+            Ok(approval) => approval,
+            Err(error) => {
+                self.set_nwa_error(&format!("Could not approve NWC authorization: {error:#}"));
+                return;
+            }
+        };
+        connection.created_at = approval.connection().created_at().as_secs();
+        connection.budget_period_started_at = connection.created_at;
+        connection.expires_at = approval
+            .connection()
+            .expires_at()
+            .map(|value| value.as_secs());
+        let callback_url = approval.callback_url().map(str::to_owned);
         self.state.nwc.default_relay = connection.relay.clone();
         self.state.nwc.connections.push(connection);
         self.state.nwa.approving = false;

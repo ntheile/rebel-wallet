@@ -2,11 +2,12 @@ use std::fmt;
 
 use anyhow::Context;
 use nwc_mobile::{
-    BudgetInterval, NwaParsePolicy, NwaRequest as MobileNwaRequest, NwcMethod, PublicKey,
-    UnixTimestamp,
+    ApprovedNwaConnection, BudgetInterval, NwaParsePolicy, NwaRequest as MobileNwaRequest,
+    NwcMethod, UnixTimestamp, WakeLedger,
 };
 
-use crate::{NwaRequestState, NwcBudgetInterval, NwcPermission};
+use crate::nwc_mobile_registry::approve_nwa_connection;
+use crate::{NwaRequestState, NwcBudgetInterval, NwcConnection, NwcPermission};
 
 #[derive(Clone)]
 pub(crate) struct NwaRequest {
@@ -45,21 +46,14 @@ impl NwaRequest {
         Ok(Self { state, inner })
     }
 
-    pub(crate) fn approved_callback(
+    pub(crate) fn approve(
         &self,
-        wallet_pubkey: &str,
-        relays: &[String],
+        ledger: &WakeLedger,
+        connection: &NwcConnection,
         lud16: Option<&str>,
-    ) -> anyhow::Result<Option<String>> {
-        let Some(callback) = self.inner.callback() else {
-            return Ok(None);
-        };
-        let wallet_pubkey =
-            PublicKey::from_hex(wallet_pubkey).context("invalid NWC wallet-service public key")?;
-        callback
-            .approved_url(&wallet_pubkey, relays, lud16)
-            .map(|url| Some(url.to_string()))
-            .context("could not build NWA approval callback")
+        now: u64,
+    ) -> anyhow::Result<ApprovedNwaConnection> {
+        approve_nwa_connection(ledger, self.inner.clone(), connection, lud16, now)
     }
 }
 
@@ -101,7 +95,6 @@ mod tests {
     use super::*;
 
     const CLIENT: &str = "687dd8ece211539364549b1f32c63eceec1e0661009ba65cf8ff2e73ba000746";
-    const WALLET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     const STATE: &str = "0123456789abcdef0123456789abcdef";
 
     #[test]
@@ -154,17 +147,14 @@ mod tests {
             100,
         )
         .expect("https callback");
-        let callback = request
-            .approved_callback(
-                WALLET,
-                &["wss://relay.example.com".to_string()],
-                Some("name@example.com"),
-            )
-            .expect("callback")
-            .expect("callback URL");
-        assert!(callback.starts_with("https://app.example.com/nwa#"));
-        assert!(callback.contains("status=approved"));
-        assert!(!callback.contains("secret="));
+        assert_eq!(
+            request.state.requesting_app_description.as_deref(),
+            Some("app.example.com")
+        );
+        assert_eq!(
+            request.state.callback_target_description,
+            "https://app.example.com/nwa"
+        );
     }
 
     #[test]

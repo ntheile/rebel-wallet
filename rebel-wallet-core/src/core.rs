@@ -3460,14 +3460,15 @@ mod tests {
 
     fn test_nwc_connection(client_pubkey: &str) -> NwcConnection {
         NwcConnection {
-            id: "test".to_string(),
+            id: format!("nwc-{client_pubkey}"),
             name: "Test".to_string(),
             icon_url: None,
             icon_display_url: None,
             relay: "wss://relay.example.com".to_string(),
             uri: String::new(),
             wallet_managed_secret: true,
-            service_pubkey: String::new(),
+            service_pubkey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
             client_pubkey: client_pubkey.to_string(),
             budget_sat: 0,
             spent_sat: 0,
@@ -3475,7 +3476,7 @@ mod tests {
             spent_display: String::new(),
             budget_interval: NwcBudgetInterval::Never,
             budget_interval_display: String::new(),
-            permissions: Vec::new(),
+            permissions: vec![NwcPermission::GetInfo],
             permissions_configured: true,
             allow_get_balance: false,
             allow_pay_invoice: false,
@@ -3688,10 +3689,16 @@ mod tests {
 
     #[test]
     fn mismatched_nwa_approval_restores_user_controls() {
+        const CLIENT: &str = "687dd8ece211539364549b1f32c63eceec1e0661009ba65cf8ff2e73ba000746";
+        const OTHER_CLIENT: &str =
+            "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
         let (_data_dir, _cache_dir, mut core) = test_core();
+        core.open_nwa_request(format!(
+            "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com"
+        ));
         core.state.nwa.approving = true;
 
-        core.finish_nwa_approval(test_nwc_connection("different-client"), None);
+        core.finish_nwa_approval(test_nwc_connection(OTHER_CLIENT));
 
         assert!(!core.state.nwa.approving);
         assert!(core
@@ -3699,7 +3706,7 @@ mod tests {
             .nwa
             .error_message
             .as_deref()
-            .is_some_and(|message| message.contains("changed during approval")));
+            .is_some_and(|message| message.contains("does not match")));
     }
 
     #[test]
