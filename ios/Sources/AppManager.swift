@@ -325,19 +325,23 @@ private enum AppStoragePreparer {
         let legacyCacheDirUrl = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("RebelWallet")
         let appGroupId = Bundle.main.object(forInfoDictionaryKey: "RebelWalletAppGroupIdentifier") as? String
         let appGroupRootUrl = appGroupId.flatMap { fm.containerURL(forSecurityApplicationGroupIdentifier: $0) }
-        let sharedRootUrl = appGroupRootUrl?.appendingPathComponent("RustCore", isDirectory: true)
-        let dataDirUrl = sharedRootUrl?.appendingPathComponent("ApplicationSupport", isDirectory: true) ?? legacyDataDirUrl
-        let cacheDirUrl = sharedRootUrl?.appendingPathComponent("Caches", isDirectory: true) ?? legacyCacheDirUrl
-        let dataDir = dataDirUrl.path
-        let cacheDir = cacheDirUrl.path
-        try? fm.createDirectory(at: dataDirUrl, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: cacheDirUrl, withIntermediateDirectories: true)
-        if dataDirUrl != legacyDataDirUrl {
-            Self.migrateLegacyData(from: legacyDataDirUrl, to: dataDirUrl)
+        guard let sharedRootUrl = appGroupRootUrl?.appendingPathComponent("RustCore", isDirectory: true) else {
+            Self.removeLegacyProfileCache(from: legacyDataDirUrl)
+            return AppStoragePaths(dataDir: legacyDataDirUrl.path, cacheDir: legacyCacheDirUrl.path)
         }
-        Self.removeLegacyProfileCache(from: dataDirUrl)
+        let sharedDataDirUrl = sharedRootUrl.appendingPathComponent("ApplicationSupport", isDirectory: true)
+        let sharedCacheDirUrl = sharedRootUrl.appendingPathComponent("Caches", isDirectory: true)
 
-        return AppStoragePaths(dataDir: dataDir, cacheDir: cacheDir)
+        do {
+            try fm.createDirectory(at: sharedDataDirUrl, withIntermediateDirectories: true)
+            try fm.createDirectory(at: sharedCacheDirUrl, withIntermediateDirectories: true)
+            try Self.migrateLegacyData(from: legacyDataDirUrl, to: sharedDataDirUrl)
+            Self.removeLegacyProfileCache(from: sharedDataDirUrl)
+            return AppStoragePaths(dataDir: sharedDataDirUrl.path, cacheDir: sharedCacheDirUrl.path)
+        } catch {
+            Self.removeLegacyProfileCache(from: legacyDataDirUrl)
+            return AppStoragePaths(dataDir: legacyDataDirUrl.path, cacheDir: legacyCacheDirUrl.path)
+        }
     }
 
     private static func removeLegacyProfileCache(from dataDirUrl: URL) {
@@ -348,20 +352,30 @@ private enum AppStoragePreparer {
         try? fm.removeItem(at: dataDirUrl.appendingPathComponent("profile_pictures"))
     }
 
-    private static func migrateLegacyData(from legacyDataDirUrl: URL, to dataDirUrl: URL) {
+    private static func migrateLegacyData(from legacyDataDirUrl: URL, to dataDirUrl: URL) throws {
         let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(
+        guard fm.fileExists(atPath: legacyDataDirUrl.path) else { return }
+        let items = try fm.contentsOfDirectory(
             at: legacyDataDirUrl,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
-        ) else {
-            return
-        }
+        )
 
-        for sourceUrl in items {
-            let destinationUrl = dataDirUrl.appendingPathComponent(sourceUrl.lastPathComponent)
-            guard !fm.fileExists(atPath: destinationUrl.path) else { continue }
-            try? fm.copyItem(at: sourceUrl, to: destinationUrl)
+        var copiedItems: [URL] = []
+        do {
+            for sourceUrl in items {
+                let values = try sourceUrl.resourceValues(forKeys: [.isRegularFileKey])
+                guard values.isRegularFile == true else { continue }
+                let destinationUrl = dataDirUrl.appendingPathComponent(sourceUrl.lastPathComponent)
+                guard !fm.fileExists(atPath: destinationUrl.path) else { continue }
+                try fm.copyItem(at: sourceUrl, to: destinationUrl)
+                copiedItems.append(destinationUrl)
+            }
+        } catch {
+            for copiedItem in copiedItems {
+                try? fm.removeItem(at: copiedItem)
+            }
+            throw error
         }
     }
 }

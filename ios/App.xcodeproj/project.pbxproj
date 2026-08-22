@@ -329,11 +329,11 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					93E9E330FC2CE7458D9C925F = {
-						DevelopmentTeam = 6JWFWV65BL;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					ECB916C2EEA55E04724E6E38 = {
-						DevelopmentTeam = 6JWFWV65BL;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -495,7 +495,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 6JWFWV65BL;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -506,6 +506,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_PREPROCESS = YES;
+				INFOPLIST_PREPROCESSOR_DEFINITIONS = "IOS_ALLOWS_LOCAL_NETWORKING=0";
 				IOS_APP_GROUP_ID = group.com.rebelwallet.app;
 				IOS_APS_ENVIRONMENT = development;
 				IOS_KEYCHAIN_ACCESS_GROUP = "$(AppIdentifierPrefix)com.rebelwallet.app";
@@ -620,7 +622,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 6JWFWV65BL;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -637,6 +639,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_PREPROCESS = YES;
+				INFOPLIST_PREPROCESSOR_DEFINITIONS = "IOS_ALLOWS_LOCAL_NETWORKING=1";
 				IOS_APP_GROUP_ID = group.com.rebelwallet.app;
 				IOS_APS_ENVIRONMENT = development;
 				IOS_KEYCHAIN_ACCESS_GROUP = "$(AppIdentifierPrefix)com.rebelwallet.app";
