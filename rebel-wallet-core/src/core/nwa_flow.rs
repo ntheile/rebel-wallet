@@ -1,4 +1,5 @@
 use super::*;
+use crate::NwaRequestState;
 
 impl AppCore {
     pub(super) fn open_nwa_request(&mut self, uri: String) {
@@ -16,7 +17,15 @@ impl AppCore {
         }
         match service.open_nwa_request(&uri) {
             Ok(request) => {
-                let state = nwa_request_state(&request);
+                let state = match nwa_request_state(request) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        self.state.toast =
+                            Some(format!("Nostr Wallet Auth request rejected: {error:#}"));
+                        self.request_haptic(HapticFeedback::NotificationError);
+                        return;
+                    }
+                };
                 let icon_url = state.icon_url.clone();
                 self.state.nwa.request = Some(state);
                 self.state.nwa.approving = false;
@@ -56,17 +65,16 @@ impl AppCore {
             self.set_nwa_error("The Nostr Wallet Auth request is no longer available.");
             return;
         };
-        let connection = match self.build_authorized_nwc_connection(
-            request.display_name,
-            request.icon_url,
-            relay,
-            request.client_public_key_hex,
-            budget_sat,
-            budget_interval,
-            permissions,
-            request.expires_at,
-        ) {
-            Ok(connection) => connection,
+        if !self.nwc_service_ready {
+            self.set_nwa_error("NWC authorization storage is unavailable.");
+            return;
+        }
+        if !self.ensure_wallet_derived_nostr_key() {
+            self.set_nwa_error("Create or open the wallet before adding NWC.");
+            return;
+        }
+        let service_keys = match self.nostr_keys() {
+            Ok(keys) => keys,
             Err(error) => {
                 self.set_nwa_error(&format!("{error:#}"));
                 return;
@@ -74,37 +82,27 @@ impl AppCore {
         };
         self.state.nwa.approving = true;
         self.state.nwa.error_message = None;
-        self.finish_nwa_approval(connection);
-    }
-
-    pub(super) fn finish_nwa_approval(&mut self, mut connection: NwcConnection) {
-        let Some(request_id) = self
-            .state
-            .nwa
-            .request
-            .as_ref()
-            .map(|request| request.request_id_hex.clone())
-        else {
-            self.set_nwa_error("The Nostr Wallet Auth request is no longer available.");
-            return;
-        };
-        if !self.nwc_service_ready {
-            self.set_nwa_error("NWC authorization storage is unavailable.");
-            return;
-        }
-        let lud16 = self.state.lightning_address.address.as_deref();
-        let approval = self
+        let approved = self
             .nwc_service
             .as_ref()
             .expect("checked above")
-            .approve_pending_nwa(
-                &request_id,
-                connection_authorization(&connection),
-                lud16.map(str::to_owned),
-            );
-        let approval = match approval {
-            Ok(approval) => approval,
-            Err(MobileServiceError::NwaApproval(NwaApprovalError::AuthorityEscalation)) => {
+            .approve_application_nwa(nwc_mobile::NwaApprovalSelection::new(
+                request.request_id_hex.clone(),
+                service_keys.public_key().to_hex(),
+                relay,
+                self.state.nwc.default_relay.clone(),
+                permissions.into_iter().map(Into::into).collect(),
+                budget_sat,
+                budget_interval.into(),
+                NWC_ENCRYPTION,
+                request.expires_at.map(nwc_mobile::UnixTimestamp::from_secs),
+                self.state.lightning_address.address.clone(),
+            ));
+        let approved = match approved {
+            Ok(approved) => approved,
+            Err(nwc_mobile::ApplicationWorkflowError::Service(
+                MobileServiceError::NwaApproval(NwaApprovalError::AuthorityEscalation),
+            )) => {
                 self.set_nwa_error("The approval exceeds the requested authority.");
                 return;
             }
@@ -113,12 +111,26 @@ impl AppCore {
                 return;
             }
         };
-        connection.created_at = approval.connection().created_at().as_secs();
-        connection.budget_period_started_at = connection.created_at;
-        connection.expires_at = approval
-            .connection()
-            .expires_at()
-            .map(|value| value.as_secs());
+        self.finish_nwa_approval(request, approved);
+    }
+
+    fn finish_nwa_approval(
+        &mut self,
+        request: NwaRequestState,
+        approved: nwc_mobile::ApprovedApplicationConnection,
+    ) {
+        let approval = approved.approval();
+        let icon_display_url = self.nwc_icon_display_url(request.icon_url.as_deref());
+        let connection = NwcConnection::from_approved(
+            &approved,
+            MobileConnectionMetadata {
+                name: request.display_name,
+                icon_url: request.icon_url,
+                icon_display_url,
+                wallet_managed_secret: false,
+            },
+        )
+        .expect("shared NWA approval must produce a native connection view");
         let callback_url = approval.callback_url().map(str::to_owned);
         self.state.nwc.default_relay = connection.relay.clone();
         self.state.nwc.connections.push(connection);
@@ -186,13 +198,18 @@ impl AppCore {
             self.state.toast = Some("NWC connection was not found.".to_string());
             return;
         };
-        let uri = match build_nwc_connection_uri(
-            self.secrets.as_ref(),
-            self.state.lightning_address.address.clone(),
-            connection,
-        ) {
-            Some(uri) => uri,
-            None => {
+        let provider = RebelSecretProvider::new(self.secrets.clone());
+        let uri = match self
+            .nwc_service
+            .as_ref()
+            .expect("connection state requires the shared service")
+            .export_wallet_connection_uri(
+                &connection.id,
+                self.state.lightning_address.address.clone(),
+                &provider,
+            ) {
+            Ok(uri) => uri,
+            Err(_) => {
                 self.state.toast = Some(
                     "This client-created NWC connection cannot be exported by the wallet."
                         .to_string(),
