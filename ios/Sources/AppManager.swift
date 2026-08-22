@@ -62,6 +62,7 @@ final class AppManager: AppReconciler {
         switch update {
         case let .fullState(s):
             if s.rev <= lastRevApplied { return }
+            acknowledgeCompletedNwcWakeRequests(nextState: s)
             recordNwcWakeDebugChanges(nextState: s)
             notifyIfReceiveCompleted(nextState: s)
             lastRevApplied = s.rev
@@ -98,6 +99,12 @@ final class AppManager: AppReconciler {
                 nwcConnectionExport = NwcConnectionExport(id: connectionId, name: name, uri: uri)
             }
         }
+    }
+
+    private func acknowledgeCompletedNwcWakeRequests(nextState: AppState) {
+        NwcWakeInbox.remove(eventIds: Set(
+            nextState.nwc.processedWakeRequests.map(\.eventId)
+        ))
     }
 
     private func recordNwcWakeDebugChanges(nextState: AppState) {
@@ -251,12 +258,12 @@ final class AppManager: AppReconciler {
     }
 
     func drainQueuedNwcWakeRequests() {
-        let requests = NwcWakeInbox.drain()
+        let requests = NwcWakeInbox.pendingRequests()
         guard !requests.isEmpty else { return }
 
         NwcWakeInbox.appendDebug(
             source: "App",
-            message: "Drained \(requests.count) queued nwc_wake request\(requests.count == 1 ? "" : "s")"
+            message: "Forwarded \(requests.count) durable nwc_wake request\(requests.count == 1 ? "" : "s") to Rust"
         )
         refreshNwcWakeDebugEntries()
         dispatch(.processNwcWakeRequests(requests: requests.map {

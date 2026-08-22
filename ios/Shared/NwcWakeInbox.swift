@@ -1,4 +1,5 @@
 import Foundation
+import NwcMobileApple
 import Security
 
 enum NwcWakeInboxEvents {
@@ -81,35 +82,69 @@ struct StoredNwcWakeRequest: Codable, Hashable {
         }
         return info
     }
+
+    init(_ queuedRequest: NwcQueuedWakeRequest) {
+        relay = queuedRequest.payload.relayURL
+        eventId = queuedRequest.payload.eventIDHex
+        walletServicePubkey = queuedRequest.payload.walletServicePublicKeyHex
+        eventJson = queuedRequest.payload.embeddedEventJSON
+        receivedAt = queuedRequest.receivedAtSeconds
+    }
+
+    var queuedRequest: NwcQueuedWakeRequest {
+        NwcQueuedWakeRequest(
+            payload: NwcWakePayload(
+                relayURL: relay,
+                eventIDHex: eventId,
+                walletServicePublicKeyHex: walletServicePubkey,
+                embeddedEventJSON: eventJson
+            ),
+            receivedAtSeconds: receivedAt
+        )
+    }
 }
 
 enum NwcWakeInbox {
     private static let queueKey = "nwcWakeQueue"
+    private static let queueDirectoryName = "NwcWakeInbox"
     private static let debugKey = "nwcWakeDebugLog"
     private static let snapshotKey = "nwcWakeSnapshot"
     private static let legacyProcessedEventIdsKey = "nwcWakeProcessedEventIds"
     private static let maxDebugEntries = 30
 
     static func enqueue(_ request: StoredNwcWakeRequest) {
-        guard let defaults = appGroupDefaults() else {
-            NSLog("Could not open app group defaults for nwc_wake queue")
+        do {
+            let inbox = try fileInbox()
+            try migrateLegacyQueueIfNeeded(to: inbox)
+            try inbox.enqueue(request.queuedRequest)
+        } catch {
+            NSLog("Could not persist nwc_wake request: %@", String(describing: error))
             return
         }
-        var requests = load(from: defaults)
-        requests.removeAll { $0.eventId == request.eventId }
-        requests.append(request)
-        save(requests, to: defaults)
         NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
     }
 
-    static func drain() -> [StoredNwcWakeRequest] {
-        guard let defaults = appGroupDefaults() else {
+    static func pendingRequests() -> [StoredNwcWakeRequest] {
+        do {
+            let inbox = try fileInbox()
+            try migrateLegacyQueueIfNeeded(to: inbox)
+            return try inbox.pendingRequests().map(StoredNwcWakeRequest.init)
+        } catch {
+            NSLog("Could not read nwc_wake requests: %@", String(describing: error))
             return []
         }
+    }
 
-        let requests = load(from: defaults)
-        defaults.removeObject(forKey: queueKey)
-        return requests
+    static func remove(eventIds: Set<String>) {
+        guard !eventIds.isEmpty else { return }
+        do {
+            let changed = try fileInbox().remove(eventIDs: eventIds)
+            if changed {
+                NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+            }
+        } catch {
+            NSLog("Could not acknowledge nwc_wake requests: %@", String(describing: error))
+        }
     }
 
     static func appendDebug(source: String, message: String) {
@@ -180,19 +215,26 @@ enum NwcWakeInbox {
         return dataDirectory.path
     }
 
-    private static func load(from defaults: UserDefaults) -> [StoredNwcWakeRequest] {
-        guard let data = defaults.data(forKey: queueKey) else {
-            return []
+    private static func fileInbox() throws -> NwcWakeFileInbox {
+        guard let root = appGroupRootURL() else {
+            throw CocoaError(.fileNoSuchFile)
         }
-
-        return (try? JSONDecoder().decode([StoredNwcWakeRequest].self, from: data)) ?? []
+        let directory = root.appendingPathComponent(queueDirectoryName, isDirectory: true)
+        return NwcWakeFileInbox(directoryURL: directory)
     }
 
-    private static func save(_ requests: [StoredNwcWakeRequest], to defaults: UserDefaults) {
-        guard let data = try? JSONEncoder().encode(requests) else {
+    private static func migrateLegacyQueueIfNeeded(to inbox: NwcWakeFileInbox) throws {
+        guard
+            let defaults = appGroupDefaults(),
+            let legacyData = defaults.data(forKey: queueKey)
+        else {
             return
         }
-        defaults.set(data, forKey: queueKey)
+        let requests = try JSONDecoder().decode([StoredNwcWakeRequest].self, from: legacyData)
+        for request in requests {
+            try inbox.enqueue(request.queuedRequest)
+        }
+        defaults.removeObject(forKey: queueKey)
     }
 
     private static func debugEntries(from defaults: UserDefaults) -> [NwcWakeDebugEntry] {
@@ -218,6 +260,20 @@ enum NwcWakeInbox {
             return nil
         }
         return UserDefaults(suiteName: appGroupId)
+    }
+
+    private static func appGroupRootURL() -> URL? {
+        guard
+            let appGroupId = Bundle.main.object(
+                forInfoDictionaryKey: "RebelWalletAppGroupIdentifier"
+            ) as? String,
+            !appGroupId.isEmpty
+        else {
+            return nil
+        }
+        return FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupId
+        )
     }
 }
 
