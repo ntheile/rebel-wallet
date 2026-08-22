@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::custom_address::validate_custom_address_name;
 use crate::{
-    MAINNET_ESPLORA, MAINNET_SERVER, REGTEST_ESPLORA, REGTEST_SERVER, SIGNET_ESPLORA, SIGNET_SERVER,
+    NwaState, NwcConnection, NwcProcessedWakeRequest, NwcWakeRequest, MAINNET_ESPLORA,
+    MAINNET_SERVER, REGTEST_ESPLORA, REGTEST_SERVER, SIGNET_ESPLORA, SIGNET_SERVER,
 };
 
 mod send;
@@ -34,30 +35,6 @@ pub struct AppState {
     pub nwc: NwcState,
 }
 
-#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
-pub struct NwaState {
-    pub request: Option<NwaRequestState>,
-    pub approving: bool,
-    pub error_message: Option<String>,
-    pub callback_pending: bool,
-}
-
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct NwaRequestState {
-    pub id: String,
-    pub client_pubkey: String,
-    pub display_name: String,
-    pub icon_url: Option<String>,
-    pub icon_display_url: Option<String>,
-    pub requesting_app_description: Option<String>,
-    pub callback_target_description: String,
-    pub relay: String,
-    pub budget_sat: u64,
-    pub budget_interval: NwcBudgetInterval,
-    pub permissions: Vec<NwcPermission>,
-    pub expires_at: Option<u64>,
-}
-
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct PushNotificationState {
     pub apns_device_token: Option<String>,
@@ -71,132 +48,6 @@ pub struct NwcState {
     pub pending_wake_requests: Vec<NwcWakeRequest>,
     pub processed_wake_requests: Vec<NwcProcessedWakeRequest>,
     pub last_wake_status: String,
-}
-
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NwcConnection {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub icon_url: Option<String>,
-    #[serde(default, skip)]
-    pub icon_display_url: Option<String>,
-    pub relay: String,
-    #[serde(default, skip_serializing)]
-    pub uri: String,
-    #[serde(default)]
-    pub wallet_managed_secret: bool,
-    pub service_pubkey: String,
-    pub client_pubkey: String,
-    pub budget_sat: u64,
-    pub spent_sat: u64,
-    pub budget_display: String,
-    pub spent_display: String,
-    #[serde(default)]
-    pub budget_interval: NwcBudgetInterval,
-    #[serde(default)]
-    pub budget_interval_display: String,
-    #[serde(default)]
-    pub permissions: Vec<NwcPermission>,
-    #[serde(default)]
-    pub permissions_configured: bool,
-    pub allow_get_balance: bool,
-    pub allow_pay_invoice: bool,
-    pub created_at: u64,
-    #[serde(default, skip)]
-    pub last_used_at: Option<u64>,
-    #[serde(default)]
-    pub expires_at: Option<u64>,
-    #[serde(default)]
-    pub budget_period_started_at: u64,
-    #[serde(default)]
-    pub pending_info_event_relays: Vec<String>,
-}
-
-#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NwcPermission {
-    PayInvoice,
-    PayKeysend,
-    MakeInvoice,
-    LookupInvoice,
-    ListTransactions,
-    GetBalance,
-    GetInfo,
-    MakeHoldInvoice,
-    CancelHoldInvoice,
-    SettleHoldInvoice,
-}
-
-impl NwcPermission {
-    pub(crate) const IMPLEMENTED: [Self; 6] = [
-        Self::GetInfo,
-        Self::GetBalance,
-        Self::PayInvoice,
-        Self::MakeInvoice,
-        Self::LookupInvoice,
-        Self::ListTransactions,
-    ];
-}
-
-impl NwcConnection {
-    pub(crate) fn enabled_permissions(&self) -> Vec<NwcPermission> {
-        if self.permissions_configured {
-            return self.permissions.clone();
-        }
-
-        let mut permissions = vec![NwcPermission::GetInfo];
-        if self.allow_get_balance {
-            permissions.push(NwcPermission::GetBalance);
-        }
-        if self.allow_pay_invoice {
-            permissions.push(NwcPermission::PayInvoice);
-        }
-        permissions
-    }
-}
-
-#[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NwcBudgetInterval {
-    #[default]
-    Never,
-    Hourly,
-    Daily,
-    Weekly,
-    Monthly,
-    Yearly,
-}
-
-impl NwcBudgetInterval {
-    pub(crate) fn display_name(&self) -> &'static str {
-        match self {
-            Self::Never => "Never",
-            Self::Hourly => "Hourly",
-            Self::Daily => "Daily",
-            Self::Weekly => "Weekly",
-            Self::Monthly => "Monthly",
-            Self::Yearly => "Yearly",
-        }
-    }
-}
-
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct NwcWakeRequest {
-    pub relay: String,
-    pub event_id: String,
-    pub wallet_service_pubkey: String,
-    pub received_at: u64,
-}
-
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct NwcProcessedWakeRequest {
-    pub relay: String,
-    pub event_id: String,
-    pub client_pubkey: String,
-    pub method: String,
-    pub status: String,
-    pub amount_sat: u64,
-    pub received_at: u64,
-    pub processed_at: u64,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -774,6 +625,7 @@ impl AppState {
             },
             nwa: NwaState {
                 request: None,
+                icon_display_url: None,
                 approving: false,
                 error_message: None,
                 callback_pending: false,
@@ -857,13 +709,10 @@ impl AppState {
         send::refresh_send_derived(self);
 
         for connection in &mut self.nwc.connections {
-            if !connection.permissions_configured {
-                connection.permissions = connection.enabled_permissions();
-            }
             connection.budget_display = format_sats(connection.budget_sat);
             connection.spent_display = format_sats(connection.spent_sat);
             connection.budget_interval_display =
-                connection.budget_interval.display_name().to_string();
+                crate::core::nwc_budget_interval_display(connection.budget_interval).to_string();
         }
 
         self.lightning_address.arkzap_address = self
@@ -1055,6 +904,8 @@ fn grouped_digits(amount: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::PersistedNwcConnection;
+    use crate::{NwcBudgetInterval, NwcConnection, NwcPermission};
 
     #[test]
     fn formats_unsigned_and_signed_sats() {
@@ -1648,7 +1499,6 @@ mod tests {
             icon_url: None,
             icon_display_url: None,
             relay: "wss://relay.example.com".to_string(),
-            uri: "nostr+walletconnect://secret".to_string(),
             wallet_managed_secret: false,
             service_pubkey: "service".to_string(),
             client_pubkey: "client".to_string(),
@@ -1659,9 +1509,6 @@ mod tests {
             budget_interval: NwcBudgetInterval::Daily,
             budget_interval_display: "Daily".to_string(),
             permissions: vec![NwcPermission::GetInfo],
-            permissions_configured: true,
-            allow_get_balance: false,
-            allow_pay_invoice: false,
             created_at: 1,
             last_used_at: None,
             expires_at: None,
@@ -1669,7 +1516,9 @@ mod tests {
             pending_info_event_relays: Vec::new(),
         };
 
-        let mut persisted = serde_json::to_value(&connection).expect("serialize connection");
+        let persisted_connection = PersistedNwcConnection::from(&connection);
+        let mut persisted =
+            serde_json::to_value(&persisted_connection).expect("serialize connection");
         assert!(persisted.get("uri").is_none());
 
         let object = persisted.as_object_mut().expect("connection object");
@@ -1678,13 +1527,14 @@ mod tests {
             serde_json::Value::String("nostr+walletconnect://legacy-secret".to_string()),
         );
         object.remove("budget_interval");
-        let migrated: NwcConnection =
+        let legacy: PersistedNwcConnection =
             serde_json::from_value(persisted).expect("deserialize legacy connection");
 
         assert_eq!(
-            migrated.uri, "nostr+walletconnect://legacy-secret",
+            legacy.uri, "nostr+walletconnect://legacy-secret",
             "legacy URI must remain available for one-time Keychain migration"
         );
+        let migrated = legacy.into_view();
         assert_eq!(migrated.budget_interval, NwcBudgetInterval::Never);
     }
 }

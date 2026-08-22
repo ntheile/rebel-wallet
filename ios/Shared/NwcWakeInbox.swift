@@ -12,7 +12,7 @@ extension NwcQueuedWakeRequest {
         guard
             let data = try? JSONSerialization.data(withJSONObject: userInfo),
             let payloadJson = String(data: data, encoding: .utf8),
-            let request = parseNwcWakePayloadJson(
+            let request = parseMobileWakePayloadJson(
                 payloadJson: payloadJson,
                 receivedAtSeconds: receivedAt
             )

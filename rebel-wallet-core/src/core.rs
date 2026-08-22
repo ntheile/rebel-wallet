@@ -24,13 +24,13 @@ use flume::Sender;
 use nostr::nips::nip47::NostrWalletConnectUri;
 use nostr_sdk::prelude::{
     nip04, Contact as NostrContact, ContactListBuilder, EventBuilder, EventBuilderTemplate, Filter,
-    FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, RelayUrl, SecretKey as NostrSecretKey,
-    Tag, ToBech32,
+    FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, Tag, ToBech32,
 };
 use nwc_mobile::{
-    ForegroundWakeCoordinator, ForegroundWakeDecision, ForegroundWakeOutcome,
-    ForegroundWakeRetryCause, MobileServiceError, NeverCancelled, NwaApprovalError,
-    NwcMobileService, OperationBudget, WakeEnvelope,
+    build_connection_uri, parse_connection_relays, ForegroundWakeCoordinator,
+    ForegroundWakeDecision, ForegroundWakeOutcome, ForegroundWakeRetryCause, MobileServiceError,
+    NeverCancelled, NwaApprovalError, NwcMobileService, OperationBudget, WakeEnvelope,
+    DEFAULT_MAXIMUM_CONNECTION_RELAYS,
 };
 use nwc_mobile_bark::execute_bark_wake;
 use tokio::runtime::Runtime;
@@ -48,12 +48,13 @@ use crate::nostr_support::{
     upload_profile_picture,
 };
 use crate::nwc_mobile_adapter::{
-    connection_authorization, legacy_connection, nwa_request_state, open_nwc_service,
-    publish_nwc_info_event, NostrRelayTransport, RebelSecretProvider,
+    connection_authorization, connection_draft, draft_permissions, legacy_connection,
+    nwa_request_state, open_nwc_service, publish_nwc_info_event, NostrRelayTransport,
+    RebelSecretProvider,
 };
 use crate::nwc_push::{run_registration_worker, NwcPushConfig};
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
-use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
+use crate::persistence::{PaymentAnnotation, PersistedNwcConnection, ZapReceiptRecord};
 use crate::price::fetch_bitcoin_price;
 use crate::profile_cache::{
     clear_profile_cache, clear_profile_picture_dir, ensure_nwc_icon_dir,
@@ -79,6 +80,8 @@ mod wallet_lifecycle;
 mod wallet_work;
 
 #[cfg(test)]
+use nostr_sdk::prelude::RelayUrl;
+#[cfg(test)]
 use nwc_mobile::WakeDisposition;
 
 use wallet_work::{
@@ -90,8 +93,6 @@ pub(crate) const WALLET_SEED_KEY: &str = "wallet_seed";
 pub(crate) const NOSTR_SECRET_KEY: &str = "nostr_secret";
 const NWC_CLIENT_SECRET_KEY_PREFIX: &str = "nwc_client_secret:";
 const MAX_NWC_WAKE_HISTORY: usize = 30;
-const MAX_NWC_RELAYS_PER_CONNECTION: usize = 2;
-const NWC_RELAY_STORAGE_SEPARATOR: &str = "\n";
 const NWC_INFO_EVENT_PUBLISH_ATTEMPTS: usize = 3;
 const NWC_REGISTRATION_MIN_RETRY_SECONDS: u64 = 5;
 const NWC_FOREGROUND_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -171,87 +172,22 @@ fn build_nwc_connection_uri(
     lud16: Option<String>,
     connection: &NwcConnection,
 ) -> Option<String> {
-    let service_pubkey = public_key_from_npub_or_hex(&connection.service_pubkey).ok()?;
     let relays = connection_nwc_relay_urls(connection);
-    if relays.is_empty() {
-        return None;
-    }
     let client_secret = secrets.get_secret(nwc_client_secret_key(&connection.client_pubkey))?;
-    let client_secret = NostrSecretKey::parse(&client_secret).ok()?;
-    Some(NostrWalletConnectUri::new(service_pubkey, relays, client_secret, lud16).to_string())
+    build_connection_uri(&connection.service_pubkey, &relays, &client_secret, lud16).ok()
 }
 
-fn redact_nwc_connection_secrets(connections: &mut [NwcConnection]) {
-    for connection in connections {
-        connection.uri.clear();
-    }
-}
-
-fn redact_persisted_nwc_connection_secrets(connections: &mut [NwcConnection]) {
-    for connection in connections {
-        connection.uri.clear();
-    }
-}
-
-fn nwc_relay_values(value: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    value
-        .split(|character: char| character.is_whitespace() || character == ',')
-        .map(str::trim)
-        .filter(|relay| !relay.is_empty())
-        .filter_map(|relay| {
-            let normalized = relay.to_string();
-            if seen.insert(normalized.clone()) {
-                Some(normalized)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn parse_nwc_relay_urls(value: &str, fallback: &str) -> anyhow::Result<Vec<RelayUrl>> {
-    let relay_values = if value.trim().is_empty() {
-        nwc_relay_values(fallback)
-    } else {
-        nwc_relay_values(value)
-    };
-    if relay_values.len() > MAX_NWC_RELAYS_PER_CONNECTION {
-        anyhow::bail!("too many NWC relays");
-    }
-
-    let mut relays = Vec::new();
-    for relay in relay_values {
-        nwc_mobile::SecureRelayUrl::parse(&relay)
-            .with_context(|| format!("invalid or insecure NWC relay {relay}"))?;
-        relays.push(RelayUrl::parse(&relay).with_context(|| format!("invalid NWC relay {relay}"))?);
-    }
-
-    if relays.is_empty() {
-        anyhow::bail!("at least one NWC relay is required");
-    }
-
-    Ok(relays)
+fn parse_nwc_relay_urls(value: &str, fallback: &str) -> anyhow::Result<Vec<String>> {
+    parse_connection_relays(value, fallback, DEFAULT_MAXIMUM_CONNECTION_RELAYS).map_err(Into::into)
 }
 
 pub(crate) fn nwc_relay_input_is_valid(value: &str) -> bool {
     parse_nwc_relay_urls(value, "").is_ok()
 }
 
-fn connection_nwc_relay_urls(connection: &NwcConnection) -> Vec<RelayUrl> {
-    nwc_relay_values(&connection.relay)
-        .into_iter()
-        .take(MAX_NWC_RELAYS_PER_CONNECTION)
-        .filter_map(|relay| RelayUrl::parse(&relay).ok())
-        .collect()
-}
-
-fn encode_nwc_relay_urls(relays: &[RelayUrl]) -> String {
-    relays
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(NWC_RELAY_STORAGE_SEPARATOR)
+fn connection_nwc_relay_urls(connection: &NwcConnection) -> Vec<String> {
+    parse_connection_relays(&connection.relay, "", DEFAULT_MAXIMUM_CONNECTION_RELAYS)
+        .unwrap_or_default()
 }
 
 fn committed_round_balance(
@@ -417,11 +353,15 @@ fn lightning_details_from_vtxo(vtxo: &Vtxo<Full>) -> MovementLightningDetails {
     details
 }
 
-fn normalize_nwc_permissions(permissions: Vec<NwcPermission>) -> Vec<NwcPermission> {
-    NwcPermission::IMPLEMENTED
-        .into_iter()
-        .filter(|permission| permissions.contains(permission))
-        .collect()
+pub(crate) fn nwc_budget_interval_display(interval: NwcBudgetInterval) -> &'static str {
+    match interval {
+        NwcBudgetInterval::Never => "Never",
+        NwcBudgetInterval::Hourly => "Hourly",
+        NwcBudgetInterval::Daily => "Daily",
+        NwcBudgetInterval::Weekly => "Weekly",
+        NwcBudgetInterval::Monthly => "Monthly",
+        NwcBudgetInterval::Yearly => "Yearly",
+    }
 }
 
 fn preimage_from_vtxo_witnesses(vtxo: &Vtxo<Full>) -> Option<Preimage> {
@@ -799,7 +739,7 @@ impl AppCore {
             AppAction::ProcessNwcWakeRequests { requests } => {
                 let mut added_requests = Vec::new();
                 for request in requests {
-                    let already_seen = self.nwc_wake_request_is_known(&request.event_id);
+                    let already_seen = self.nwc_wake_request_is_known(&request.event_id_hex);
 
                     if !already_seen {
                         self.state.nwc.pending_wake_requests.push(request.clone());
@@ -1047,14 +987,6 @@ impl AppCore {
             return;
         }
 
-        let relay_urls = match parse_nwc_relay_urls(&relay, &self.state.nwc.default_relay) {
-            Ok(relay_urls) => relay_urls,
-            Err(_) => {
-                self.state.toast = Some("Enter up to two valid Nostr relay URLs.".to_string());
-                self.request_haptic(HapticFeedback::NotificationError);
-                return;
-            }
-        };
         let service_keys = match self.nostr_keys() {
             Ok(keys) => keys,
             Err(e) => {
@@ -1067,26 +999,44 @@ impl AppCore {
         let client_keys = Keys::generate();
         let client_pubkey = client_keys.public_key().to_hex();
         let client_secret = client_keys.secret_key().to_secret_hex();
+        let connection_id = format!("nwc-{client_pubkey}");
+        let draft = match connection_draft(
+            connection_id.clone(),
+            client_pubkey.clone(),
+            service_keys.public_key().to_hex(),
+            &relay,
+            &self.state.nwc.default_relay,
+            budget_sat,
+            budget_interval,
+            permissions,
+            None,
+        ) {
+            Ok(draft) => draft,
+            Err(_) => {
+                self.state.toast = Some("Enter up to two valid Nostr relay URLs.".to_string());
+                self.request_haptic(HapticFeedback::NotificationError);
+                return;
+            }
+        };
         if !self
             .secrets
-            .set_secret(nwc_client_secret_key(&client_pubkey), client_secret)
+            .set_secret(nwc_client_secret_key(&client_pubkey), client_secret.clone())
         {
             self.state.toast = Some("Could not store NWC secret in Keychain.".to_string());
             self.request_haptic(HapticFeedback::NotificationError);
             return;
         }
-        let uri = NostrWalletConnectUri::new(
-            service_keys.public_key(),
-            relay_urls.clone(),
-            client_keys.secret_key().clone(),
+        let relay_urls = parse_nwc_relay_urls(draft.relay_storage(), "")
+            .expect("shared connection draft contains validated relays");
+        let uri = build_connection_uri(
+            &service_keys.public_key().to_hex(),
+            &relay_urls,
+            &client_secret,
             self.state.lightning_address.address.clone(),
         )
-        .to_string();
-        let relay_storage = encode_nwc_relay_urls(&relay_urls);
-        let pending_info_event_relays = relay_urls
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
+        .expect("shared connection draft contains validated NWC URI fields");
+        let relay_storage = draft.relay_storage().to_string();
+        let pending_info_event_relays = relay_urls;
         let created_at = now_unix();
         let trimmed_name = name.trim();
         let display_name = if trimmed_name.is_empty() {
@@ -1094,17 +1044,13 @@ impl AppCore {
         } else {
             trimmed_name.to_string()
         };
-        let permissions = normalize_nwc_permissions(permissions);
-        let allow_get_balance = permissions.contains(&NwcPermission::GetBalance);
-        let allow_pay_invoice = permissions.contains(&NwcPermission::PayInvoice);
-
+        let permissions = draft_permissions(&draft);
         let mut connection = NwcConnection {
-            id: format!("nwc-{client_pubkey}"),
+            id: connection_id,
             name: display_name,
             icon_url: None,
             icon_display_url: None,
             relay: relay_storage.clone(),
-            uri: String::new(),
             wallet_managed_secret: true,
             service_pubkey: service_keys.public_key().to_hex(),
             client_pubkey,
@@ -1113,11 +1059,8 @@ impl AppCore {
             budget_display: crate::state::format_sats(budget_sat),
             spent_display: crate::state::format_sats(0),
             budget_interval,
-            budget_interval_display: budget_interval.display_name().to_string(),
+            budget_interval_display: nwc_budget_interval_display(budget_interval).to_string(),
             permissions,
-            permissions_configured: true,
-            allow_get_balance,
-            allow_pay_invoice,
             created_at,
             last_used_at: None,
             expires_at: None,
@@ -1130,7 +1073,7 @@ impl AppCore {
             .context("NWC authorization storage is unavailable")
             .and_then(|service| {
                 service
-                    .create_host_connection(connection_authorization(&connection))
+                    .create_host_connection(draft.authorization())
                     .context("could not persist the NWC authorization")
             });
         let active = match registry_result {
@@ -1165,6 +1108,7 @@ impl AppCore {
             });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_authorized_nwc_connection(
         &mut self,
         name: String,
@@ -1183,8 +1127,6 @@ impl AppCore {
             anyhow::bail!("Create or open the wallet before adding NWC.");
         }
 
-        let relay_urls = parse_nwc_relay_urls(&relay, &self.state.nwc.default_relay)
-            .context("Enter up to two valid Nostr relay URLs.")?;
         let client_pubkey = public_key_from_npub_or_hex(client_pubkey.trim())
             .context("The NWC client public key is invalid.")?;
         let client_pubkey_hex = client_pubkey.to_hex();
@@ -1198,12 +1140,21 @@ impl AppCore {
             anyhow::bail!("This NWC client is already authorized.");
         }
         let service_keys = self.nostr_keys()?;
-
-        let relay_storage = encode_nwc_relay_urls(&relay_urls);
-        let pending_info_event_relays = relay_urls
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
+        let draft = connection_draft(
+            format!("nwc-{client_pubkey_hex}"),
+            client_pubkey_hex.clone(),
+            service_keys.public_key().to_hex(),
+            &relay,
+            &self.state.nwc.default_relay,
+            budget_sat,
+            budget_interval,
+            permissions,
+            expires_at,
+        )
+        .context("Enter up to two valid Nostr relay URLs.")?;
+        let relay_storage = draft.relay_storage().to_string();
+        let pending_info_event_relays = parse_nwc_relay_urls(&relay_storage, "")
+            .expect("shared connection draft contains validated relays");
         let created_at = now_unix();
         let trimmed_name = name.trim();
         let display_name = if trimmed_name.is_empty() {
@@ -1211,17 +1162,13 @@ impl AppCore {
         } else {
             trimmed_name.to_string()
         };
-        let permissions = normalize_nwc_permissions(permissions);
-        let allow_get_balance = permissions.contains(&NwcPermission::GetBalance);
-        let allow_pay_invoice = permissions.contains(&NwcPermission::PayInvoice);
-
+        let permissions = draft_permissions(&draft);
         Ok(NwcConnection {
             id: format!("nwc-{client_pubkey_hex}"),
             name: display_name,
             icon_display_url: self.nwc_icon_display_url(icon_url.as_deref()),
             icon_url,
             relay: relay_storage.clone(),
-            uri: String::new(),
             wallet_managed_secret: false,
             service_pubkey: service_keys.public_key().to_hex(),
             client_pubkey: client_pubkey_hex,
@@ -1230,11 +1177,8 @@ impl AppCore {
             budget_display: crate::state::format_sats(budget_sat),
             spent_display: crate::state::format_sats(0),
             budget_interval,
-            budget_interval_display: budget_interval.display_name().to_string(),
+            budget_interval_display: nwc_budget_interval_display(budget_interval).to_string(),
             permissions,
-            permissions_configured: true,
-            allow_get_balance,
-            allow_pay_invoice,
             created_at,
             last_used_at: None,
             expires_at,
@@ -1369,11 +1313,15 @@ impl AppCore {
         }
     }
 
-    pub(super) fn hydrate_nwc_connection_uris(&mut self) {
+    pub(super) fn migrate_persisted_nwc_secrets(
+        &mut self,
+        connections: Vec<PersistedNwcConnection>,
+    ) -> Vec<NwcConnection> {
         let secrets = self.secrets.clone();
         let mut migration_attempted = false;
         let mut migration_failed = false;
-        for connection in &mut self.state.nwc.connections {
+        let mut views = Vec::with_capacity(connections.len());
+        for connection in connections {
             let secret_key = nwc_client_secret_key(&connection.client_pubkey);
             let mut attempted_for_connection = false;
             if secrets.get_secret(secret_key.clone()).is_none() && !connection.uri.is_empty() {
@@ -1387,14 +1335,13 @@ impl AppCore {
                     migration_failed = true;
                 }
             }
-            connection.wallet_managed_secret = secrets.get_secret(secret_key).is_some();
-            if attempted_for_connection && !connection.wallet_managed_secret {
+            let wallet_managed_secret = secrets.get_secret(secret_key).is_some();
+            if attempted_for_connection && !wallet_managed_secret {
                 migration_failed = true;
             }
-            connection.uri.clear();
-        }
-        if migration_attempted {
-            self.save_app_data();
+            let mut view = connection.into_view();
+            view.wallet_managed_secret = wallet_managed_secret;
+            views.push(view);
         }
         if migration_failed {
             self.state.toast = Some(
@@ -1402,6 +1349,11 @@ impl AppCore {
                     .to_string(),
             );
         }
+        if migration_attempted {
+            // The next normal persistence pass writes the secret-free compatibility DTO.
+            self.nwc_registration_refresh_pending = true;
+        }
+        views
     }
 
     pub(super) fn refresh_nwc_connection_uris_for_lud16(&mut self) {
@@ -1433,13 +1385,13 @@ impl AppCore {
             .nwc
             .pending_wake_requests
             .iter()
-            .any(|request| request.event_id == event_id)
+            .any(|request| request.event_id_hex == event_id)
             || self
                 .state
                 .nwc
                 .processed_wake_requests
                 .iter()
-                .any(|request| request.event_id == event_id)
+                .any(|request| request.event_id_hex == event_id)
             || self
                 .nwc_wake_coordinator
                 .is_in_flight(&event_id.to_string())
@@ -1456,7 +1408,11 @@ impl AppCore {
             .nwc
             .pending_wake_requests
             .iter()
-            .find(|request| !self.nwc_wake_coordinator.is_in_flight(&request.event_id))
+            .find(|request| {
+                !self
+                    .nwc_wake_coordinator
+                    .is_in_flight(&request.event_id_hex)
+            })
             .cloned()
         else {
             return;
@@ -1472,7 +1428,8 @@ impl AppCore {
             return;
         }
 
-        self.nwc_wake_coordinator.begin(request.event_id.clone());
+        self.nwc_wake_coordinator
+            .begin(request.event_id_hex.clone());
         self.process_nwc_wake_request(request, wallet);
     }
 
@@ -1482,14 +1439,14 @@ impl AppCore {
         let secrets = self.secrets.clone();
         let generation = self.wallet_generation;
         self.rt.spawn(async move {
-            let event_id = request.event_id.clone();
+            let event_id = request.event_id_hex.clone();
             let result = async {
                 let wake = WakeEnvelope::new(
-                    request.relay.clone(),
-                    request.event_id.clone(),
-                    request.wallet_service_pubkey.clone(),
-                    None,
-                    request.received_at,
+                    request.relay_url.clone(),
+                    request.event_id_hex.clone(),
+                    request.wallet_service_public_key_hex.clone(),
+                    request.embedded_event_json.clone(),
+                    request.received_at_seconds,
                 )
                 .validate()
                 .context("invalid NWC wake envelope")?;
@@ -1530,24 +1487,24 @@ impl AppCore {
     }
 
     fn finish_nwc_wake(&mut self, request: NwcWakeRequest, status: &str, success: bool) {
-        self.nwc_wake_coordinator.forget(&request.event_id);
+        self.nwc_wake_coordinator.forget(&request.event_id_hex);
         self.state
             .nwc
             .pending_wake_requests
-            .retain(|pending| pending.event_id != request.event_id);
+            .retain(|pending| pending.event_id_hex != request.event_id_hex);
         self.state.nwc.last_wake_status = format!("NWC wake {status}.");
         self.state
             .nwc
             .processed_wake_requests
             .push(NwcProcessedWakeRequest {
-                relay: request.relay,
-                event_id: request.event_id,
-                client_pubkey: String::new(),
+                relay_url: request.relay_url,
+                event_id_hex: request.event_id_hex,
+                client_public_key_hex: String::new(),
                 method: "request".to_string(),
                 status: status.to_string(),
                 amount_sat: 0,
-                received_at: request.received_at,
-                processed_at: now_unix(),
+                received_at_seconds: request.received_at_seconds,
+                processed_at_seconds: now_unix(),
             });
         self.cap_processed_nwc_wake_requests();
         self.refresh_nwc_connection_usage();
@@ -1961,7 +1918,7 @@ impl AppCore {
             } => {
                 let decision = self
                     .nwc_wake_coordinator
-                    .handle_disposition(&request.event_id, disposition);
+                    .handle_disposition(&request.event_id_hex, disposition);
                 match decision {
                     ForegroundWakeDecision::Finished(outcome) => match outcome {
                         ForegroundWakeOutcome::Completed => {
@@ -1988,7 +1945,7 @@ impl AppCore {
                             }
                             _ => "NWC wake retry scheduled".to_string(),
                         };
-                        self.schedule_nwc_wake_retry(generation, request.event_id, delay);
+                        self.schedule_nwc_wake_retry(generation, request.event_id_hex, delay);
                         self.process_pending_nwc_wake_requests();
                     }
                     _ => self.finish_nwc_wake(request, "unsupported_disposition", false),
@@ -2004,7 +1961,7 @@ impl AppCore {
                 self.state
                     .nwc
                     .pending_wake_requests
-                    .retain(|request| request.event_id != event_id);
+                    .retain(|request| request.event_id_hex != event_id);
                 self.request_haptic(HapticFeedback::NotificationWarning);
                 self.process_pending_nwc_wake_requests();
             }
@@ -2177,7 +2134,6 @@ impl AppCore {
 
     fn emit(&mut self, shared: &Arc<RwLock<AppState>>, tx: &Sender<AppUpdate>) {
         let mut snapshot = self.state.clone();
-        redact_nwc_connection_secrets(&mut snapshot.nwc.connections);
         snapshot.refresh_derived();
         match shared.write() {
             Ok(mut g) => *g = snapshot.clone(),
@@ -3486,7 +3442,6 @@ mod tests {
             icon_url: None,
             icon_display_url: None,
             relay: "wss://relay.example.com".to_string(),
-            uri: String::new(),
             wallet_managed_secret: true,
             service_pubkey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
                 .to_string(),
@@ -3498,14 +3453,21 @@ mod tests {
             budget_interval: NwcBudgetInterval::Never,
             budget_interval_display: String::new(),
             permissions: vec![NwcPermission::GetInfo],
-            permissions_configured: true,
-            allow_get_balance: false,
-            allow_pay_invoice: false,
             created_at: 0,
             last_used_at: None,
             expires_at: None,
             budget_period_started_at: 0,
             pending_info_event_relays: Vec::new(),
+        }
+    }
+
+    fn test_nwc_wake_request() -> NwcWakeRequest {
+        NwcWakeRequest {
+            relay_url: "wss://relay.example.com".to_string(),
+            event_id_hex: "event".to_string(),
+            wallet_service_public_key_hex: "wallet".to_string(),
+            embedded_event_json: None,
+            received_at_seconds: 100,
         }
     }
 
@@ -3544,12 +3506,10 @@ mod tests {
         let (_data_dir, _cache_dir, mut core) = test_core();
         core.nwc_service = None;
         core.nwc_service_ready = false;
-        core.state.nwc.pending_wake_requests.push(NwcWakeRequest {
-            relay: "wss://relay.example.com".to_string(),
-            event_id: "event".to_string(),
-            wallet_service_pubkey: "wallet".to_string(),
-            received_at: 100,
-        });
+        core.state
+            .nwc
+            .pending_wake_requests
+            .push(test_nwc_wake_request());
 
         core.process_pending_nwc_wake_requests();
 
@@ -3565,12 +3525,10 @@ mod tests {
     fn failed_authorization_migration_keeps_pending_wakes_queued() {
         let (_data_dir, _cache_dir, mut core) = test_core();
         core.state.nwc.connections = vec![test_nwc_connection("invalid-client-public-key")];
-        core.state.nwc.pending_wake_requests.push(NwcWakeRequest {
-            relay: "wss://relay.example.com".to_string(),
-            event_id: "event".to_string(),
-            wallet_service_pubkey: "wallet".to_string(),
-            received_at: 100,
-        });
+        core.state
+            .nwc
+            .pending_wake_requests
+            .push(test_nwc_wake_request());
 
         core.migrate_nwc_connections();
         core.process_pending_nwc_wake_requests();
@@ -3583,14 +3541,10 @@ mod tests {
     #[test]
     fn completed_engine_wake_leaves_the_queue_and_enters_history() {
         let (_data_dir, _cache_dir, mut core) = test_core();
-        let request = NwcWakeRequest {
-            relay: "wss://relay.example.com".to_string(),
-            event_id: "event".to_string(),
-            wallet_service_pubkey: "wallet".to_string(),
-            received_at: 100,
-        };
+        let request = test_nwc_wake_request();
         core.state.nwc.pending_wake_requests.push(request.clone());
-        core.nwc_wake_coordinator.begin(request.event_id.clone());
+        core.nwc_wake_coordinator
+            .begin(request.event_id_hex.clone());
 
         core.handle_async(AsyncMsg::NwcWakeEngineFinished {
             generation: core.wallet_generation,
@@ -3612,14 +3566,10 @@ mod tests {
     #[test]
     fn retryable_engine_wake_remains_owned_and_queued() {
         let (_data_dir, _cache_dir, mut core) = test_core();
-        let request = NwcWakeRequest {
-            relay: "wss://relay.example.com".to_string(),
-            event_id: "event".to_string(),
-            wallet_service_pubkey: "wallet".to_string(),
-            received_at: 100,
-        };
+        let request = test_nwc_wake_request();
         core.state.nwc.pending_wake_requests.push(request.clone());
-        core.nwc_wake_coordinator.begin(request.event_id.clone());
+        core.nwc_wake_coordinator
+            .begin(request.event_id_hex.clone());
 
         core.handle_async(AsyncMsg::NwcWakeEngineFinished {
             generation: core.wallet_generation,
@@ -3644,17 +3594,13 @@ mod tests {
     #[test]
     fn exhausted_wake_retries_leave_the_queue_and_enter_history() {
         let (_data_dir, _cache_dir, mut core) = test_core();
-        let request = NwcWakeRequest {
-            relay: "wss://relay.example.com".to_string(),
-            event_id: "event".to_string(),
-            wallet_service_pubkey: "wallet".to_string(),
-            received_at: 100,
-        };
+        let request = test_nwc_wake_request();
         core.state.nwc.pending_wake_requests.push(request.clone());
-        core.nwc_wake_coordinator.begin(request.event_id.clone());
+        core.nwc_wake_coordinator
+            .begin(request.event_id_hex.clone());
         for _ in 0..nwc_mobile::DEFAULT_FOREGROUND_WAKE_RETRY_ATTEMPTS {
             let _ = core.nwc_wake_coordinator.handle_disposition(
-                &request.event_id,
+                &request.event_id_hex,
                 WakeDisposition::RetryAfter {
                     delay: Duration::from_secs(1),
                     reason: nwc_mobile::RetryReason::WalletUnavailable,
@@ -3703,7 +3649,7 @@ mod tests {
         ));
 
         let current = core.state.nwa.request.as_ref().expect("current request");
-        assert_eq!(current.id, first.id);
+        assert_eq!(current.request_id_hex, first.request_id_hex);
         assert_eq!(current.display_name, "First");
         assert!(core
             .state
@@ -3764,38 +3710,12 @@ mod tests {
     }
 
     #[test]
-    fn redacts_nwc_secrets_from_observable_connections() {
-        let mut connections = vec![NwcConnection {
-            id: "test".to_string(),
-            name: "Test".to_string(),
-            icon_url: None,
-            icon_display_url: None,
-            relay: "wss://relay.example.com".to_string(),
-            uri: "nostr+walletconnect://secret-bearing-uri".to_string(),
-            wallet_managed_secret: true,
-            service_pubkey: String::new(),
-            client_pubkey: String::new(),
-            budget_sat: 0,
-            spent_sat: 0,
-            budget_display: String::new(),
-            spent_display: String::new(),
-            budget_interval: NwcBudgetInterval::Never,
-            budget_interval_display: String::new(),
-            permissions: Vec::new(),
-            permissions_configured: true,
-            allow_get_balance: false,
-            allow_pay_invoice: false,
-            created_at: 0,
-            last_used_at: None,
-            expires_at: None,
-            budget_period_started_at: 0,
-            pending_info_event_relays: Vec::new(),
-        }];
+    fn persistence_never_writes_nwc_secrets() {
+        let connection = test_nwc_connection("client");
+        let persisted = PersistedNwcConnection::from(&connection);
 
-        redact_nwc_connection_secrets(&mut connections);
-
-        assert!(connections[0].uri.is_empty());
-        assert!(connections[0].wallet_managed_secret);
+        assert!(persisted.uri.is_empty());
+        assert!(persisted.wallet_managed_secret);
     }
 
     #[test]
@@ -3810,37 +3730,13 @@ mod tests {
             None,
         )
         .to_string();
-        core.state.nwc.connections.push(NwcConnection {
-            id: "legacy".to_string(),
-            name: "Legacy".to_string(),
-            icon_url: None,
-            icon_display_url: None,
-            relay: "wss://relay.example.com".to_string(),
-            uri,
-            wallet_managed_secret: false,
-            service_pubkey: service_keys.public_key().to_hex(),
-            client_pubkey: client_keys.public_key().to_hex(),
-            budget_sat: 0,
-            spent_sat: 0,
-            budget_display: String::new(),
-            spent_display: String::new(),
-            budget_interval: NwcBudgetInterval::Never,
-            budget_interval_display: String::new(),
-            permissions: Vec::new(),
-            permissions_configured: true,
-            allow_get_balance: false,
-            allow_pay_invoice: false,
-            created_at: 0,
-            last_used_at: None,
-            expires_at: None,
-            budget_period_started_at: 0,
-            pending_info_event_relays: Vec::new(),
-        });
-
-        core.hydrate_nwc_connection_uris();
+        let mut persisted =
+            PersistedNwcConnection::from(&test_nwc_connection(&client_keys.public_key().to_hex()));
+        persisted.uri = uri;
+        persisted.service_pubkey = service_keys.public_key().to_hex();
+        core.state.nwc.connections = core.migrate_persisted_nwc_secrets(vec![persisted]);
 
         let connection = &core.state.nwc.connections[0];
-        assert!(connection.uri.is_empty());
         assert!(!connection.wallet_managed_secret);
         assert!(core
             .state

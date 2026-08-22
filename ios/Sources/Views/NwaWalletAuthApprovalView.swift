@@ -58,7 +58,7 @@ struct NwaWalletAuthApprovalView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 16) {
-                        NwcConnectionVisualization(externalAppIconURL: request.iconDisplayUrl)
+                        NwcConnectionVisualization(externalAppIconURL: manager.state.nwa.iconDisplayUrl)
                             .frame(maxWidth: .infinity)
 
                         VStack(alignment: .leading, spacing: 16) {
@@ -217,7 +217,7 @@ struct NwaWalletAuthApprovalView: View {
                             } else {
                                 VStack(alignment: .leading, spacing: 12) {
                                     VStack(alignment: .leading, spacing: 8) {
-                                        NwaPolicyRow(icon: "bolt.fill", title: "Budget", value: "\(parsedBudget?.formatted() ?? request.budgetSat.formatted()) sats")
+                                        NwaPolicyRow(icon: "bolt.fill", title: "Budget", value: "\(parsedBudget?.formatted() ?? request.budgetLimitSat.formatted()) sats")
                                         NwaPolicyRow(icon: "calendar", title: "Interval", value: budgetInterval.title)
                                         NwaPolicyRow(icon: "antenna.radiowaves.left.and.right", title: "Relays", value: relays.joined(separator: "\n"))
                                     }
@@ -323,13 +323,13 @@ struct NwaWalletAuthApprovalView: View {
         guard !initialized else { return }
         initialized = true
 
-        let requestedRelays = nwcRelayURLs(request.relay)
+        let requestedRelays = request.relayUrls
         let defaultRelays = nwcRelayURLs(manager.state.nwc.defaultRelay)
         relay = encodeNwcRelayURLs(requestedRelays.isEmpty ? defaultRelays : requestedRelays)
-        budgetText = formatBudgetInput("\(request.budgetSat)")
+        budgetText = formatBudgetInput("\(request.budgetLimitSat)")
         budgetInterval = request.budgetInterval
-        selectedPermissions = Set(request.permissions)
-        permissionPreset = NwcPermissionPreset.matching(request.permissions)
+        selectedPermissions = Set(request.methods)
+        permissionPreset = NwcPermissionPreset.matching(request.methods)
     }
 
     private func selectRelayPreset(_ preset: NwcRelayPreset?) {
@@ -380,7 +380,9 @@ struct NwaWalletAuthApprovalView: View {
     }
 }
 
-extension NwaRequestState: Identifiable {}
+extension NwaRequestState: Identifiable {
+    public var id: String { requestIdHex }
+}
 
 private struct NwaPolicyRow: View {
     let icon: String

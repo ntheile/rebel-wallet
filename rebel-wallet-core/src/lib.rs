@@ -4,6 +4,13 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use flume::{Receiver, Sender};
+pub use nwc_mobile_uniffi::{
+    parse_mobile_wake_payload_json, MobileBudgetInterval as NwcBudgetInterval, MobileCancellation,
+    MobileConnectionView as NwcConnection, MobileNwaRequestPresentation as NwaRequestState,
+    MobileNwaSessionState as NwaState, MobileNwcMethod as NwcPermission,
+    MobileProcessedWakeRequest as NwcProcessedWakeRequest, MobileWakeDisposition,
+    MobileWakeEnvelope as NwcWakeRequest,
+};
 mod actions;
 mod activity;
 mod core;
@@ -23,18 +30,14 @@ mod wallet;
 mod zaps;
 
 pub use actions::AppAction;
-pub use nwc_extension::{
-    NwcExtensionCancellation, NwcExtensionDisposition, NwcExtensionEngine,
-    NwcExtensionNotification, NwcExtensionWakeRequest, NwcExtensionWakeResult,
-};
+pub use nwc_extension::NwcExtensionEngine;
 use profile_cache::normalize_profile_picture_to_jpeg;
 pub use state::{
     ActivityIconKind, ActivityItem, AppState, BusyState, CapabilityRequest, CapabilityRequestKind,
     Contact, CurrencyOption, LightningAddressRegistrationPhase, LightningAddressState, MainTab,
-    NetworkOption, NostrMessage, NostrState, NwaRequestState, NwaState, NwcBudgetInterval,
-    NwcConnection, NwcPermission, NwcProcessedWakeRequest, NwcState, NwcWakeRequest, PriceCurrency,
-    PushNotificationState, ReceiveMethod, ReceivePhase, ReceiveState, Router, Screen,
-    SendDestinationKind, SendPhase, SendState, SetupState, WalletNetwork, WalletState,
+    NetworkOption, NostrMessage, NostrState, NwcState, PriceCurrency, PushNotificationState,
+    ReceiveMethod, ReceivePhase, ReceiveState, Router, Screen, SendDestinationKind, SendPhase,
+    SendState, SetupState, WalletNetwork, WalletState,
 };
 pub use updates::{AppUpdate, HapticFeedback};
 pub(crate) use updates::{AsyncMsg, CoreMsg};

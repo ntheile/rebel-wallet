@@ -10,8 +10,8 @@ impl AppCore {
                 .as_deref()
                 .and_then(|url| nwc_icon_file_url(&self.cache_dir, url));
         }
-        if let Some(request) = self.state.nwa.request.as_mut() {
-            request.icon_display_url = request
+        if let Some(request) = self.state.nwa.request.as_ref() {
+            self.state.nwa.icon_display_url = request
                 .icon_url
                 .as_deref()
                 .and_then(|url| nwc_icon_file_url(&self.cache_dir, url));
@@ -88,9 +88,9 @@ impl AppCore {
                 connection.icon_display_url = Some(file_url.clone());
             }
         }
-        if let Some(request) = self.state.nwa.request.as_mut() {
+        if let Some(request) = self.state.nwa.request.as_ref() {
             if request.icon_url.as_deref() == Some(remote_url) {
-                request.icon_display_url = Some(file_url);
+                self.state.nwa.icon_display_url = Some(file_url);
             }
         }
     }

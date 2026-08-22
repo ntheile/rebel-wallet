@@ -22,12 +22,11 @@ impl AppCore {
                 self.state.nwa.approving = false;
                 self.state.nwa.error_message = None;
                 self.state.nwa.callback_pending = false;
+                self.state.nwa.icon_display_url = None;
                 self.pending_nwa_callback = None;
                 if let Some(icon_url) = icon_url {
                     let icon_display_url = self.nwc_icon_display_url(Some(&icon_url));
-                    if let Some(request) = self.state.nwa.request.as_mut() {
-                        request.icon_display_url = icon_display_url;
-                    }
+                    self.state.nwa.icon_display_url = icon_display_url;
                     self.prefetch_nwc_icon(icon_url);
                 }
                 if self.state.setup == SetupState::Ready
@@ -61,7 +60,7 @@ impl AppCore {
             request.display_name,
             request.icon_url,
             relay,
-            request.client_pubkey,
+            request.client_public_key_hex,
             budget_sat,
             budget_interval,
             permissions,
@@ -84,7 +83,7 @@ impl AppCore {
             .nwa
             .request
             .as_ref()
-            .map(|request| request.id.clone())
+            .map(|request| request.request_id_hex.clone())
         else {
             self.set_nwa_error("The Nostr Wallet Auth request is no longer available.");
             return;

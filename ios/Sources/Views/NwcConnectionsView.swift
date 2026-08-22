@@ -1264,13 +1264,9 @@ extension NwcPermission {
         case .getInfo: return "Get info"
         case .getBalance: return "Get balance"
         case .payInvoice: return "Pay invoices"
-        case .payKeysend: return "Pay keysend"
         case .makeInvoice: return "Make invoices"
         case .lookupInvoice: return "Lookup invoices"
         case .listTransactions: return "List transactions"
-        case .makeHoldInvoice: return "Make hold invoices"
-        case .cancelHoldInvoice: return "Cancel hold invoices"
-        case .settleHoldInvoice: return "Settle hold invoices"
         }
     }
 
@@ -1279,13 +1275,9 @@ extension NwcPermission {
         case .getInfo: return "Info"
         case .getBalance: return "Balance"
         case .payInvoice: return "Pay"
-        case .payKeysend: return "Keysend"
         case .makeInvoice: return "Invoice"
         case .lookupInvoice: return "Lookup"
         case .listTransactions: return "History"
-        case .makeHoldInvoice: return "Hold"
-        case .cancelHoldInvoice: return "Cancel hold"
-        case .settleHoldInvoice: return "Settle hold"
         }
     }
 
@@ -1294,13 +1286,9 @@ extension NwcPermission {
         case .getInfo: return "get_info"
         case .getBalance: return "get_balance"
         case .payInvoice: return "pay_invoice"
-        case .payKeysend: return "pay_keysend"
         case .makeInvoice: return "make_invoice"
         case .lookupInvoice: return "lookup_invoice"
         case .listTransactions: return "list_transactions"
-        case .makeHoldInvoice: return "make_hold_invoice"
-        case .cancelHoldInvoice: return "cancel_hold_invoice"
-        case .settleHoldInvoice: return "settle_hold_invoice"
         }
     }
 
@@ -1309,13 +1297,9 @@ extension NwcPermission {
         case .getInfo: return "info.circle"
         case .getBalance: return "eye"
         case .payInvoice: return "bolt.fill"
-        case .payKeysend: return "paperplane.fill"
         case .makeInvoice: return "plus.app"
         case .lookupInvoice: return "magnifyingglass"
         case .listTransactions: return "list.bullet.rectangle"
-        case .makeHoldInvoice: return "lock.doc"
-        case .cancelHoldInvoice: return "xmark.circle"
-        case .settleHoldInvoice: return "checkmark.seal"
         }
     }
 
@@ -1324,13 +1308,9 @@ extension NwcPermission {
         case .getInfo: return rebelBlue
         case .getBalance: return rebelGreen
         case .payInvoice: return walletAccent
-        case .payKeysend: return rebelRed
         case .makeInvoice: return Color.cyan
         case .lookupInvoice: return Color.orange
         case .listTransactions: return Color.indigo
-        case .makeHoldInvoice: return Color.yellow
-        case .cancelHoldInvoice: return mutedText
-        case .settleHoldInvoice: return Color.mint
         }
     }
 }
