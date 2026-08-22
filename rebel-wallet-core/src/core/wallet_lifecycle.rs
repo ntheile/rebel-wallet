@@ -323,7 +323,7 @@ impl AppCore {
                 self.migrate_nwc_connections();
                 self.hydrate_nwc_icon_urls();
                 self.prefetch_nwc_icons();
-                if self.nwc_registration_refresh_pending {
+                if self.nwc_registration.is_refresh_pending() {
                     self.save_app_data();
                 }
             }
