@@ -2,7 +2,11 @@ use super::*;
 
 impl AppCore {
     pub(super) fn open_nwa_request(&mut self, uri: String) {
-        if self.pending_nwa_request.is_some() {
+        let Some(service) = self.nwc_service.as_ref() else {
+            self.set_nwa_error("NWC authorization storage is unavailable.");
+            return;
+        };
+        if service.pending_nwa_request().ok().flatten().is_some() {
             self.state.toast = Some(
                 "Finish or cancel the current Nostr Wallet Auth request before opening another."
                     .to_string(),
@@ -10,14 +14,14 @@ impl AppCore {
             self.request_haptic(HapticFeedback::NotificationWarning);
             return;
         }
-        match NwaRequest::parse(&uri, now_unix()) {
+        match service.open_nwa_request(&uri) {
             Ok(request) => {
-                let icon_url = request.state.icon_url.clone();
-                self.state.nwa.request = Some(request.state.clone());
+                let state = nwa_request_state(&request);
+                let icon_url = state.icon_url.clone();
+                self.state.nwa.request = Some(state);
                 self.state.nwa.approving = false;
                 self.state.nwa.error_message = None;
                 self.state.nwa.callback_pending = false;
-                self.pending_nwa_request = Some(request);
                 self.pending_nwa_callback = None;
                 if let Some(icon_url) = icon_url {
                     let icon_display_url = self.nwc_icon_display_url(Some(&icon_url));
@@ -49,19 +53,19 @@ impl AppCore {
         if self.state.nwa.approving {
             return;
         }
-        let Some(request) = self.pending_nwa_request.clone() else {
+        let Some(request) = self.state.nwa.request.clone() else {
             self.set_nwa_error("The Nostr Wallet Auth request is no longer available.");
             return;
         };
         let connection = match self.build_authorized_nwc_connection(
-            request.state.display_name.clone(),
-            request.state.icon_url.clone(),
+            request.display_name,
+            request.icon_url,
             relay,
-            request.state.client_pubkey.clone(),
+            request.client_pubkey,
             budget_sat,
             budget_interval,
             permissions,
-            request.state.expires_at,
+            request.expires_at,
         ) {
             Ok(connection) => connection,
             Err(error) => {
@@ -75,23 +79,36 @@ impl AppCore {
     }
 
     pub(super) fn finish_nwa_approval(&mut self, mut connection: NwcConnection) {
-        let Some(request) = self.pending_nwa_request.clone() else {
+        let Some(request_id) = self
+            .state
+            .nwa
+            .request
+            .as_ref()
+            .map(|request| request.id.clone())
+        else {
             self.set_nwa_error("The Nostr Wallet Auth request is no longer available.");
             return;
         };
-        if !self.nwc_registry_ready {
+        if !self.nwc_service_ready {
             self.set_nwa_error("NWC authorization storage is unavailable.");
             return;
         }
-        let now = now_unix();
         let lud16 = self.state.lightning_address.address.as_deref();
         let approval = self
-            .nwc_ledger
+            .nwc_service
             .as_ref()
-            .context("NWC authorization storage is unavailable")
-            .and_then(|ledger| request.approve(ledger, &connection, lud16, now));
+            .expect("checked above")
+            .approve_pending_nwa(
+                &request_id,
+                connection_authorization(&connection),
+                lud16.map(str::to_owned),
+            );
         let approval = match approval {
             Ok(approval) => approval,
+            Err(MobileServiceError::NwaApproval(NwaApprovalError::AuthorityEscalation)) => {
+                self.set_nwa_error("The approval exceeds the requested authority.");
+                return;
+            }
             Err(error) => {
                 self.set_nwa_error(&format!("Could not approve NWC authorization: {error:#}"));
                 return;
@@ -208,15 +225,12 @@ impl AppCore {
         };
         if self.nwc_registration_refresh_pending {
             let refresh_result = self
-                .nwc_ledger
+                .nwc_service
                 .as_ref()
                 .context("NWC authorization storage is unavailable")
-                .and_then(|ledger| {
-                    ledger
-                        .requeue_active_wake_registrations_with_state(
-                            config.enabled(),
-                            nwc_mobile::UnixTimestamp::from_secs(now_unix()),
-                        )
+                .and_then(|service| {
+                    service
+                        .refresh_wake_registrations(config.enabled())
                         .context("could not refresh NWC wake registrations")
                 });
             if refresh_result.is_err() {
@@ -232,8 +246,8 @@ impl AppCore {
         let data_dir = self.data_dir.clone();
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let result = match open_nwc_ledger(&data_dir) {
-                Ok(ledger) => run_registration_worker(&ledger, config, keys).await,
+            let result = match open_nwc_service(&data_dir) {
+                Ok(service) => run_registration_worker(service.ledger(), config, keys).await,
                 Err(error) => Err(error.into()),
             };
             let message = match result {
@@ -305,7 +319,9 @@ impl AppCore {
     }
 
     fn clear_nwa_request(&mut self) {
-        self.pending_nwa_request = None;
+        if let Some(service) = self.nwc_service.as_ref() {
+            let _ = service.clear_pending_nwa();
+        }
         self.pending_nwa_callback = None;
         self.state.nwa = crate::NwaState::default();
     }
