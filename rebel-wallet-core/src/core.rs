@@ -28,10 +28,10 @@ use nostr_sdk::prelude::{
     Tag, ToBech32,
 };
 use nwc_mobile::{
-    EventId as NwcEventId, ForegroundWakeCoordinator, ForegroundWakeDecision,
-    ForegroundWakeOutcome, ForegroundWakeRetryCause, NeverCancelled, OperationBudget,
-    PublicKey as NwcPublicKey, SystemClock, WakeEngine, WakeInput, WakeLedger, WakePolicy,
+    ForegroundWakeCoordinator, ForegroundWakeDecision, ForegroundWakeOutcome,
+    ForegroundWakeRetryCause, NeverCancelled, OperationBudget, WakeEnvelope, WakeLedger,
 };
+use nwc_mobile_bark::execute_bark_wake;
 use tokio::runtime::Runtime;
 use zeroize::Zeroizing;
 
@@ -48,9 +48,7 @@ use crate::nostr_support::{
 };
 use crate::nwa::NwaRequest;
 use crate::nwc::{publish_nwc_info_event, publish_targeted_nwc_info_event};
-use crate::nwc_mobile_adapter::{
-    open_nwc_ledger, NostrRelayTransport, RebelSecretProvider, RebelWalletBackend,
-};
+use crate::nwc_mobile_adapter::{open_nwc_ledger, NostrRelayTransport, RebelSecretProvider};
 use crate::nwc_mobile_registry::{
     hydrate_connection_usage as hydrate_nwc_connection_usage,
     insert_connection as insert_nwc_registry_connection,
@@ -1465,30 +1463,32 @@ impl AppCore {
         self.rt.spawn(async move {
             let event_id = request.event_id.clone();
             let result = async {
-                let service_pubkey = NwcPublicKey::from_hex(&request.wallet_service_pubkey)
-                    .context("invalid NWC wallet-service public key")?;
-                let wake = WakeInput::new(
+                let wake = WakeEnvelope::new(
                     request.relay.clone(),
-                    NwcEventId::from_hex(&request.event_id).context("invalid NWC event id")?,
-                    service_pubkey.clone(),
+                    request.event_id.clone(),
+                    request.wallet_service_pubkey.clone(),
                     None,
-                    nwc_mobile::UnixTimestamp::from_secs(request.received_at),
-                );
+                    request.received_at,
+                )
+                .validate()
+                .context("invalid NWC wake envelope")?;
                 let ledger = open_nwc_ledger(&data_dir).context("NWC ledger is unavailable")?;
-                let wallet = RebelWalletBackend::new(wallet, service_pubkey);
                 let relays = NostrRelayTransport;
                 let secrets = RebelSecretProvider::new(secrets);
-                let engine = WakeEngine::new(
-                    &ledger,
-                    &wallet,
-                    &relays,
-                    &secrets,
-                    &SystemClock,
-                    WakePolicy::default(),
-                );
                 let budget = OperationBudget::new(NWC_FOREGROUND_OPERATION_TIMEOUT)
                     .context("invalid NWC foreground budget")?;
-                Ok::<_, anyhow::Error>(engine.execute(wake, budget, &NeverCancelled).await)
+                Ok::<_, anyhow::Error>(
+                    execute_bark_wake(
+                        &ledger,
+                        wallet,
+                        &relays,
+                        &secrets,
+                        wake,
+                        budget,
+                        &NeverCancelled,
+                    )
+                    .await,
+                )
             }
             .await;
 

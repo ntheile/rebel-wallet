@@ -5,7 +5,6 @@ use nostr_sdk::prelude::SecretKey;
 use nwc_mobile::{
     ConnectionId, HostError, HostErrorKind, NwcSecretKey, SecretProvider, WakeLedger,
 };
-pub(crate) use nwc_mobile_bark::BarkWalletBackend as RebelWalletBackend;
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
 use zeroize::Zeroizing;
 
