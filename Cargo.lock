@@ -908,7 +908,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2011,7 +2011,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=7915375848a4aa3001ea6b891e0096e114350a54#7915375848a4aa3001ea6b891e0096e114350a54"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=ceafb5fabaa061b3e65cea0c63b9d471406b2fc3#ceafb5fabaa061b3e65cea0c63b9d471406b2fc3"
 dependencies = [
  "base64 0.22.1",
  "base64ct",
@@ -2026,7 +2026,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-bolt11"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=7915375848a4aa3001ea6b891e0096e114350a54#7915375848a4aa3001ea6b891e0096e114350a54"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=ceafb5fabaa061b3e65cea0c63b9d471406b2fc3#ceafb5fabaa061b3e65cea0c63b9d471406b2fc3"
 dependencies = [
  "lightning-invoice",
  "nwc-mobile",
@@ -2035,7 +2035,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-nostr"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=7915375848a4aa3001ea6b891e0096e114350a54#7915375848a4aa3001ea6b891e0096e114350a54"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=ceafb5fabaa061b3e65cea0c63b9d471406b2fc3#ceafb5fabaa061b3e65cea0c63b9d471406b2fc3"
 dependencies = [
  "futures-util",
  "nwc-mobile",
@@ -2047,7 +2047,7 @@ dependencies = [
 [[package]]
 name = "nwc-mobile-tokio"
 version = "0.1.0"
-source = "git+https://github.com/ntheile/nwc-mobile?rev=7915375848a4aa3001ea6b891e0096e114350a54#7915375848a4aa3001ea6b891e0096e114350a54"
+source = "git+https://github.com/ntheile/nwc-mobile?rev=ceafb5fabaa061b3e65cea0c63b9d471406b2fc3#ceafb5fabaa061b3e65cea0c63b9d471406b2fc3"
 dependencies = [
  "nwc-mobile",
  "tokio",
@@ -2723,7 +2723,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3022,7 +3022,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3166,7 +3166,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 import UIKit
 import UserNotifications
+import NwcMobileApple
 import os.log
 
 enum PushNotificationEvents {
@@ -83,7 +84,9 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
         _: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        if let wake = StoredNwcWakeRequest(userInfo: response.notification.request.content.userInfo) {
+        if let wake = NwcQueuedWakeRequest(
+            validatedUserInfo: response.notification.request.content.userInfo
+        ) {
             NwcWakeInbox.appendDebug(
                 source: "App",
                 message: "Notification tapped; queued NWC wake request"
@@ -93,7 +96,7 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
         } else {
             NwcWakeInbox.appendDebug(
                 source: "App",
-                message: StoredNwcWakeRequest.parseFailureMessage(userInfo: response.notification.request.content.userInfo)
+                message: NwcQueuedWakeRequest.parseFailureMessage
             )
         }
     }

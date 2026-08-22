@@ -12,10 +12,10 @@ final class NotificationService: UNNotificationServiceExtension {
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
         NwcWakeInbox.removeLegacySnapshot()
-        guard let wake = StoredNwcWakeRequest(userInfo: request.content.userInfo) else {
+        guard let wake = NwcQueuedWakeRequest(validatedUserInfo: request.content.userInfo) else {
             NwcWakeInbox.appendDebug(
                 source: "NSE",
-                message: StoredNwcWakeRequest.parseFailureMessage(userInfo: request.content.userInfo)
+                message: NwcQueuedWakeRequest.parseFailureMessage
             )
             contentHandler(request.content)
             return
@@ -24,7 +24,7 @@ final class NotificationService: UNNotificationServiceExtension {
             NwcWakeInbox.appendDebug(source: "NSE", message: "Shared storage is unavailable")
             contentHandler(Self.openApplicationContent(
                 from: request.content,
-                userInfo: wake.normalizedUserInfo
+                userInfo: wake.payload.normalizedUserInfo
             ))
             return
         }
@@ -51,7 +51,7 @@ final class NotificationService: UNNotificationServiceExtension {
 
         let normalizedContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
             ?? UNMutableNotificationContent()
-        normalizedContent.userInfo = wake.normalizedUserInfo
+        normalizedContent.userInfo = wake.payload.normalizedUserInfo
         let normalizedRequest = UNNotificationRequest(
             identifier: request.identifier,
             content: normalizedContent,
@@ -144,11 +144,9 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
     }
 
     private func enqueue(_ payload: NwcWakePayload) {
-        NwcWakeInbox.enqueue(StoredNwcWakeRequest(
-            relay: payload.relayURL,
-            eventId: payload.eventIDHex,
-            walletServicePubkey: payload.walletServicePublicKeyHex,
-            eventJson: payload.embeddedEventJSON
+        NwcWakeInbox.enqueue(NwcQueuedWakeRequest(
+            payload: payload,
+            receivedAtSeconds: UInt64(Date().timeIntervalSince1970)
         ))
     }
 }
