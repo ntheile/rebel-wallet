@@ -3706,7 +3706,7 @@ mod tests {
             .nwa
             .error_message
             .as_deref()
-            .is_some_and(|message| message.contains("does not match")));
+            .is_some_and(|message| message.contains("requested authority")));
     }
 
     #[test]
