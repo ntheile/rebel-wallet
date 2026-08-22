@@ -65,6 +65,27 @@ pub(crate) fn migrate_connections(
     })
 }
 
+pub(crate) fn hydrate_connection_usage(
+    ledger: &WakeLedger,
+    connections: &mut [NwcConnection],
+) -> anyhow::Result<()> {
+    let usage = connections
+        .iter()
+        .map(|connection| {
+            let id =
+                ConnectionId::parse(connection.id.clone()).context("invalid NWC connection id")?;
+            ledger
+                .last_completed_event_at(&id)
+                .context("could not read NWC connection usage")
+                .map(|timestamp| timestamp.map(UnixTimestamp::as_secs))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    for (connection, last_used_at) in connections.iter_mut().zip(usage) {
+        connection.last_used_at = last_used_at;
+    }
+    Ok(())
+}
+
 pub(crate) fn insert_connection(
     ledger: &WakeLedger,
     connection: &NwcConnection,
@@ -225,6 +246,10 @@ fn maximum_nwc_fee_sat(budget_sat: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use nwc_mobile::{ClaimOutcome, EventId, TerminalKind};
+
     use super::*;
 
     const CLIENT: &str = "687dd8ece211539364549b1f32c63eceec1e0661009ba65cf8ff2e73ba000746";
@@ -304,6 +329,41 @@ mod tests {
 
         assert!(connections.is_empty());
         assert_eq!(result.revoked_client_pubkeys, vec![CLIENT.to_string()]);
+    }
+
+    #[test]
+    fn connection_usage_is_hydrated_from_successful_durable_events() {
+        let directory = tempfile::tempdir().expect("directory");
+        let ledger = WakeLedger::open(directory.path().join("mobile.sqlite3")).expect("ledger");
+        let mut original = connection("nwc-used");
+        original.spent_sat = 0;
+        let active = insert_connection(&ledger, &original, 100).expect("insert");
+        let event_id = EventId::from_hex(CLIENT).expect("event id");
+        let ClaimOutcome::Acquired(lease) = ledger
+            .claim_event(
+                &event_id,
+                active.id(),
+                active.revision(),
+                UnixTimestamp::from_secs(200),
+                Duration::from_secs(10),
+            )
+            .expect("claim")
+        else {
+            panic!("claim not acquired");
+        };
+        ledger
+            .complete_event(
+                &lease,
+                TerminalKind::Completed,
+                Some("encrypted-response"),
+                UnixTimestamp::from_secs(205),
+            )
+            .expect("complete");
+        let mut connections = vec![original];
+
+        hydrate_connection_usage(&ledger, &mut connections).expect("hydrate usage");
+
+        assert_eq!(connections[0].last_used_at, Some(205));
     }
 
     #[test]

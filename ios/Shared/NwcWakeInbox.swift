@@ -46,24 +46,22 @@ struct StoredNwcWakeRequest: Codable, Hashable {
     }
 
     init?(userInfo: [AnyHashable: Any]) {
-        if let legacyProtocol = userInfo["protocol"] as? String, legacyProtocol != "nwc_wake" {
-            return nil
-        }
         guard
-            let relay = (userInfo["nwc_relay"] ?? userInfo["relay"]) as? String,
-            let eventId = (userInfo["nwc_event_id"] ?? userInfo["event_id"]) as? String,
-            let walletServicePubkey = (
-                userInfo["nwc_wallet_service_pubkey"] ?? userInfo["wallet_service_pubkey"]
-            ) as? String
+            let data = try? JSONSerialization.data(withJSONObject: userInfo),
+            let payloadJson = String(data: data, encoding: .utf8),
+            let request = parseNwcWakePayloadJson(
+                payloadJson: payloadJson,
+                receivedAtSeconds: UInt64(Date().timeIntervalSince1970)
+            )
         else {
             return nil
         }
-
         self.init(
-            relay: relay,
-            eventId: eventId,
-            walletServicePubkey: walletServicePubkey,
-            eventJson: (userInfo["nwc_event_json"] ?? userInfo["nwc_event"]) as? String
+            relay: request.relayUrl,
+            eventId: request.eventIdHex,
+            walletServicePubkey: request.walletServicePublicKeyHex,
+            eventJson: request.embeddedEventJson,
+            receivedAt: request.receivedAtSeconds
         )
     }
 

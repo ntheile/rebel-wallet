@@ -141,7 +141,7 @@ private struct NwcCreateConnectionView: View {
 
     private var canCreate: Bool {
         parsedBudget != nil
-            && !nwcRelayURLs(relay).isEmpty
+            && nwcRelayInputIsValid(value: relay)
     }
 
     private var permissionsForCreate: [NwcPermission] {
@@ -485,7 +485,7 @@ struct NwcCustomRelaySheet: View {
     }
 
     private var canSave: Bool {
-        !cleanedRelays.isEmpty
+        nwcRelayInputIsValid(value: cleanedRelays.joined(separator: "\n"))
     }
 
     init(relay: Binding<String>, initialRelay: String) {
@@ -1231,18 +1231,7 @@ private extension NwcConnection {
     }
 
     var enabledPermissionsForDisplay: [NwcPermission] {
-        if permissionsConfigured {
-            return permissions.sortedForDisplay
-        }
-
-        var legacy: [NwcPermission] = [.getInfo]
-        if allowGetBalance {
-            legacy.append(.getBalance)
-        }
-        if allowPayInvoice {
-            legacy.append(.payInvoice)
-        }
-        return legacy.sortedForDisplay
+        permissions.sortedForDisplay
     }
 }
 
@@ -1376,7 +1365,6 @@ func nwcRelayURLs(_ value: String) -> [String] {
         .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",")))
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .filter { !$0.isEmpty }
-        .map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
         .filter { relay in
             if seen.contains(relay) {
                 return false

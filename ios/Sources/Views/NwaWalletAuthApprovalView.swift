@@ -49,7 +49,7 @@ struct NwaWalletAuthApprovalView: View {
 
     private var canApprove: Bool {
         parsedBudget != nil
-            && !relays.isEmpty
+            && nwcRelayInputIsValid(value: relay)
             && manager.state.setup == .ready
     }
 
@@ -306,7 +306,7 @@ struct NwaWalletAuthApprovalView: View {
     }
 
     private func approve() {
-        guard let parsedBudget, !relays.isEmpty else { return }
+        guard let parsedBudget, nwcRelayInputIsValid(value: relay) else { return }
         NwcWakeInbox.appendDebug(
             source: "App",
             message: "NWA approval settings callback=\(request.callbackTargetDescription) budget_sat=\(parsedBudget) interval=\(budgetInterval.title.lowercased()) relays=\(relays.joined(separator: ",")) permissions=\(permissionsForCreate.map(\.methodName).joined(separator: ","))"

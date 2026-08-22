@@ -51,6 +51,7 @@ use crate::nwc_mobile_adapter::{
     open_nwc_ledger, NostrRelayTransport, RebelSecretProvider, RebelWalletBackend,
 };
 use crate::nwc_mobile_registry::{
+    hydrate_connection_usage as hydrate_nwc_connection_usage,
     insert_connection as insert_nwc_registry_connection,
     migrate_connections as migrate_nwc_registry_connections,
     tombstone_connection as tombstone_nwc_registry_connection,
@@ -221,7 +222,6 @@ fn nwc_relay_values(value: &str) -> Vec<String> {
                 None
             }
         })
-        .take(MAX_NWC_RELAYS_PER_CONNECTION)
         .collect()
 }
 
@@ -231,6 +231,9 @@ fn parse_nwc_relay_urls(value: &str, fallback: &str) -> anyhow::Result<Vec<Relay
     } else {
         nwc_relay_values(value)
     };
+    if relay_values.len() > MAX_NWC_RELAYS_PER_CONNECTION {
+        anyhow::bail!("too many NWC relays");
+    }
 
     let mut relays = Vec::new();
     for relay in relay_values {
@@ -246,9 +249,14 @@ fn parse_nwc_relay_urls(value: &str, fallback: &str) -> anyhow::Result<Vec<Relay
     Ok(relays)
 }
 
+pub(crate) fn nwc_relay_input_is_valid(value: &str) -> bool {
+    parse_nwc_relay_urls(value, "").is_ok()
+}
+
 fn connection_nwc_relay_urls(connection: &NwcConnection) -> Vec<RelayUrl> {
     nwc_relay_values(&connection.relay)
         .into_iter()
+        .take(MAX_NWC_RELAYS_PER_CONNECTION)
         .filter_map(|relay| RelayUrl::parse(&relay).ok())
         .collect()
 }
@@ -998,11 +1006,22 @@ impl AppCore {
                 if removed {
                     self.save_app_data();
                 }
+                self.refresh_nwc_connection_usage();
             }
             Err(error) => {
                 self.state.nwc.last_wake_status =
                     format!("NWC authorization migration failed: {error:#}");
             }
+        }
+    }
+
+    fn refresh_nwc_connection_usage(&mut self) {
+        let Some(ledger) = self.nwc_ledger.as_ref() else {
+            return;
+        };
+        if hydrate_nwc_connection_usage(ledger, &mut self.state.nwc.connections).is_err() {
+            self.state.nwc.last_wake_status =
+                "NWC connection usage is temporarily unavailable".to_string();
         }
     }
 
@@ -1517,6 +1536,7 @@ impl AppCore {
                 processed_at: now_unix(),
             });
         self.cap_processed_nwc_wake_requests();
+        self.refresh_nwc_connection_usage();
         if success {
             self.request_haptic(HapticFeedback::NotificationSuccess);
         } else if status.starts_with("rejected")
@@ -2210,6 +2230,7 @@ impl AppCore {
     fn foregrounded(&mut self) {
         self.wallet_foregrounded = true;
         self.cancel_refresh_poll(true);
+        self.refresh_nwc_connection_usage();
         self.publish_pending_nwc_info_events();
         self.sync_nwc_push_registrations();
         self.prefetch_nwc_icons();
@@ -3488,6 +3509,19 @@ mod tests {
             budget_period_started_at: 0,
             pending_info_event_relays: Vec::new(),
         }
+    }
+
+    #[test]
+    fn nwc_relay_input_validation_matches_creation_policy() {
+        assert!(nwc_relay_input_is_valid("wss://relay.example/path/"));
+        assert!(nwc_relay_input_is_valid(
+            "wss://relay.example/one\nwss://relay.example/two"
+        ));
+        assert!(!nwc_relay_input_is_valid(""));
+        assert!(!nwc_relay_input_is_valid("ws://relay.example"));
+        assert!(!nwc_relay_input_is_valid(
+            "wss://relay.example/1,wss://relay.example/2,wss://relay.example/3"
+        ));
     }
 
     #[test]
