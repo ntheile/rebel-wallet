@@ -14,6 +14,7 @@
 		11A29977382725FC272B253A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08790D56E6532CF87DC5EAF5 /* ContentView.swift */; };
 		18DC007A5A51D30A57687770 /* rebel_wallet_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = B95DB396C0ACC1FB08D6D500 /* rebel_wallet_core.swift */; };
 		19450B4EB3A474AF0761CD2E /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0C4E8C892F802690C2E03D /* NotificationService.swift */; };
+		1CA998C627766237F2232BEB /* NwcMobileApple in Frameworks */ = {isa = PBXBuildFile; productRef = F0484023105D92258A4933F4 /* NwcMobileApple */; };
 		2491CE80085619618553486A /* QRScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8285F313C1C4D80E03963B /* QRScanner.swift */; };
 		24F0E2EC7D4661D438CDB1C6 /* NwcWakeInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B331642D861D9C2C3E7455E /* NwcWakeInbox.swift */; };
 		25E210A188760A59A81C19FE /* NotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = ED3F1AA2DED717C2ED0B471C /* NotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -135,6 +136,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				10D82D8BEDF6F8B87C9D3393 /* RebelWalletCore.xcframework in Frameworks */,
+				1CA998C627766237F2232BEB /* NwcMobileApple in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -295,6 +297,7 @@
 			);
 			name = App;
 			packageProductDependencies = (
+				F0484023105D92258A4933F4 /* NwcMobileApple */,
 			);
 			productName = App;
 			productReference = 49D88A349FD70A9153DD2C03 /* App.app */;
@@ -697,13 +700,18 @@
 			repositoryURL = "https://github.com/ntheile/nwc-mobile";
 			requirement = {
 				kind = revision;
-				revision = ef82dd337bd107538acd78f84b70cfa7b8c98cb0;
+				revision = 32b302d58162935535eaf5a9b7958651b64293c9;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		DBA0DF6522AE70E734C7F52E /* NwcMobileApple */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BEA342C042E103E2D0C5969F /* XCRemoteSwiftPackageReference "nwc-mobile" */;
+			productName = NwcMobileApple;
+		};
+		F0484023105D92258A4933F4 /* NwcMobileApple */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = BEA342C042E103E2D0C5969F /* XCRemoteSwiftPackageReference "nwc-mobile" */;
 			productName = NwcMobileApple;
