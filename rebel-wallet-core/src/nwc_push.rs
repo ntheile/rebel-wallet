@@ -148,11 +148,7 @@ impl NwcPushTransport {
         server_url: &SecureWakeServerUrl,
         change: &WakeRegistrationChange,
     ) -> Result<(), HostError> {
-        let base_url = reqwest::Url::parse(server_url.as_str())
-            .map_err(|_| HostError::new(HostErrorKind::Internal))?;
-        let url = base_url
-            .join("register-nwc-push")
-            .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+        let url = registration_endpoint_url(server_url)?;
         let endpoint = SecureWakeServerUrl::parse(url.as_str())
             .map_err(|_| HostError::new(HostErrorKind::Internal))?;
         let client_pubkey = change.client_pubkey().to_hex();
@@ -209,6 +205,19 @@ impl NwcPushTransport {
         }
         Ok(())
     }
+}
+
+fn registration_endpoint_url(server_url: &SecureWakeServerUrl) -> Result<reqwest::Url, HostError> {
+    let mut base_url = reqwest::Url::parse(server_url.as_str())
+        .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+    if !base_url.path().ends_with('/') {
+        let mut path = base_url.path().to_string();
+        path.push('/');
+        base_url.set_path(&path);
+    }
+    base_url
+        .join("register-nwc-push")
+        .map_err(|_| HostError::new(HostErrorKind::Internal))
 }
 
 impl WakeRegistrationTransport for NwcPushTransport {
@@ -283,5 +292,17 @@ mod tests {
         assert!(!debug.contains("super-secret-token"));
         assert!(!debug.contains("com.example.wallet"));
         assert!(!debug.contains("install"));
+    }
+
+    #[test]
+    fn registration_endpoint_preserves_server_path_prefix() {
+        let server = SecureWakeServerUrl::parse("https://wake.example.com/wake")
+            .expect("secure wake server");
+        let endpoint = registration_endpoint_url(&server).expect("registration endpoint");
+
+        assert_eq!(
+            endpoint.as_str(),
+            "https://wake.example.com/wake/register-nwc-push"
+        );
     }
 }

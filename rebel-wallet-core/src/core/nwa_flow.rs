@@ -104,6 +104,7 @@ impl AppCore {
             })
             .unwrap_or(false);
         if !approval_matches_pending_request {
+            self.set_nwa_error("The Nostr Wallet Auth request changed during approval.");
             return;
         }
         if !self.nwc_registry_ready {
@@ -315,7 +316,7 @@ impl AppCore {
     fn schedule_nwc_push_retry(&mut self, next_attempt_at: u64) {
         self.nwc_registration_retry_nonce = self.nwc_registration_retry_nonce.wrapping_add(1);
         let nonce = self.nwc_registration_retry_nonce;
-        let delay = Duration::from_secs(next_attempt_at.saturating_sub(now_unix()));
+        let delay = nwc_push_retry_delay(next_attempt_at, now_unix());
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             tokio::time::sleep(delay).await;
