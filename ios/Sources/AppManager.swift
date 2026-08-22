@@ -268,10 +268,10 @@ final class AppManager: AppReconciler {
         refreshNwcWakeDebugEntries()
         dispatch(.processNwcWakeRequests(requests: requests.map {
             NwcWakeRequest(
-                relay: $0.relay,
-                eventId: $0.eventId,
-                walletServicePubkey: $0.walletServicePubkey,
-                receivedAt: $0.receivedAt
+                relay: $0.payload.relayURL,
+                eventId: $0.payload.eventIDHex,
+                walletServicePubkey: $0.payload.walletServicePublicKeyHex,
+                receivedAt: $0.receivedAtSeconds
             )
         }))
     }
