@@ -3,6 +3,15 @@ import NwcMobileApple
 import UserNotifications
 
 private let nwcExtensionExecutionMilliseconds: UInt64 = 25_000
+private let nwcNotificationCopy = NwcNotificationCopy(
+    processingTitle: "Nostr Wallet Connect",
+    processingBody: "Processing request",
+    completedTitle: "Nostr Wallet Connect",
+    completedBody: "Request completed",
+    openApplicationTitle: "Nostr Wallet Connect",
+    openApplicationBody: "Open Rebel Wallet to continue"
+)
+private let nwcNotificationPresenter = NwcNotificationPresenter(copy: nwcNotificationCopy)
 
 final class NotificationService: UNNotificationServiceExtension {
     private var adapter: NwcNotificationServiceAdapter?
@@ -22,8 +31,9 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         guard let dataDirectory = NwcWakeInbox.extensionDataDirectoryPath() else {
             NwcWakeInbox.appendDebug(source: "NSE", message: "Shared storage is unavailable")
-            contentHandler(Self.openApplicationContent(
-                from: request.content,
+            contentHandler(nwcNotificationPresenter.content(
+                applying: .openApplication,
+                to: request.content,
                 userInfo: wake.payload.normalizedUserInfo
             ))
             return
@@ -38,51 +48,22 @@ final class NotificationService: UNNotificationServiceExtension {
             executor: executor,
             cancellationFactory: { RebelNwcWakeCancellation() },
             executionMilliseconds: nwcExtensionExecutionMilliseconds,
-            copy: NwcNotificationCopy(
-                processingTitle: "Nostr Wallet Connect",
-                processingBody: "Processing request",
-                completedTitle: "Nostr Wallet Connect",
-                completedBody: "Request completed",
-                openApplicationTitle: "Nostr Wallet Connect",
-                openApplicationBody: "Open Rebel Wallet to continue"
-            )
+            copy: nwcNotificationCopy
         )
         self.adapter = adapter
 
-        let normalizedContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
-            ?? UNMutableNotificationContent()
-        normalizedContent.userInfo = wake.payload.normalizedUserInfo
-        let normalizedRequest = UNNotificationRequest(
-            identifier: request.identifier,
-            content: normalizedContent,
-            trigger: request.trigger
-        )
         NwcWakeInbox.appendDebug(source: "NSE", message: "Started bounded NWC wake processing")
-        adapter.didReceive(normalizedRequest, contentHandler: contentHandler)
+        adapter.didReceive(
+            payload: wake.payload,
+            content: request.content,
+            contentHandler: contentHandler
+        )
     }
 
     override func serviceExtensionTimeWillExpire() {
         adapter?.timeWillExpire()
     }
 
-    private static func openApplicationContent(
-        from content: UNNotificationContent,
-        userInfo: [AnyHashable: Any]
-    ) -> UNNotificationContent {
-        let mutable = (content.mutableCopy() as? UNMutableNotificationContent)
-            ?? UNMutableNotificationContent()
-        mutable.title = "Nostr Wallet Connect"
-        mutable.subtitle = ""
-        mutable.body = "Open Rebel Wallet to continue"
-        mutable.attachments = []
-        mutable.categoryIdentifier = ""
-        mutable.threadIdentifier = "nwc"
-        mutable.badge = nil
-        mutable.sound = nil
-        mutable.interruptionLevel = .active
-        mutable.userInfo = userInfo
-        return mutable
-    }
 }
 
 private final class RebelNwcWakeCancellation: NwcWakeCancellation, @unchecked Sendable {

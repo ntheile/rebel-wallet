@@ -6,24 +6,6 @@ enum NwcWakeInboxEvents {
     static let didChange = Notification.Name("RebelWalletNwcWakeInboxDidChange")
 }
 
-struct NwcWakeDebugEntry: Codable, Hashable, Identifiable {
-    let id: String
-    let timestamp: UInt64
-    let source: String
-    let message: String
-
-    init(source: String, message: String, timestamp: UInt64 = UInt64(Date().timeIntervalSince1970)) {
-        self.id = UUID().uuidString
-        self.timestamp = timestamp
-        self.source = source
-        self.message = message
-    }
-
-    var timestampText: String {
-        Date(timeIntervalSince1970: TimeInterval(timestamp)).formatted(date: .omitted, time: .standard)
-    }
-}
-
 extension NwcQueuedWakeRequest {
     init?(validatedUserInfo userInfo: [AnyHashable: Any]) {
         let receivedAt = UInt64(Date().timeIntervalSince1970)
@@ -51,26 +33,10 @@ extension NwcQueuedWakeRequest {
     static let parseFailureMessage = "Ignored malformed or unrelated wake notification"
 }
 
-extension NwcWakePayload {
-    var normalizedUserInfo: [AnyHashable: Any] {
-        var info: [AnyHashable: Any] = [
-            NwcWakePayloadKey.relayURL: relayURL,
-            NwcWakePayloadKey.eventID: eventIDHex,
-            NwcWakePayloadKey.walletServicePublicKey: walletServicePublicKeyHex,
-        ]
-        if let embeddedEventJSON {
-            info[NwcWakePayloadKey.embeddedEvent] = embeddedEventJSON
-        }
-        return info
-    }
-}
-
 enum NwcWakeInbox {
     private static let queueKey = "nwcWakeQueue"
-    private static let debugKey = "nwcWakeDebugLog"
     private static let snapshotKey = "nwcWakeSnapshot"
     private static let legacyProcessedEventIdsKey = "nwcWakeProcessedEventIds"
-    private static let maxDebugEntries = 30
 
     static func enqueue(_ request: NwcQueuedWakeRequest) {
         do {
@@ -109,27 +75,31 @@ enum NwcWakeInbox {
 
     static func appendDebug(source: String, message: String) {
 #if DEBUG
-        guard let defaults = appGroupDefaults() else {
+        guard let log = debugLog() else {
             NSLog("Could not open app group defaults for nwc_wake debug log")
             return
         }
-
-        var entries = debugEntries(from: defaults)
-        entries.append(NwcWakeDebugEntry(source: source, message: message))
-        if entries.count > maxDebugEntries {
-            entries.removeFirst(entries.count - maxDebugEntries)
+        do {
+            try log.append(source: source, message: message)
+        } catch {
+            NSLog("Could not persist nwc_wake debug log: %@", String(describing: error))
+            return
         }
-        saveDebugEntries(entries, to: defaults)
         NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
 #endif
     }
 
     static func debugEntries() -> [NwcWakeDebugEntry] {
 #if DEBUG
-        guard let defaults = appGroupDefaults() else {
+        guard let log = debugLog() else {
             return []
         }
-        return debugEntries(from: defaults)
+        do {
+            return try log.entries()
+        } catch {
+            NSLog("Could not read nwc_wake debug log: %@", String(describing: error))
+            return []
+        }
 #else
         return []
 #endif
@@ -137,10 +107,10 @@ enum NwcWakeInbox {
 
     static func clearDebugEntries() {
 #if DEBUG
-        guard let defaults = appGroupDefaults() else {
+        guard let log = debugLog() else {
             return
         }
-        defaults.removeObject(forKey: debugKey)
+        log.clear()
         NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
 #endif
     }
@@ -173,19 +143,8 @@ enum NwcWakeInbox {
         }
     }
 
-    private static func debugEntries(from defaults: UserDefaults) -> [NwcWakeDebugEntry] {
-        guard let data = defaults.data(forKey: debugKey) else {
-            return []
-        }
-
-        return (try? JSONDecoder().decode([NwcWakeDebugEntry].self, from: data)) ?? []
-    }
-
-    private static func saveDebugEntries(_ entries: [NwcWakeDebugEntry], to defaults: UserDefaults) {
-        guard let data = try? JSONEncoder().encode(entries) else {
-            return
-        }
-        defaults.set(data, forKey: debugKey)
+    private static func debugLog() -> NwcWakeDebugLog? {
+        appGroupDefaults().map { NwcWakeDebugLog(defaults: $0) }
     }
 
     private static func appGroupDefaults() -> UserDefaults? {
