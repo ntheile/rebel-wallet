@@ -16,10 +16,7 @@ mod activity;
 mod core;
 mod custom_address;
 mod nostr_support;
-mod nwc_extension;
-mod nwc_mobile_adapter;
-mod nwc_persistence;
-mod nwc_push;
+mod nwc_host;
 mod payments;
 mod persistence;
 mod price;
@@ -31,7 +28,7 @@ mod wallet;
 mod zaps;
 
 pub use actions::AppAction;
-pub use nwc_extension::NwcExtensionEngine;
+pub use nwc_host::NwcExtensionEngine;
 use profile_cache::normalize_profile_picture_to_jpeg;
 pub use state::{
     ActivityIconKind, ActivityItem, AppState, BusyState, CapabilityRequest, CapabilityRequestKind,
