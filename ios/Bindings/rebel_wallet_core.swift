@@ -5166,13 +5166,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_state() != 28404) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_rebel_wallet_core_checksum_method_nwcextensionengine_execute_wake() != 10760) {
+    if (uniffi_rebel_wallet_core_checksum_method_nwcextensionengine_execute_wake() != 10415) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_constructor_ffiapp_new() != 37354) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_rebel_wallet_core_checksum_constructor_nwcextensionengine_new() != 7825) {
+    if (uniffi_rebel_wallet_core_checksum_constructor_nwcextensionengine_new() != 31594) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_appreconciler_reconcile() != 39018) {
