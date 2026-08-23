@@ -352,6 +352,11 @@ impl AppCore {
         let nwc_icon_cache = nwc_mobile::ApplicationIconCache::new(&cache_dir);
         let _ = nwc_icon_cache.prepare();
         let nwc_manager = NwcApplicationManager::open(&data_dir).ok();
+        if let Some(manager) = nwc_manager.as_ref() {
+            // Republish replaceable capability events once per process so an
+            // installed upgrade cannot leave NWC clients on stale behavior.
+            let _ = manager.service().refresh_nwc_info_events();
+        }
         Self {
             state: AppState::initial(),
             app_data_path: data_dir.join("rebel-app-data.json"),
