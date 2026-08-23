@@ -718,7 +718,7 @@ public func FfiConverterTypeFfiApp_lower(_ value: FfiApp) -> UInt64 {
  */
 public protocol NwcExtensionEngineProtocol: AnyObject, Sendable {
     
-    func executeWake(request: MobileWakeEnvelope, executionMilliseconds: UInt64, cancellation: MobileCancellation) async  -> MobileWakeDisposition
+    func executeWake(request: MobileWakeEnvelope, executionMilliseconds: UInt64, cancellation: MobileCancellation) async  -> NwcExtensionWakeExecution
     
 }
 /**
@@ -786,7 +786,7 @@ public convenience init(dataDir: String, secretStore: SecretStore) {
     
 
     
-open func executeWake(request: MobileWakeEnvelope, executionMilliseconds: UInt64, cancellation: MobileCancellation)async  -> MobileWakeDisposition  {
+open func executeWake(request: MobileWakeEnvelope, executionMilliseconds: UInt64, cancellation: MobileCancellation)async  -> NwcExtensionWakeExecution  {
     return
         try!  await uniffiRustCallAsync(
             rustFutureFunc: {
@@ -798,7 +798,7 @@ open func executeWake(request: MobileWakeEnvelope, executionMilliseconds: UInt64
             pollFunc: ffi_rebel_wallet_core_rust_future_poll_rust_buffer,
             completeFunc: ffi_rebel_wallet_core_rust_future_complete_rust_buffer,
             freeFunc: ffi_rebel_wallet_core_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeMobileWakeDisposition_lift,
+            liftFunc: FfiConverterTypeNwcExtensionWakeExecution_lift,
             errorHandler: nil
             
         )
@@ -1741,6 +1741,63 @@ public func FfiConverterTypeNostrState_lift(_ buf: RustBuffer) throws -> NostrSt
 #endif
 public func FfiConverterTypeNostrState_lower(_ value: NostrState) -> RustBuffer {
     return FfiConverterTypeNostrState.lower(value)
+}
+
+
+/**
+ * Safe, non-secret result metadata from one NSE wake execution.
+ */
+public struct NwcExtensionWakeExecution: Equatable, Hashable {
+    public var disposition: MobileWakeDisposition
+    public var diagnosticCodes: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(disposition: MobileWakeDisposition, diagnosticCodes: [String]) {
+        self.disposition = disposition
+        self.diagnosticCodes = diagnosticCodes
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NwcExtensionWakeExecution: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNwcExtensionWakeExecution: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcExtensionWakeExecution {
+        return
+            try NwcExtensionWakeExecution(
+                disposition: FfiConverterTypeMobileWakeDisposition.read(from: &buf), 
+                diagnosticCodes: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NwcExtensionWakeExecution, into buf: inout [UInt8]) {
+        FfiConverterTypeMobileWakeDisposition.write(value.disposition, into: &buf)
+        FfiConverterSequenceString.write(value.diagnosticCodes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionWakeExecution_lift(_ buf: RustBuffer) throws -> NwcExtensionWakeExecution {
+    return try FfiConverterTypeNwcExtensionWakeExecution.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcExtensionWakeExecution_lower(_ value: NwcExtensionWakeExecution) -> RustBuffer {
+    return FfiConverterTypeNwcExtensionWakeExecution.lower(value)
 }
 
 
@@ -5166,7 +5223,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_state() != 28404) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_rebel_wallet_core_checksum_method_nwcextensionengine_execute_wake() != 10415) {
+    if (uniffi_rebel_wallet_core_checksum_method_nwcextensionengine_execute_wake() != 7688) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_constructor_ffiapp_new() != 37354) {
