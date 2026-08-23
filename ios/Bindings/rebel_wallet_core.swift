@@ -5312,7 +5312,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_rebel_wallet_core_checksum_constructor_ffiapp_new() != 37354) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_rebel_wallet_core_checksum_constructor_nwcextensionengine_new() != 32410) {
+    if (uniffi_rebel_wallet_core_checksum_constructor_nwcextensionengine_new() != 44600) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_appreconciler_reconcile() != 39018) {
