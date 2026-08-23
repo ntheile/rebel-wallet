@@ -10,6 +10,12 @@ private let nwcNotificationCopy = NwcNotificationCopy(
     processingBody: "Processing request",
     completedTitle: "Nostr Wallet Connect",
     completedBody: "Request completed",
+    getInfoBody: "Getting Info",
+    getBalanceBody: "Getting Balance",
+    payInvoiceBody: "Paying Invoice",
+    makeInvoiceBody: "Creating Invoice",
+    lookupInvoiceBody: "Fetching Invoice",
+    listTransactionsBody: "Fetching Transactions",
     openApplicationTitle: "Nostr Wallet Connect",
     openApplicationBody: "Open Rebel Wallet to continue"
 )
@@ -130,6 +136,21 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
             return .processing
         case .completed:
             return .completed
+        case .request(let method):
+            switch method {
+            case .getInfo:
+                return .request(.getInfo)
+            case .getBalance:
+                return .request(.getBalance)
+            case .payInvoice:
+                return .request(.payInvoice)
+            case .makeInvoice:
+                return .request(.makeInvoice)
+            case .lookupInvoice:
+                return .request(.lookupInvoice)
+            case .listTransactions:
+                return .request(.listTransactions)
+            }
         case .openApplication:
             return .openApplication
         }
