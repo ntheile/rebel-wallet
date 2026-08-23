@@ -2,7 +2,9 @@ import Foundation
 import NwcMobileApple
 import UserNotifications
 
-private let nwcExtensionExecutionMilliseconds: UInt64 = 25_000
+// Leave two seconds below the approximate 30-second NSE ceiling so Rust can
+// publish the terminal NWC response and Swift can deliver notification content.
+private let nwcExtensionExecutionMilliseconds: UInt64 = 28_000
 private let nwcNotificationCopy = NwcNotificationCopy(
     processingTitle: "Nostr Wallet Connect",
     processingBody: "Processing request",
