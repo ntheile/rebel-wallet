@@ -718,7 +718,7 @@ public func FfiConverterTypeFfiApp_lower(_ value: FfiApp) -> UInt64 {
  */
 public protocol NwcExtensionEngineProtocol: AnyObject, Sendable {
     
-    func executeWake(request: MobileWakeEnvelope, executionMilliseconds: UInt64, cancellation: MobileCancellation) async  -> NwcExtensionWakeExecution
+    func executeWake(request: MobileWakeEnvelope, settlementCheck: Bool, executionMilliseconds: UInt64, cancellation: MobileCancellation) async  -> NwcExtensionWakeExecution
     
 }
 /**
@@ -788,13 +788,13 @@ public convenience init(dataDir: String, secretStore: SecretStore, wakeServerUrl
     
 
     
-open func executeWake(request: MobileWakeEnvelope, executionMilliseconds: UInt64, cancellation: MobileCancellation)async  -> NwcExtensionWakeExecution  {
+open func executeWake(request: MobileWakeEnvelope, settlementCheck: Bool, executionMilliseconds: UInt64, cancellation: MobileCancellation)async  -> NwcExtensionWakeExecution  {
     return
         try!  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_rebel_wallet_core_fn_method_nwcextensionengine_execute_wake(
                     self.uniffiCloneHandle(),
-                    FfiConverterTypeMobileWakeEnvelope_lower(request),FfiConverterUInt64.lower(executionMilliseconds),FfiConverterTypeMobileCancellation_lower(cancellation)
+                    FfiConverterTypeMobileWakeEnvelope_lower(request),FfiConverterBool.lower(settlementCheck),FfiConverterUInt64.lower(executionMilliseconds),FfiConverterTypeMobileCancellation_lower(cancellation)
                 )
             },
             pollFunc: ffi_rebel_wallet_core_rust_future_poll_rust_buffer,
@@ -5306,7 +5306,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_rebel_wallet_core_checksum_method_ffiapp_state() != 28404) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_rebel_wallet_core_checksum_method_nwcextensionengine_execute_wake() != 7688) {
+    if (uniffi_rebel_wallet_core_checksum_method_nwcextensionengine_execute_wake() != 27983) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_constructor_ffiapp_new() != 37354) {
