@@ -9,6 +9,10 @@ enum PushNotificationEvents {
     static let statusKey = "status"
 }
 
+// Leave two seconds below iOS's approximate background-push execution window
+// so Rust can publish the NIP-47 response and acknowledge the wake server.
+private let nwcBackgroundWakeExecutionMilliseconds: UInt64 = 28_000
+
 enum NwcPushPlatformContext {
     private static let deviceTokenKey = "RebelWalletApnsDeviceToken"
 
@@ -73,6 +77,21 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
         NSLog("RebelWallet failed to register for remote notifications: %@", String(describing: error))
     }
 
+    func application(
+        _: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        guard userInfo["settlement_check"] as? Bool == true else {
+            completionHandler(.noData)
+            return
+        }
+
+        Task {
+            completionHandler(await processSettlementWake(userInfo: userInfo))
+        }
+    }
+
     func userNotificationCenter(
         _: UNUserNotificationCenter,
         willPresent _: UNNotification
@@ -118,6 +137,73 @@ final class RebelWalletAppDelegate: NSObject, UIApplicationDelegate, UNUserNotif
             DispatchQueue.main.async {
                 application.registerForRemoteNotifications()
             }
+        }
+    }
+
+    private func processSettlementWake(
+        userInfo: [AnyHashable: Any]
+    ) async -> UIBackgroundFetchResult {
+        NwcWakeInbox.removeLegacySnapshot()
+        guard let wake = NwcQueuedWakeRequest(validatedUserInfo: userInfo) else {
+            NwcWakeInbox.appendDebug(
+                source: "App background",
+                message: NwcQueuedWakeRequest.parseFailureMessage
+            )
+            return .noData
+        }
+        guard let dataDirectory = NwcWakeInbox.extensionDataDirectoryPath() else {
+            NwcWakeInbox.appendDebug(
+                source: "App background",
+                message: "Shared storage is unavailable"
+            )
+            NwcWakeInbox.enqueue(wake)
+            return .failed
+        }
+
+        let settlementMonitor = NwcWakeInbox.settlementMonitorConfiguration()
+        let engine = NwcExtensionEngine(
+            dataDir: dataDirectory,
+            secretStore: KeychainSecretStore(),
+            wakeServerUrl: settlementMonitor?.serverURL,
+            installId: settlementMonitor?.installID ?? ""
+        )
+        NwcWakeInbox.appendDebug(
+            source: "App background",
+            message: "Started silent NWC settlement processing"
+        )
+        let execution = await engine.executeWake(
+            request: MobileWakeEnvelope(
+                relayUrl: wake.payload.relayURL,
+                eventIdHex: wake.payload.eventIDHex,
+                walletServicePublicKeyHex: wake.payload.walletServicePublicKeyHex,
+                embeddedEventJson: wake.payload.embeddedEventJSON,
+                receivedAtSeconds: wake.receivedAtSeconds
+            ),
+            executionMilliseconds: nwcBackgroundWakeExecutionMilliseconds,
+            cancellation: MobileCancellation()
+        )
+
+        if !execution.diagnosticCodes.isEmpty {
+            NwcWakeInbox.appendDebug(
+                source: "App background",
+                message: "NWC diagnostics: \(execution.diagnosticCodes.joined(separator: ", "))"
+            )
+        }
+
+        switch execution.disposition {
+        case .completed, .alreadyProcessed, .rejected:
+            NwcWakeInbox.appendDebug(
+                source: "App background",
+                message: "Finished silent NWC settlement processing"
+            )
+            return .newData
+        case .queuedForApplication, .retryAfter:
+            NwcWakeInbox.enqueue(wake)
+            NwcWakeInbox.appendDebug(
+                source: "App background",
+                message: "Queued silent NWC settlement processing for retry"
+            )
+            return .failed
         }
     }
 
