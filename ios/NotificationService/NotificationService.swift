@@ -46,10 +46,13 @@ final class NotificationService: UNNotificationServiceExtension {
             ))
             return
         }
+        let settlementMonitor = NwcWakeInbox.settlementMonitorConfiguration()
 
         let engine = NwcExtensionEngine(
             dataDir: dataDirectory,
-            secretStore: KeychainSecretStore()
+            secretStore: KeychainSecretStore(),
+            wakeServerUrl: settlementMonitor?.serverURL,
+            installId: settlementMonitor?.installID ?? ""
         )
         let executor = RebelNwcWakeExecutor(engine: engine)
         let adapter = NwcNotificationServiceAdapter(
@@ -61,10 +64,17 @@ final class NotificationService: UNNotificationServiceExtension {
         self.adapter = adapter
 
         NwcWakeInbox.appendDebug(source: "NSE", message: "Started bounded NWC wake processing")
+        let isSettlementCheck = request.content.userInfo["settlement_check"] as? Bool == true
         adapter.didReceive(
             payload: wake.payload,
             content: request.content,
-            contentHandler: contentHandler
+            contentHandler: { content in
+                guard isSettlementCheck else {
+                    contentHandler(content)
+                    return
+                }
+                contentHandler(executor.settlementContent(applyingTo: content))
+            }
         )
     }
 
@@ -84,6 +94,8 @@ private final class RebelNwcWakeCancellation: NwcWakeCancellation, @unchecked Se
 
 private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
     private let engine: NwcExtensionEngine
+    private let settlementStatusLock = NSLock()
+    private var settlementStatus: NwcSettlementNotificationStatus = .notTracked
 
     init(engine: NwcExtensionEngine) {
         self.engine = engine
@@ -111,6 +123,9 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
             cancellation: cancellation.rust
         )
         let result = execution.disposition
+        settlementStatusLock.withLock {
+            settlementStatus = execution.settlementNotificationStatus
+        }
         if !execution.diagnosticCodes.isEmpty {
             NwcWakeInbox.appendDebug(
                 source: "NSE",
@@ -154,6 +169,29 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
         case .openApplication:
             return .openApplication
         }
+    }
+
+    func settlementContent(applyingTo content: UNNotificationContent) -> UNNotificationContent {
+        let status = settlementStatusLock.withLock { settlementStatus }
+        guard let updated = content.mutableCopy() as? UNMutableNotificationContent else {
+            return content
+        }
+        switch status {
+        case .delivered:
+            updated.title = "Payment received"
+            updated.body = "Invoice settled. The connected NWC app was updated."
+        case .pending:
+            updated.title = "Incoming payment"
+            updated.body = "Checking whether the NWC invoice has settled."
+            updated.sound = nil
+            updated.interruptionLevel = .passive
+        case .notTracked:
+            updated.title = "Nostr Wallet Connect"
+            updated.body = "Checking incoming payment status."
+            updated.sound = nil
+            updated.interruptionLevel = .passive
+        }
+        return updated
     }
 
     private func enqueue(_ payload: NwcWakePayload) {
