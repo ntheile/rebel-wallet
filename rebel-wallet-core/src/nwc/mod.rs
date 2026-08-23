@@ -9,10 +9,11 @@ use bip39::Mnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey, ToBech32};
 use nwc_mobile::{
     ClientSecretStore, ClientSecretStoreError, ConnectionId, HostError, HostErrorKind,
-    Nip98SigningKey, NwcEncryption, NwcMethod, NwcNotificationType, NwcSecretKey, QueueReason,
-    RejectionCode, SecretProvider, WakeDiagnosticCollector, WakeDiagnosticSink, WakeDisposition,
+    Nip98SigningKey, NotificationHint, NwcEncryption, NwcMethod, NwcNotificationType, NwcSecretKey,
+    QueueReason, RejectionCode, SecretProvider, WakeDiagnosticCollector, WakeDiagnosticSink,
+    WakeDisposition,
 };
-use nwc_mobile_bark::execute_bark_wake_with_diagnostics;
+use nwc_mobile_bark::{execute_bark_wake_with_diagnostics, run_bark_invoice_notification_worker};
 pub(crate) use nwc_mobile_http::ApnsWakeRegistrationConfig as NwcPushConfig;
 use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
@@ -195,6 +196,7 @@ impl NwcExtensionEngine {
     pub async fn execute_wake(
         &self,
         request: MobileWakeEnvelope,
+        settlement_check: bool,
         execution_milliseconds: u64,
         cancellation: Arc<MobileCancellation>,
     ) -> NwcExtensionWakeExecution {
@@ -225,6 +227,7 @@ impl NwcExtensionEngine {
                         data_dir,
                         secrets,
                         request,
+                        settlement_check,
                         window,
                         execution_cancellation,
                         execution_diagnostics,
@@ -250,6 +253,7 @@ impl NwcExtensionEngine {
         data_dir: PathBuf,
         secrets: Arc<dyn SecretStore>,
         request: MobileWakeEnvelope,
+        settlement_check: bool,
         window: BackgroundWakeWindow,
         cancellation: Arc<MobileCancellation>,
         diagnostics: Arc<dyn WakeDiagnosticSink>,
@@ -272,6 +276,28 @@ impl NwcExtensionEngine {
         };
         if !ensure_nostr_secret(secrets.as_ref(), &mnemonic) || cancellation.is_cancelled() {
             return queued_disposition();
+        }
+        let manager = match nwc_mobile::NwcApplicationManager::open(&data_dir) {
+            Ok(manager) => manager,
+            Err(_) => return queued_disposition(),
+        };
+        let event_id = input.event_id().clone();
+        let initial_monitor = manager
+            .service()
+            .ledger()
+            .nwc_invoice_monitor(&event_id)
+            .ok()
+            .flatten();
+        if settlement_check
+            && !initial_monitor.as_ref().is_some_and(|monitor| {
+                monitor.wallet_service_pubkey() == input.wallet_service_pubkey()
+                    && monitor
+                        .relays()
+                        .iter()
+                        .any(|relay| relay.as_str() == input.relay())
+            })
+        {
+            return rejected_disposition();
         }
         let wallet = match open_bark_wallet(
             data_dir.clone(),
@@ -297,22 +323,34 @@ impl NwcExtensionEngine {
         if cancellation.is_cancelled() {
             return queued_disposition();
         }
-        let manager = match nwc_mobile::NwcApplicationManager::open(&data_dir) {
-            Ok(manager) => manager,
-            Err(_) => return queued_disposition(),
+        let mut disposition = if settlement_check {
+            let _ = run_bark_invoice_notification_worker(
+                manager.service().ledger(),
+                wallet,
+                input.wallet_service_pubkey().clone(),
+                &event_id,
+                &NostrRelayTransport,
+                &RebelSecretProvider::new(secrets.clone()),
+                budget,
+                cancellation.as_ref(),
+            )
+            .await;
+            WakeDisposition::Completed {
+                notification: NotificationHint::Processing,
+            }
+        } else {
+            execute_bark_wake_with_diagnostics(
+                manager.service().ledger(),
+                wallet,
+                &NostrRelayTransport,
+                &RebelSecretProvider::new(secrets.clone()),
+                input,
+                budget,
+                cancellation.as_ref(),
+                diagnostics,
+            )
+            .await
         };
-        let event_id = input.event_id().clone();
-        let disposition = execute_bark_wake_with_diagnostics(
-            manager.service().ledger(),
-            wallet,
-            &NostrRelayTransport,
-            &RebelSecretProvider::new(secrets.clone()),
-            input,
-            budget,
-            cancellation.as_ref(),
-            diagnostics,
-        )
-        .await;
         let monitor = manager
             .service()
             .ledger()
@@ -320,14 +358,20 @@ impl NwcExtensionEngine {
             .ok()
             .flatten();
         if let Some(monitor) = monitor.as_ref() {
+            let completed = monitor.completed();
             settlement_status.store(
-                if monitor.completed() {
+                if completed {
                     SETTLEMENT_DELIVERED
                 } else {
                     SETTLEMENT_PENDING
                 },
                 Ordering::Release,
             );
+            if settlement_check && completed {
+                disposition = WakeDisposition::Completed {
+                    notification: NotificationHint::Completed,
+                };
+            }
         }
         if let (Some(config), Some(_)) = (monitor_config, monitor) {
             if let Some(signing_key) = extension_nip98_signing_key(secrets.as_ref()) {

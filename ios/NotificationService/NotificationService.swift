@@ -47,6 +47,7 @@ final class NotificationService: UNNotificationServiceExtension {
             return
         }
         let settlementMonitor = NwcWakeInbox.settlementMonitorConfiguration()
+        let isSettlementCheck = request.content.userInfo["settlement_check"] as? Bool == true
 
         let engine = NwcExtensionEngine(
             dataDir: dataDirectory,
@@ -54,7 +55,10 @@ final class NotificationService: UNNotificationServiceExtension {
             wakeServerUrl: settlementMonitor?.serverURL,
             installId: settlementMonitor?.installID ?? ""
         )
-        let executor = RebelNwcWakeExecutor(engine: engine)
+        let executor = RebelNwcWakeExecutor(
+            engine: engine,
+            settlementCheck: isSettlementCheck
+        )
         let adapter = NwcNotificationServiceAdapter(
             executor: executor,
             cancellationFactory: { RebelNwcWakeCancellation() },
@@ -63,8 +67,12 @@ final class NotificationService: UNNotificationServiceExtension {
         )
         self.adapter = adapter
 
-        NwcWakeInbox.appendDebug(source: "NSE", message: "Started bounded NWC wake processing")
-        let isSettlementCheck = request.content.userInfo["settlement_check"] as? Bool == true
+        NwcWakeInbox.appendDebug(
+            source: "NSE",
+            message: isSettlementCheck
+                ? "Started targeted NWC invoice settlement check"
+                : "Started bounded NWC wake processing"
+        )
         adapter.didReceive(
             payload: wake.payload,
             content: request.content,
@@ -94,11 +102,13 @@ private final class RebelNwcWakeCancellation: NwcWakeCancellation, @unchecked Se
 
 private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
     private let engine: NwcExtensionEngine
+    private let settlementCheck: Bool
     private let settlementStatusLock = NSLock()
     private var settlementStatus: NwcSettlementNotificationStatus = .notTracked
 
-    init(engine: NwcExtensionEngine) {
+    init(engine: NwcExtensionEngine, settlementCheck: Bool) {
         self.engine = engine
+        self.settlementCheck = settlementCheck
     }
 
     func execute(
@@ -119,12 +129,19 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
                 embeddedEventJson: payload.embeddedEventJSON,
                 receivedAtSeconds: UInt64(Date().timeIntervalSince1970)
             ),
+            settlementCheck: settlementCheck,
             executionMilliseconds: executionMilliseconds,
             cancellation: cancellation.rust
         )
         let result = execution.disposition
         settlementStatusLock.withLock {
             settlementStatus = execution.settlementNotificationStatus
+        }
+        if settlementCheck {
+            NwcWakeInbox.appendDebug(
+                source: "NSE",
+                message: "Targeted NWC settlement status: \(execution.settlementNotificationStatus)"
+            )
         }
         if !execution.diagnosticCodes.isEmpty {
             NwcWakeInbox.appendDebug(
