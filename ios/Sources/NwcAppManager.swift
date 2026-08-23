@@ -149,6 +149,10 @@ final class NwcAppManager {
     private func syncPushNotificationRegistration(status: String, deviceToken: String?) {
         let wakeServerURL = NwcPushPlatformContext.serverURL
         let installID = NwcPushPlatformContext.installId
+        NwcWakeInbox.storeSettlementMonitorConfiguration(
+            serverURL: wakeServerURL,
+            installID: installID
+        )
         dispatch(.setPushNotificationRegistration(
             apnsDeviceToken: deviceToken ?? NwcPushPlatformContext.cachedDeviceToken,
             registrationStatus: status,

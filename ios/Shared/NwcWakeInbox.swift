@@ -6,6 +6,11 @@ enum NwcWakeInboxEvents {
     static let debugDidChange = Notification.Name("RebelWalletNwcWakeDebugDidChange")
 }
 
+struct NwcSettlementMonitorPlatformConfiguration {
+    let serverURL: String
+    let installID: String
+}
+
 extension NwcQueuedWakeRequest {
     init?(validatedUserInfo userInfo: [AnyHashable: Any]) {
         let receivedAt = UInt64(Date().timeIntervalSince1970)
@@ -37,6 +42,37 @@ enum NwcWakeInbox {
     private static let queueKey = "nwcWakeQueue"
     private static let snapshotKey = "nwcWakeSnapshot"
     private static let legacyProcessedEventIdsKey = "nwcWakeProcessedEventIds"
+    private static let settlementServerURLKey = "nwcSettlementServerURL"
+    private static let settlementInstallIDKey = "nwcSettlementInstallID"
+
+    static func storeSettlementMonitorConfiguration(serverURL: String?, installID: String) {
+        guard let defaults = appGroupDefaults() else { return }
+        if let serverURL, !serverURL.isEmpty {
+            defaults.set(serverURL, forKey: settlementServerURLKey)
+        } else {
+            defaults.removeObject(forKey: settlementServerURLKey)
+        }
+        if !installID.isEmpty {
+            defaults.set(installID, forKey: settlementInstallIDKey)
+        }
+    }
+
+    static func settlementMonitorConfiguration() -> NwcSettlementMonitorPlatformConfiguration? {
+        guard
+            let defaults = appGroupDefaults(),
+            let serverURL = defaults.string(forKey: settlementServerURLKey),
+            !serverURL.isEmpty,
+            let installID = defaults.string(forKey: settlementInstallIDKey),
+            !installID.isEmpty
+        else {
+            return nil
+        }
+        return NwcSettlementMonitorPlatformConfiguration(
+            serverURL: serverURL,
+            installID: installID
+        )
+    }
+
     static func enqueue(_ request: NwcQueuedWakeRequest) {
         do {
             guard let store = wakeStore() else { throw CocoaError(.fileNoSuchFile) }

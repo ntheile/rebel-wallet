@@ -26,6 +26,7 @@ use nostr_sdk::prelude::{
     FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, Tag, ToBech32,
 };
 use nwc_mobile::{ForegroundWakeCoordinator, NwcApplicationManager};
+use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 use tokio::runtime::Runtime;
 use zeroize::Zeroizing;
 
@@ -331,6 +332,7 @@ struct AppCore {
     nwc_in_flight_info_events: HashSet<String>,
     nwc_manager: Option<NwcApplicationManager>,
     nwc_push_config: NwcPushConfig,
+    nwc_settlement_monitor_config: Option<InvoiceSettlementMonitorConfig>,
     rev: u64,
     next_capability_id: u64,
     send_fee_estimate_request_id: u64,
@@ -380,6 +382,7 @@ impl AppCore {
             nwc_in_flight_info_events: HashSet::new(),
             nwc_manager,
             nwc_push_config: NwcPushConfig::default(),
+            nwc_settlement_monitor_config: None,
             rev: 0,
             next_capability_id: 0,
             send_fee_estimate_request_id: 0,
