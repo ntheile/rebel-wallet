@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 use super::custom_address_flow::{
     lightning_address_local_part, pending_custom_lightning_address_matches_name,
 };
-use super::{nwc_client_secret_key, AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
+use super::{AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
 use crate::custom_address::amount_msats_to_sat;
 use crate::persistence::{PersistedAppData, PersistedPriceCurrency, ServerConfig};
 use crate::profile_cache::{
@@ -68,13 +68,6 @@ impl AppCore {
         // unlock is confirmed gone, so a failed cleanup cannot orphan the
         // databases behind an already-deleted seed.
         let mut errors = Vec::new();
-        let nwc_secrets = self
-            .state
-            .nwc
-            .connections
-            .iter()
-            .map(|connection| (connection.client_pubkey.clone(), connection.name.clone()))
-            .collect::<Vec<_>>();
         for network in [
             WalletNetwork::Mainnet,
             WalletNetwork::Signet,
@@ -85,11 +78,8 @@ impl AppCore {
                 errors.push(format!("{e:#}"));
             }
         }
-        self.nwc_manager = None;
-        let nwc_database_path = nwc_mobile::NwcApplicationManager::database_path(&self.data_dir);
-        if let Err(error) = remove_wallet_database_files(&nwc_database_path) {
-            errors.push(format!("{error:#}"));
-        }
+        let (nwc_cleanup, nwc_errors) = self.remove_nwc_wallet_data();
+        errors.extend(nwc_errors);
 
         match std::fs::remove_file(&self.app_data_path) {
             Ok(()) => {}
@@ -104,31 +94,19 @@ impl AppCore {
         self.zap_receipts.clear();
         self.profile_picture_downloads.clear();
         self.profile_info_requests.clear();
-        self.nwc_wake_coordinator.reset();
 
         let mut state = AppState::initial();
         state.show_launch_splash = false;
         self.state = state;
 
-        self.nwc_manager = nwc_mobile::NwcApplicationManager::open(&self.data_dir).ok();
-        let mut warnings = Vec::new();
-        if self.nwc_manager.is_none() {
-            warnings.push("could not reopen NWC authorization storage".to_string());
-        }
+        let mut warnings = self.reset_nwc_after_wallet_deletion();
 
         if errors.is_empty() {
             if !self.secrets.delete_secret(WALLET_SEED_KEY.to_string()) {
                 errors.push("wallet seed".to_string());
             }
             let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
-            for (client_pubkey, name) in nwc_secrets {
-                if !self
-                    .secrets
-                    .delete_secret(nwc_client_secret_key(&client_pubkey))
-                {
-                    errors.push(format!("NWC secret for {name}"));
-                }
-            }
+            errors.extend(self.delete_nwc_wallet_secrets(nwc_cleanup));
         }
 
         warnings.extend(errors);
