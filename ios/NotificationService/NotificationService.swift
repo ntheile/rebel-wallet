@@ -46,13 +46,11 @@ final class NotificationService: UNNotificationServiceExtension {
             ))
             return
         }
-        let settlementMonitor = NwcWakeInbox.settlementMonitorConfiguration()
-
         let engine = NwcExtensionEngine(
             dataDir: dataDirectory,
             secretStore: KeychainSecretStore(),
-            wakeServerUrl: settlementMonitor?.serverURL,
-            installId: settlementMonitor?.installID ?? ""
+            wakeServerUrl: nil,
+            installId: ""
         )
         let executor = RebelNwcWakeExecutor(engine: engine)
         let adapter = NwcNotificationServiceAdapter(
