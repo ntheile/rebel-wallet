@@ -28,7 +28,7 @@ mod wallet;
 mod zaps;
 
 pub use actions::AppAction;
-pub use nwc::{NwcExtensionEngine, NwcExtensionWakeExecution};
+pub use nwc::{NwcExtensionEngine, NwcExtensionWakeExecution, NwcSettlementNotificationStatus};
 use profile_cache::normalize_profile_picture_to_jpeg;
 pub use state::{
     ActivityIconKind, ActivityItem, AppState, BusyState, CapabilityRequest, CapabilityRequestKind,

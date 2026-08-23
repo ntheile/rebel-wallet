@@ -763,12 +763,14 @@ open class NwcExtensionEngine: NwcExtensionEngineProtocol, @unchecked Sendable {
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_rebel_wallet_core_fn_clone_nwcextensionengine(self.handle, $0) }
     }
-public convenience init(dataDir: String, secretStore: SecretStore) {
+public convenience init(dataDir: String, secretStore: SecretStore, wakeServerUrl: String?, installId: String) {
     let handle =
         try! rustCall() {
     uniffi_rebel_wallet_core_fn_constructor_nwcextensionengine_new(
         FfiConverterString.lower(dataDir),
-        FfiConverterCallbackInterfaceSecretStore_lower(secretStore),$0
+        FfiConverterCallbackInterfaceSecretStore_lower(secretStore),
+        FfiConverterOptionString.lower(wakeServerUrl),
+        FfiConverterString.lower(installId),$0
     )
 }
     self.init(unsafeFromHandle: handle)
@@ -1750,12 +1752,14 @@ public func FfiConverterTypeNostrState_lower(_ value: NostrState) -> RustBuffer 
 public struct NwcExtensionWakeExecution: Equatable, Hashable {
     public var disposition: MobileWakeDisposition
     public var diagnosticCodes: [String]
+    public var settlementNotificationStatus: NwcSettlementNotificationStatus
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(disposition: MobileWakeDisposition, diagnosticCodes: [String]) {
+    public init(disposition: MobileWakeDisposition, diagnosticCodes: [String], settlementNotificationStatus: NwcSettlementNotificationStatus) {
         self.disposition = disposition
         self.diagnosticCodes = diagnosticCodes
+        self.settlementNotificationStatus = settlementNotificationStatus
     }
 
     
@@ -1775,13 +1779,15 @@ public struct FfiConverterTypeNwcExtensionWakeExecution: FfiConverterRustBuffer 
         return
             try NwcExtensionWakeExecution(
                 disposition: FfiConverterTypeMobileWakeDisposition.read(from: &buf), 
-                diagnosticCodes: FfiConverterSequenceString.read(from: &buf)
+                diagnosticCodes: FfiConverterSequenceString.read(from: &buf), 
+                settlementNotificationStatus: FfiConverterTypeNwcSettlementNotificationStatus.read(from: &buf)
         )
     }
 
     public static func write(_ value: NwcExtensionWakeExecution, into buf: inout [UInt8]) {
         FfiConverterTypeMobileWakeDisposition.write(value.disposition, into: &buf)
         FfiConverterSequenceString.write(value.diagnosticCodes, into: &buf)
+        FfiConverterTypeNwcSettlementNotificationStatus.write(value.settlementNotificationStatus, into: &buf)
     }
 }
 
@@ -3699,6 +3705,83 @@ public func FfiConverterTypeMainTab_lower(_ value: MainTab) -> RustBuffer {
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Safe settlement-notification state for native notification presentation.
+ */
+
+public enum NwcSettlementNotificationStatus: Equatable, Hashable {
+    
+    case notTracked
+    case pending
+    case delivered
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NwcSettlementNotificationStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNwcSettlementNotificationStatus: FfiConverterRustBuffer {
+    typealias SwiftType = NwcSettlementNotificationStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NwcSettlementNotificationStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .notTracked
+        
+        case 2: return .pending
+        
+        case 3: return .delivered
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NwcSettlementNotificationStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .notTracked:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .pending:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .delivered:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcSettlementNotificationStatus_lift(_ buf: RustBuffer) throws -> NwcSettlementNotificationStatus {
+    return try FfiConverterTypeNwcSettlementNotificationStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNwcSettlementNotificationStatus_lower(_ value: NwcSettlementNotificationStatus) -> RustBuffer {
+    return FfiConverterTypeNwcSettlementNotificationStatus.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum PriceCurrency: Equatable, Hashable {
     
@@ -5229,7 +5312,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_rebel_wallet_core_checksum_constructor_ffiapp_new() != 37354) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_rebel_wallet_core_checksum_constructor_nwcextensionengine_new() != 31594) {
+    if (uniffi_rebel_wallet_core_checksum_constructor_nwcextensionengine_new() != 44600) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_rebel_wallet_core_checksum_method_appreconciler_reconcile() != 39018) {

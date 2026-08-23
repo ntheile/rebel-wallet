@@ -147,13 +147,19 @@ final class NwcAppManager {
     }
 
     private func syncPushNotificationRegistration(status: String, deviceToken: String?) {
+        let wakeServerURL = NwcPushPlatformContext.serverURL
+        let installID = NwcPushPlatformContext.installId
+        NwcWakeInbox.storeSettlementMonitorConfiguration(
+            serverURL: wakeServerURL,
+            installID: installID
+        )
         dispatch(.setPushNotificationRegistration(
             apnsDeviceToken: deviceToken ?? NwcPushPlatformContext.cachedDeviceToken,
             registrationStatus: status,
-            wakeServerUrl: NwcPushPlatformContext.serverURL,
+            wakeServerUrl: wakeServerURL,
             appId: Bundle.main.bundleIdentifier ?? "com.rebelwallet.app",
             environment: NwcPushPlatformContext.apnsEnvironment,
-            installId: NwcPushPlatformContext.installId
+            installId: installID
         ))
     }
 

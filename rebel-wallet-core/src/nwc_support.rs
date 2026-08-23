@@ -10,7 +10,8 @@ use nwc_mobile::{
     OperationBudget, UnixTimestamp, WakeDisposition, WakeEnvelope, WalletConnectionRequest,
     DEFAULT_MAXIMUM_CONNECTION_RELAYS,
 };
-use nwc_mobile_bark::execute_bark_wake;
+use nwc_mobile_bark::{execute_bark_wake, run_bark_notification_worker};
+use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 use nwc_mobile_uniffi::{MobileConnectionMetadata, MobileConnectionView};
 
 use super::AppCore;
@@ -403,6 +404,8 @@ impl AppCore {
         install_id: String,
     ) {
         let wake_enabled = registration_status != "Permission denied";
+        let settlement_monitor_config =
+            InvoiceSettlementMonitorConfig::new(wake_server_url.clone(), install_id.clone()).ok();
         self.state.push_notifications.apns_device_token = apns_device_token.clone();
         self.state.push_notifications.registration_status = registration_status;
         let config = NwcPushConfig::new(
@@ -419,6 +422,7 @@ impl AppCore {
             }
             self.nwc_push_config = config;
         }
+        self.nwc_settlement_monitor_config = settlement_monitor_config;
         self.sync_nwc_push_registrations();
     }
 
@@ -517,6 +521,10 @@ impl AppCore {
         let data_dir = self.data_dir.clone();
         let secrets = self.secrets.clone();
         let generation = self.wallet_generation;
+        let monitor_config = self.nwc_settlement_monitor_config.clone();
+        let signing_key = self.nostr_keys().ok().and_then(|keys| {
+            nwc_mobile::Nip98SigningKey::from_bytes(keys.secret_key().to_secret_bytes()).ok()
+        });
         self.rt.spawn(async move {
             let event_id = request.event_id_hex.clone();
             let result = async {
@@ -535,18 +543,30 @@ impl AppCore {
                 let secrets = RebelSecretProvider::new(secrets);
                 let budget = OperationBudget::new(NWC_FOREGROUND_OPERATION_TIMEOUT)
                     .context("invalid NWC foreground budget")?;
-                Ok::<_, anyhow::Error>(
-                    execute_bark_wake(
-                        manager.service().ledger(),
-                        wallet,
-                        &relays,
-                        &secrets,
-                        wake,
-                        budget,
-                        &NeverCancelled,
-                    )
-                    .await,
+                let event_id = wake.event_id().clone();
+                let disposition = execute_bark_wake(
+                    manager.service().ledger(),
+                    wallet,
+                    &relays,
+                    &secrets,
+                    wake,
+                    budget,
+                    &NeverCancelled,
                 )
+                .await;
+                if let (Some(config), Some(signing_key)) = (monitor_config, signing_key) {
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        nwc_mobile_http::update_invoice_settlement_monitor(
+                            manager.service().ledger(),
+                            config,
+                            &event_id,
+                            signing_key,
+                        ),
+                    )
+                    .await;
+                }
+                Ok::<_, anyhow::Error>(disposition)
             }
             .await;
 
@@ -563,6 +583,40 @@ impl AppCore {
                 },
             };
             let _ = tx.send(CoreMsg::Async(msg));
+        });
+    }
+
+    pub(super) fn reconcile_nwc_payment_notifications(&self) {
+        let Some(wallet) = self.wallet.clone() else {
+            return;
+        };
+        let Ok(keys) = self.nostr_keys() else {
+            return;
+        };
+        let Ok(wallet_service_pubkey) =
+            nwc_mobile::PublicKey::from_hex(&keys.public_key().to_hex())
+        else {
+            return;
+        };
+        let data_dir = self.data_dir.clone();
+        let secrets = self.secrets.clone();
+        self.rt.spawn(async move {
+            let Ok(manager) = NwcApplicationManager::open(&data_dir) else {
+                return;
+            };
+            let Ok(budget) = OperationBudget::new(NWC_FOREGROUND_OPERATION_TIMEOUT) else {
+                return;
+            };
+            let _ = run_bark_notification_worker(
+                manager.service().ledger(),
+                wallet,
+                wallet_service_pubkey,
+                &NostrRelayTransport,
+                &RebelSecretProvider::new(secrets),
+                budget,
+                &NeverCancelled,
+            )
+            .await;
         });
     }
 
