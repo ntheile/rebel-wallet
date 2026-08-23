@@ -417,10 +417,13 @@ impl AppCore {
             wake_enabled,
         );
         if self.nwc_push_config != config {
-            if let Some(manager) = self.nwc_manager.as_mut() {
-                manager.mark_registration_refresh_pending();
-            }
             self.nwc_push_config = config;
+        }
+        // The provider owns ephemeral routing state that can disappear after a
+        // deployment or database restore. Refresh it whenever iOS supplies the
+        // current registration context, even when the local values are unchanged.
+        if let Some(manager) = self.nwc_manager.as_mut() {
+            manager.mark_registration_refresh_pending();
         }
         self.nwc_settlement_monitor_config = settlement_monitor_config;
         self.sync_nwc_push_registrations();
