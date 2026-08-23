@@ -6,11 +6,13 @@ use anyhow::Context;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey};
 use nwc_mobile::{
     parse_connection_relays, ApplicationConnectionMetadata, ForegroundWakeDecision,
-    ForegroundWakeOutcome, ForegroundWakeRetryCause, NeverCancelled, NwcApplicationManager,
-    OperationBudget, UnixTimestamp, WakeDisposition, WakeEnvelope, WalletConnectionRequest,
-    DEFAULT_MAXIMUM_CONNECTION_RELAYS,
+    ForegroundWakeOutcome, ForegroundWakeRetryCause, NeverCancelled, NotificationHint,
+    NwcApplicationManager, OperationBudget, UnixTimestamp, WakeDisposition, WakeEnvelope,
+    WalletConnectionRequest, DEFAULT_MAXIMUM_CONNECTION_RELAYS,
 };
-use nwc_mobile_bark::{execute_bark_wake, run_bark_notification_worker};
+use nwc_mobile_bark::{
+    execute_bark_wake, run_bark_invoice_notification_worker, run_bark_notification_worker,
+};
 use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 use nwc_mobile_uniffi::{MobileConnectionMetadata, MobileConnectionView};
 
@@ -547,16 +549,46 @@ impl AppCore {
                 let budget = OperationBudget::new(NWC_FOREGROUND_OPERATION_TIMEOUT)
                     .context("invalid NWC foreground budget")?;
                 let event_id = wake.event_id().clone();
-                let disposition = execute_bark_wake(
-                    manager.service().ledger(),
-                    wallet,
-                    &relays,
-                    &secrets,
-                    wake,
-                    budget,
-                    &NeverCancelled,
-                )
-                .await;
+                let tracked_invoice = manager
+                    .service()
+                    .ledger()
+                    .nwc_invoice_monitor(&event_id)
+                    .ok()
+                    .flatten()
+                    .filter(|monitor| {
+                        monitor.wallet_service_pubkey() == wake.wallet_service_pubkey()
+                            && monitor
+                                .relays()
+                                .iter()
+                                .any(|relay| relay.as_str() == wake.relay())
+                    });
+                let disposition = if tracked_invoice.is_some() {
+                    let _ = run_bark_invoice_notification_worker(
+                        manager.service().ledger(),
+                        wallet,
+                        wake.wallet_service_pubkey().clone(),
+                        &event_id,
+                        &relays,
+                        &secrets,
+                        budget,
+                        &NeverCancelled,
+                    )
+                    .await;
+                    WakeDisposition::Completed {
+                        notification: NotificationHint::Completed,
+                    }
+                } else {
+                    execute_bark_wake(
+                        manager.service().ledger(),
+                        wallet,
+                        &relays,
+                        &secrets,
+                        wake,
+                        budget,
+                        &NeverCancelled,
+                    )
+                    .await
+                };
                 if let (Some(config), Some(signing_key)) = (monitor_config, signing_key) {
                     let _ = tokio::time::timeout(
                         Duration::from_secs(10),
