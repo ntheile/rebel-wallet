@@ -748,3 +748,254 @@ impl AppCore {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::tests::{recording_secret_core, test_core};
+    use crate::core::{NOSTR_SECRET_KEY, WALLET_SEED_KEY};
+    use crate::{NwcConnection, NwcPermission};
+
+    use super::*;
+
+    fn test_nwc_connection(client_pubkey: &str) -> NwcConnection {
+        NwcConnection {
+            id: format!("nwc-{client_pubkey}"),
+            name: "Test".to_string(),
+            icon_url: None,
+            icon_display_url: None,
+            relay: "wss://relay.example.com".to_string(),
+            wallet_managed_secret: true,
+            service_pubkey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            client_pubkey: client_pubkey.to_string(),
+            budget_sat: 0,
+            spent_sat: 0,
+            budget_display: String::new(),
+            spent_display: String::new(),
+            budget_interval: NwcBudgetInterval::Never,
+            budget_interval_display: String::new(),
+            permissions: vec![NwcPermission::GetInfo],
+            created_at: 0,
+            last_used_at: None,
+            expires_at: None,
+            budget_period_started_at: 0,
+            pending_info_event_relays: Vec::new(),
+        }
+    }
+
+    fn test_nwc_wake_request() -> NwcWakeRequest {
+        NwcWakeRequest {
+            relay_url: "wss://relay.example.com".to_string(),
+            event_id_hex: "event".to_string(),
+            wallet_service_public_key_hex: "wallet".to_string(),
+            embedded_event_json: None,
+            received_at_seconds: 100,
+        }
+    }
+
+    #[test]
+    fn relay_input_validation_matches_creation_policy() {
+        assert!(nwc_relay_input_is_valid("wss://relay.example/path/"));
+        assert!(nwc_relay_input_is_valid(
+            "wss://relay.example/one\nwss://relay.example/two"
+        ));
+        assert!(!nwc_relay_input_is_valid(""));
+        assert!(!nwc_relay_input_is_valid("ws://relay.example"));
+        assert!(!nwc_relay_input_is_valid(
+            "wss://relay.example/1,wss://relay.example/2,wss://relay.example/3"
+        ));
+    }
+
+    #[test]
+    fn pending_wake_processing_fails_closed_until_service_is_ready() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.nwc_manager = None;
+        core.state
+            .nwc
+            .pending_wake_requests
+            .push(test_nwc_wake_request());
+
+        core.process_pending_nwc_wake_requests();
+
+        assert!(!core.nwc_wake_coordinator.is_in_flight(&"event".to_string()));
+        assert!(core
+            .state
+            .nwc
+            .last_wake_status
+            .contains("authorization storage is unavailable"));
+    }
+
+    #[test]
+    fn loads_connections_from_the_authoritative_nwc_mobile_ledger() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        let service_keys = Keys::generate();
+        let client_keys = Keys::generate();
+        let mut connection = test_nwc_connection(&client_keys.public_key().to_hex());
+        connection.service_pubkey = service_keys.public_key().to_hex();
+        connection.name = "Stored display name".to_string();
+        let authorization = nwc_mobile::HostConnectionAuthorization::new(
+            connection.id.clone(),
+            connection.client_pubkey.clone(),
+            connection.service_pubkey.clone(),
+            vec![connection.relay.clone()],
+            vec![nwc_mobile::NwcMethod::GetInfo],
+            connection.budget_sat,
+            connection.budget_interval.into(),
+            nwc_mobile::FeePolicy::CountTowardBudget {
+                maximum_fee_sat: nwc_mobile::maximum_mobile_fee_sat(connection.budget_sat),
+            },
+            NWC_ENCRYPTION,
+            None,
+        );
+        core.nwc_manager
+            .as_ref()
+            .expect("manager")
+            .service()
+            .create_host_connection(authorization)
+            .expect("persist connection");
+        core.nwc_manager
+            .as_ref()
+            .expect("manager")
+            .set_connection_metadata(
+                &connection.id,
+                ApplicationConnectionMetadata::new(
+                    connection.name.clone(),
+                    None,
+                    vec![connection.relay.clone()],
+                )
+                .expect("metadata"),
+            )
+            .expect("persist metadata");
+
+        core.load_nwc_connections();
+
+        assert_eq!(core.state.nwc.connections.len(), 1);
+        let loaded = &core.state.nwc.connections[0];
+        assert_eq!(loaded.name, "Stored display name");
+        assert_eq!(loaded.client_pubkey, client_keys.public_key().to_hex());
+        assert_eq!(loaded.service_pubkey, service_keys.public_key().to_hex());
+        assert!(!loaded.wallet_managed_secret);
+    }
+
+    #[test]
+    fn completed_engine_wake_leaves_the_queue_and_enters_history() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        let request = test_nwc_wake_request();
+        core.state.nwc.pending_wake_requests.push(request.clone());
+        core.nwc_wake_coordinator
+            .begin(request.event_id_hex.clone());
+
+        core.finish_nwc_wake_engine(
+            core.wallet_generation,
+            request,
+            WakeDisposition::Completed {
+                notification: nwc_mobile::NotificationHint::Completed,
+            },
+        );
+
+        assert!(core.state.nwc.pending_wake_requests.is_empty());
+        assert!(!core.nwc_wake_coordinator.is_in_flight(&"event".to_string()));
+        assert_eq!(core.state.nwc.processed_wake_requests.len(), 1);
+        assert_eq!(
+            core.state.nwc.processed_wake_requests[0].status,
+            "completed"
+        );
+    }
+
+    #[test]
+    fn retryable_engine_wake_remains_owned_and_queued() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        let request = test_nwc_wake_request();
+        core.state.nwc.pending_wake_requests.push(request.clone());
+        core.nwc_wake_coordinator
+            .begin(request.event_id_hex.clone());
+
+        core.finish_nwc_wake_engine(
+            core.wallet_generation,
+            request,
+            WakeDisposition::RetryAfter {
+                delay: Duration::from_secs(60),
+                reason: nwc_mobile::RetryReason::RelayUnavailable,
+                notification: nwc_mobile::NotificationHint::Processing,
+            },
+        );
+
+        assert_eq!(core.state.nwc.pending_wake_requests.len(), 1);
+        assert!(core.nwc_wake_coordinator.is_in_flight(&"event".to_string()));
+        assert_eq!(
+            core.nwc_wake_coordinator
+                .retry_attempts(&"event".to_string()),
+            1
+        );
+        assert!(core.state.nwc.processed_wake_requests.is_empty());
+    }
+
+    #[test]
+    fn exhausted_wake_retries_leave_the_queue_and_enter_history() {
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        let request = test_nwc_wake_request();
+        core.state.nwc.pending_wake_requests.push(request.clone());
+        core.nwc_wake_coordinator
+            .begin(request.event_id_hex.clone());
+        for _ in 0..nwc_mobile::DEFAULT_FOREGROUND_WAKE_RETRY_ATTEMPTS {
+            let _ = core.nwc_wake_coordinator.handle_disposition(
+                &request.event_id_hex,
+                WakeDisposition::RetryAfter {
+                    delay: Duration::from_secs(1),
+                    reason: nwc_mobile::RetryReason::WalletUnavailable,
+                    notification: nwc_mobile::NotificationHint::Processing,
+                },
+            );
+        }
+
+        core.finish_nwc_wake_engine(
+            core.wallet_generation,
+            request,
+            WakeDisposition::QueuedForApplication {
+                reason: nwc_mobile::QueueReason::WalletUnavailable,
+                notification: nwc_mobile::NotificationHint::OpenApplication,
+            },
+        );
+
+        assert!(core.state.nwc.pending_wake_requests.is_empty());
+        assert!(!core.nwc_wake_coordinator.is_in_flight(&"event".to_string()));
+        assert_eq!(
+            core.nwc_wake_coordinator
+                .retry_attempts(&"event".to_string()),
+            0
+        );
+        assert_eq!(core.state.nwc.processed_wake_requests.len(), 1);
+        assert_eq!(
+            core.state.nwc.processed_wake_requests[0].status,
+            "retry_exhausted"
+        );
+        assert!(core
+            .pending_haptics
+            .contains(&HapticFeedback::NotificationWarning));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wallet_deletion_removes_secrets_when_empty_ledger_cannot_reopen() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let (store, mut core) = recording_secret_core(data_dir.path());
+        core.nwc_manager = None;
+        remove_wallet_database_files(&NwcApplicationManager::database_path(data_dir.path()))
+            .expect("remove initial ledger");
+        std::fs::set_permissions(data_dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("make data directory read-only");
+
+        core.delete_wallet();
+
+        std::fs::set_permissions(data_dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore data directory permissions");
+        assert_eq!(
+            store.deleted_keys(),
+            vec![WALLET_SEED_KEY.to_string(), NOSTR_SECRET_KEY.to_string()]
+        );
+        let toast = core.state.toast.as_deref().expect("cleanup warning toast");
+        assert!(toast.contains("could not reopen NWC authorization storage"));
+    }
+}

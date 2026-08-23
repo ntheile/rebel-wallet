@@ -500,3 +500,72 @@ fn cached_nwc_icon_url(
     let remote_url = ApplicationIconUrl::parse(remote_url).ok()?;
     cache.cached_file_url(&remote_url).ok().flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::tests::test_core;
+
+    use super::*;
+
+    #[test]
+    fn inbound_nwa_cannot_replace_the_request_being_reviewed() {
+        const CLIENT: &str = "687dd8ece211539364549b1f32c63eceec1e0661009ba65cf8ff2e73ba000746";
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.open_nwa_request(format!(
+            "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&name=First"
+        ));
+        let first = core.state.nwa.request.clone().expect("first request");
+
+        core.open_nwa_request(format!(
+            "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&name=Second"
+        ));
+
+        let current = core.state.nwa.request.as_ref().expect("current request");
+        assert_eq!(current.request_id_hex, first.request_id_hex);
+        assert_eq!(current.display_name, "First");
+        assert!(core
+            .state
+            .toast
+            .as_deref()
+            .is_some_and(|message| message.contains("current Nostr Wallet Auth request")));
+    }
+
+    #[test]
+    fn cancelling_nwa_never_opens_the_requester_callback() {
+        const CLIENT: &str = "687dd8ece211539364549b1f32c63eceec1e0661009ba65cf8ff2e73ba000746";
+        const STATE: &str = "0123456789abcdef0123456789abcdef";
+        let (_data_dir, _cache_dir, mut core) = test_core();
+        core.open_nwa_request(format!(
+            "nostr+walletauth://{CLIENT}?relay=wss%3A%2F%2Frelay.example.com&return_to=https%3A%2F%2Fapp.example.com%2Fnwa&state={STATE}"
+        ));
+        core.pending_side_effects.clear();
+
+        core.cancel_nwa_request();
+
+        assert!(core
+            .nwc_manager
+            .as_ref()
+            .expect("manager")
+            .service()
+            .pending_nwa_request()
+            .expect("pending request")
+            .is_none());
+        assert!(core.pending_side_effects.is_empty());
+    }
+
+    #[test]
+    fn push_registration_retry_delay_has_a_floor() {
+        assert_eq!(
+            registration_retry_delay(100, UnixTimestamp::from_secs(100)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            registration_retry_delay(99, UnixTimestamp::from_secs(100)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            registration_retry_delay(110, UnixTimestamp::from_secs(100)),
+            Duration::from_secs(10)
+        );
+    }
+}
