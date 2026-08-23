@@ -48,7 +48,7 @@ use crate::nostr_support::{
     profile_contact_from_metadata_json_with_petname, public_key_from_npub_or_hex,
     upload_profile_picture,
 };
-use crate::nwc_host::{
+use crate::nwc::{
     publish_nwc_info_event, run_registration_worker, NostrRelayTransport, NwcPushConfig,
     RebelSecretProvider, NWC_ENCRYPTION,
 };
