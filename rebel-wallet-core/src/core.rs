@@ -26,13 +26,14 @@ use nostr_sdk::prelude::{
     FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, Tag, ToBech32,
 };
 use nwc_mobile::{
-    parse_connection_relays, ApplicationRegistrationCoordinator, ForegroundWakeCoordinator,
-    ForegroundWakeDecision, ForegroundWakeOutcome, ForegroundWakeRetryCause, MobileServiceError,
-    NeverCancelled, NwaApprovalError, NwaCallbackCoordinator, NwcMobileService, OperationBudget,
-    WakeEnvelope, WalletConnectionRequest, DEFAULT_MAXIMUM_CONNECTION_RELAYS,
+    parse_connection_relays, registration_retry_delay, ApplicationConnectionMetadata,
+    ForegroundWakeCoordinator, ForegroundWakeDecision, ForegroundWakeOutcome,
+    ForegroundWakeRetryCause, MobileServiceError, NeverCancelled, NwaApprovalError,
+    NwcApplicationManager, OperationBudget, RegistrationStart, UnixTimestamp, WakeEnvelope,
+    WalletConnectionRequest, DEFAULT_MAXIMUM_CONNECTION_RELAYS,
 };
 use nwc_mobile_bark::execute_bark_wake;
-use nwc_mobile_uniffi::MobileConnectionMetadata;
+use nwc_mobile_uniffi::{MobileConnectionMetadata, MobileConnectionView};
 use tokio::runtime::Runtime;
 use zeroize::Zeroizing;
 
@@ -47,12 +48,10 @@ use crate::nostr_support::{
     profile_contact_from_metadata_json_with_petname, public_key_from_npub_or_hex,
     upload_profile_picture,
 };
-use crate::nwc_mobile_adapter::{
-    nwa_request_state, open_nwc_service, publish_nwc_info_event, NostrRelayTransport,
+use crate::nwc_host::{
+    publish_nwc_info_event, run_registration_worker, NostrRelayTransport, NwcPushConfig,
     RebelSecretProvider, NWC_ENCRYPTION,
 };
-use crate::nwc_persistence::{connection_view, PersistedNwcMetadata};
-use crate::nwc_push::{run_registration_worker, NwcPushConfig};
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
 use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
 use crate::price::fetch_bitcoin_price;
@@ -72,10 +71,8 @@ use crate::{
 };
 
 mod custom_address_flow;
-mod nwa_flow;
-mod nwc_connection_flow;
+mod nwc_app_manager;
 mod nwc_icon_cache;
-mod nwc_registration_flow;
 mod profile_prefetch;
 mod send_flow;
 mod wallet_lifecycle;
@@ -94,17 +91,8 @@ pub(crate) const NOSTR_SECRET_KEY: &str = "nostr_secret";
 const NWC_CLIENT_SECRET_KEY_PREFIX: &str = "nwc_client_secret:";
 const MAX_NWC_WAKE_HISTORY: usize = 30;
 const NWC_INFO_EVENT_PUBLISH_ATTEMPTS: u8 = 3;
-const NWC_REGISTRATION_MIN_RETRY_SECONDS: u64 = 5;
 const NWC_FOREGROUND_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const NOSTR_DERIVATION_PATH: &str = "m/44'/1237'/0'/0/0";
-
-fn nwc_push_retry_delay(next_attempt_at: u64, now: u64) -> Duration {
-    Duration::from_secs(
-        next_attempt_at
-            .saturating_sub(now)
-            .max(NWC_REGISTRATION_MIN_RETRY_SECONDS),
-    )
-}
 
 fn profile_picture_download_key(pubkey: &str, remote_url: &str) -> String {
     format!("{pubkey}:{remote_url}")
@@ -404,11 +392,8 @@ struct AppCore {
     zap_receipts: Vec<ZapReceiptRecord>,
     nwc_wake_coordinator: ForegroundWakeCoordinator<String>,
     nwc_in_flight_info_events: HashSet<String>,
-    nwc_service: Option<NwcMobileService>,
-    nwc_service_ready: bool,
-    nwa_callback: NwaCallbackCoordinator,
+    nwc_manager: Option<NwcApplicationManager>,
     nwc_push_config: NwcPushConfig,
-    nwc_registration: ApplicationRegistrationCoordinator,
     rev: u64,
     next_capability_id: u64,
     send_fee_estimate_request_id: u64,
@@ -426,8 +411,7 @@ impl AppCore {
     ) -> Self {
         ensure_profile_picture_dir(&cache_dir);
         ensure_nwc_icon_dir(&cache_dir);
-        let nwc_service = open_nwc_service(&data_dir).ok();
-        let nwc_service_ready = nwc_service.is_some();
+        let nwc_manager = NwcApplicationManager::open(&data_dir).ok();
         Self {
             state: AppState::initial(),
             app_data_path: data_dir.join("rebel-app-data.json"),
@@ -455,11 +439,8 @@ impl AppCore {
             zap_receipts: Vec::new(),
             nwc_wake_coordinator: ForegroundWakeCoordinator::default(),
             nwc_in_flight_info_events: HashSet::new(),
-            nwc_service,
-            nwc_service_ready,
-            nwa_callback: NwaCallbackCoordinator::default(),
+            nwc_manager,
             nwc_push_config: NwcPushConfig::default(),
-            nwc_registration: ApplicationRegistrationCoordinator::default(),
             rev: 0,
             next_capability_id: 0,
             send_fee_estimate_request_id: 0,
@@ -692,7 +673,9 @@ impl AppCore {
                     wake_enabled,
                 );
                 if self.nwc_push_config != config {
-                    self.nwc_registration.mark_refresh_pending();
+                    if let Some(manager) = self.nwc_manager.as_mut() {
+                        manager.mark_registration_refresh_pending();
+                    }
                     self.nwc_push_config = config;
                 }
                 self.sync_nwc_push_registrations();
@@ -880,14 +863,13 @@ impl AppCore {
         self.reconcile_refresh_poll();
     }
 
-    fn load_nwc_connections(&mut self, persisted: Vec<PersistedNwcMetadata>) {
-        self.nwc_service_ready = false;
-        let Some(service) = self.nwc_service.as_ref() else {
+    fn load_nwc_connections(&mut self) {
+        let Some(manager) = self.nwc_manager.as_ref() else {
             self.state.nwc.last_wake_status =
                 "NWC authorization storage is unavailable".to_string();
             return;
         };
-        let presentations = match service.connection_presentations() {
+        let presentations = match manager.connections() {
             Ok(presentations) => presentations,
             Err(error) => {
                 self.state.nwc.last_wake_status =
@@ -895,31 +877,26 @@ impl AppCore {
                 return;
             }
         };
-        let mut persisted = persisted
-            .into_iter()
-            .map(|metadata| (metadata.connection_id.clone(), metadata))
-            .collect::<HashMap<_, _>>();
         let connections = presentations
             .into_iter()
             .enumerate()
             .map(|(index, presentation)| {
-                let metadata = persisted.remove(presentation.id());
                 let wallet_managed_secret = self
                     .secrets
                     .get_secret(nwc_client_secret_key(presentation.client_pubkey_hex()))
                     .is_some();
-                connection_view(
+                MobileConnectionView::from_presentation(
                     presentation,
-                    metadata,
                     format!("NWC {}", index + 1),
+                    None,
                     wallet_managed_secret,
                 )
+                .map_err(anyhow::Error::from)
             })
             .collect::<anyhow::Result<Vec<_>>>();
         match connections {
             Ok(connections) => {
                 self.state.nwc.connections = connections;
-                self.nwc_service_ready = true;
             }
             Err(error) => {
                 self.state.nwc.last_wake_status =
@@ -929,23 +906,24 @@ impl AppCore {
     }
 
     fn refresh_nwc_connection_usage(&mut self) {
-        let Some(service) = self.nwc_service.as_ref() else {
+        let Some(manager) = self.nwc_manager.as_ref() else {
             return;
         };
-        let usage = self
-            .state
-            .nwc
-            .connections
-            .iter()
-            .map(|connection| service.last_completed_event_at(&connection.id))
-            .collect::<Result<Vec<_>, _>>();
-        let Ok(usage) = usage else {
+        let Ok(presentations) = manager.connections() else {
             self.state.nwc.last_wake_status =
                 "NWC connection usage is temporarily unavailable".to_string();
             return;
         };
-        for (connection, timestamp) in self.state.nwc.connections.iter_mut().zip(usage) {
-            connection.last_used_at = timestamp.map(nwc_mobile::UnixTimestamp::as_secs);
+        for connection in &mut self.state.nwc.connections {
+            if let Some(presentation) = presentations
+                .iter()
+                .find(|presentation| presentation.id() == connection.id)
+            {
+                connection.last_used_at = presentation.last_used_at().map(UnixTimestamp::as_secs);
+                connection.spent_sat = presentation.spent_sat();
+                connection.budget_period_started_at =
+                    presentation.budget_period_started_at().as_secs();
+            }
         }
     }
 
@@ -957,7 +935,7 @@ impl AppCore {
         budget_interval: NwcBudgetInterval,
         permissions: Vec<NwcPermission>,
     ) {
-        if !self.nwc_service_ready {
+        if self.nwc_manager.is_none() {
             self.state.toast = Some("NWC authorization storage is unavailable.".to_string());
             self.request_haptic(HapticFeedback::NotificationError);
             return;
@@ -979,10 +957,10 @@ impl AppCore {
 
         let provider = RebelSecretProvider::new(self.secrets.clone());
         let created = self
-            .nwc_service
+            .nwc_manager
             .as_ref()
             .expect("checked above")
-            .create_wallet_connection(
+            .create_connection(
                 WalletConnectionRequest::new(
                     service_keys.public_key().to_hex(),
                     relay,
@@ -1012,6 +990,28 @@ impl AppCore {
         } else {
             trimmed_name.to_string()
         };
+        let metadata = ApplicationConnectionMetadata::new(
+            display_name.clone(),
+            None,
+            draft.authorization().relay_urls().to_vec(),
+        );
+        let metadata_result = metadata.and_then(|metadata| {
+            self.nwc_manager
+                .as_ref()
+                .expect("checked above")
+                .set_connection_metadata(draft.id(), metadata)
+                .map_err(|_| nwc_mobile::RegistryError::InvalidConnection)
+        });
+        if metadata_result.is_err() {
+            let _ = self
+                .nwc_manager
+                .as_ref()
+                .expect("checked above")
+                .revoke_connection(draft.id(), &provider);
+            self.state.toast = Some("Could not persist NWC connection metadata.".to_string());
+            self.request_haptic(HapticFeedback::NotificationError);
+            return;
+        }
         let connection = NwcConnection::from_created(
             &created,
             MobileConnectionMetadata {
@@ -1055,13 +1055,13 @@ impl AppCore {
         }
         let provider = RebelSecretProvider::new(self.secrets.clone());
         let revocation_result = self
-            .nwc_service
+            .nwc_manager
             .as_ref()
             .context("NWC authorization storage is unavailable")
-            .and_then(|service| {
+            .and_then(|manager| {
                 deleted_connections.iter().try_for_each(|connection| {
-                    let revoked = service
-                        .revoke_application_connection(&connection.id, &provider)
+                    let revoked = manager
+                        .revoke_connection(&connection.id, &provider)
                         .context("could not revoke the NWC authorization")?;
                     anyhow::ensure!(
                         revoked.client_secret_deleted(),
@@ -1210,7 +1210,7 @@ impl AppCore {
     }
 
     fn process_pending_nwc_wake_requests(&mut self) {
-        if !self.nwc_service_ready {
+        if self.nwc_manager.is_none() {
             self.state.nwc.last_wake_status =
                 "NWC wake queued: authorization storage is unavailable".to_string();
             return;
@@ -1262,14 +1262,15 @@ impl AppCore {
                 )
                 .validate()
                 .context("invalid NWC wake envelope")?;
-                let service = open_nwc_service(&data_dir).context("NWC ledger is unavailable")?;
+                let manager =
+                    NwcApplicationManager::open(&data_dir).context("NWC ledger is unavailable")?;
                 let relays = NostrRelayTransport;
                 let secrets = RebelSecretProvider::new(secrets);
                 let budget = OperationBudget::new(NWC_FOREGROUND_OPERATION_TIMEOUT)
                     .context("invalid NWC foreground budget")?;
                 Ok::<_, anyhow::Error>(
                     execute_bark_wake(
-                        service.ledger(),
+                        manager.service().ledger(),
                         wallet,
                         &relays,
                         &secrets,
@@ -1797,10 +1798,12 @@ impl AppCore {
                     .iter_mut()
                     .find(|connection| connection.client_pubkey == client_pubkey)
                 {
+                    if let Some(manager) = self.nwc_manager.as_ref() {
+                        let _ = manager.acknowledge_nwc_info_event(&connection.id, &relay);
+                    }
                     connection
                         .pending_info_event_relays
                         .retain(|pending_relay| pending_relay != &relay);
-                    self.save_app_data();
                 }
                 self.state.nwc.last_wake_status = format!("NWC info event published to {relay}");
             }
@@ -1821,7 +1824,11 @@ impl AppCore {
                 error,
             } => self.finish_nwc_push_registration(applied, deferred, next_attempt_at, error),
             AsyncMsg::NwcPushRetryDue { nonce } => {
-                if self.nwc_registration.retry_is_current(nonce) {
+                if self
+                    .nwc_manager
+                    .as_ref()
+                    .is_some_and(|manager| manager.registration_retry_is_current(nonce))
+                {
                     self.sync_nwc_push_registrations();
                 }
             }
@@ -3316,8 +3323,7 @@ mod tests {
     #[test]
     fn pending_wake_processing_fails_closed_until_service_is_ready() {
         let (_data_dir, _cache_dir, mut core) = test_core();
-        core.nwc_service = None;
-        core.nwc_service_ready = false;
+        core.nwc_manager = None;
         core.state
             .nwc
             .pending_wake_requests
@@ -3355,15 +3361,28 @@ mod tests {
             NWC_ENCRYPTION,
             None,
         );
-        core.nwc_service
+        core.nwc_manager
             .as_ref()
-            .expect("service")
+            .expect("manager")
+            .service()
             .create_host_connection(authorization)
             .expect("persist connection");
+        core.nwc_manager
+            .as_ref()
+            .expect("manager")
+            .set_connection_metadata(
+                &connection.id,
+                ApplicationConnectionMetadata::new(
+                    connection.name.clone(),
+                    None,
+                    vec![connection.relay.clone()],
+                )
+                .expect("metadata"),
+            )
+            .expect("persist metadata");
 
-        core.load_nwc_connections(vec![PersistedNwcMetadata::from(&connection)]);
+        core.load_nwc_connections();
 
-        assert!(core.nwc_service_ready);
         assert_eq!(core.state.nwc.connections.len(), 1);
         let loaded = &core.state.nwc.connections[0];
         assert_eq!(loaded.name, "Stored display name");
@@ -3505,9 +3524,10 @@ mod tests {
         core.cancel_nwa_request();
 
         assert!(core
-            .nwc_service
+            .nwc_manager
             .as_ref()
-            .expect("service")
+            .expect("manager")
+            .service()
             .pending_nwa_request()
             .expect("pending request")
             .is_none());
@@ -3516,9 +3536,18 @@ mod tests {
 
     #[test]
     fn push_registration_retry_delay_has_a_floor() {
-        assert_eq!(nwc_push_retry_delay(100, 100), Duration::from_secs(5));
-        assert_eq!(nwc_push_retry_delay(99, 100), Duration::from_secs(5));
-        assert_eq!(nwc_push_retry_delay(110, 100), Duration::from_secs(10));
+        assert_eq!(
+            registration_retry_delay(100, UnixTimestamp::from_secs(100)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            registration_retry_delay(99, UnixTimestamp::from_secs(100)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            registration_retry_delay(110, UnixTimestamp::from_secs(100)),
+            Duration::from_secs(10)
+        );
     }
 
     #[test]
@@ -4590,8 +4619,8 @@ mod tests {
 
         let data_dir = tempfile::tempdir().expect("temp data dir");
         let (store, mut core) = recording_secret_core(data_dir.path());
-        core.nwc_service = None;
-        crate::wallet::remove_wallet_database_files(&crate::nwc_mobile_adapter::nwc_ledger_path(
+        core.nwc_manager = None;
+        crate::wallet::remove_wallet_database_files(&NwcApplicationManager::database_path(
             data_dir.path(),
         ))
         .expect("remove initial ledger");

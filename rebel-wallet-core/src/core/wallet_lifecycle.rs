@@ -10,8 +10,6 @@ use super::custom_address_flow::{
 };
 use super::{nwc_client_secret_key, AppCore, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
 use crate::custom_address::amount_msats_to_sat;
-use crate::nwc_mobile_adapter::{nwc_ledger_path, open_nwc_service};
-use crate::nwc_persistence::PersistedNwcMetadata;
 use crate::persistence::{PersistedAppData, PersistedPriceCurrency, ServerConfig};
 use crate::profile_cache::{
     hydrate_contact_picture, hydrate_own_profile_picture, sanitize_persisted_contact_pictures,
@@ -87,9 +85,8 @@ impl AppCore {
                 errors.push(format!("{e:#}"));
             }
         }
-        self.nwc_service = None;
-        self.nwc_service_ready = false;
-        let nwc_database_path = nwc_ledger_path(&self.data_dir);
+        self.nwc_manager = None;
+        let nwc_database_path = nwc_mobile::NwcApplicationManager::database_path(&self.data_dir);
         if let Err(error) = remove_wallet_database_files(&nwc_database_path) {
             errors.push(format!("{error:#}"));
         }
@@ -113,10 +110,9 @@ impl AppCore {
         state.show_launch_splash = false;
         self.state = state;
 
-        self.nwc_service = open_nwc_service(&self.data_dir).ok();
-        self.nwc_service_ready = self.nwc_service.is_some();
+        self.nwc_manager = nwc_mobile::NwcApplicationManager::open(&self.data_dir).ok();
         let mut warnings = Vec::new();
-        if self.nwc_service.is_none() {
+        if self.nwc_manager.is_none() {
             warnings.push("could not reopen NWC authorization storage".to_string());
         }
 
@@ -252,11 +248,10 @@ impl AppCore {
         let raw = match std::fs::read_to_string(&self.app_data_path) {
             Ok(raw) => raw,
             Err(_) => {
-                self.load_nwc_connections(Vec::new());
+                self.load_nwc_connections();
                 return;
             }
         };
-        let contained_legacy_nwc_data = raw.contains("\"nwc_connections\"");
         match serde_json::from_str::<PersistedAppData>(&raw) {
             Ok(data) => {
                 self.state.nostr = data.nostr;
@@ -322,16 +317,13 @@ impl AppCore {
                 }
                 self.payment_annotations = data.payment_annotations;
                 self.zap_receipts = data.zap_receipts;
-                self.load_nwc_connections(data.nwc_connection_metadata);
+                self.load_nwc_connections();
                 self.hydrate_nwc_icon_urls();
                 self.prefetch_nwc_icons();
-                if contained_legacy_nwc_data {
-                    self.save_app_data();
-                }
             }
             Err(e) => {
                 self.state.toast = Some(format!("Could not load local app data: {e}"));
-                self.load_nwc_connections(Vec::new());
+                self.load_nwc_connections();
             }
         }
     }
@@ -368,14 +360,6 @@ impl AppCore {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| self.state.lightning_address.custom_name.clone());
-        let nwc_connection_metadata = self
-            .state
-            .nwc
-            .connections
-            .iter()
-            .map(PersistedNwcMetadata::from)
-            .collect();
-
         let data = PersistedAppData {
             nostr,
             receive_amount_sat: self.state.receive.amount_sat,
@@ -391,7 +375,6 @@ impl AppCore {
             pending_custom_lightning_address,
             payment_annotations: self.payment_annotations.clone(),
             zap_receipts: self.zap_receipts.clone(),
-            nwc_connection_metadata,
         };
         if let Ok(raw) = serde_json::to_string_pretty(&data) {
             let _ = std::fs::create_dir_all(&self.data_dir);
