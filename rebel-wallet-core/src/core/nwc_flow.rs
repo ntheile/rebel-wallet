@@ -1,10 +1,13 @@
 use super::*;
+use crate::nwc::{run_registration_worker, RebelSecretProvider, NWC_ENCRYPTION};
 use crate::profile_cache::normalize_profile_picture_to_jpeg;
-use crate::NwaRequestState;
+use crate::{NwaRequestState, NwcBudgetInterval, NwcConnection, NwcPermission};
 use nwc_mobile::{
-    ApplicationIconUrl, ApplicationRegistrationCompletion, ApplicationRegistrationPass,
-    NwaCallbackBegin, NwaCallbackCompletion,
+    registration_retry_delay, ApplicationConnectionMetadata, ApplicationIconUrl,
+    ApplicationRegistrationCompletion, ApplicationRegistrationPass, MobileServiceError,
+    NwaApprovalError, NwaCallbackBegin, NwaCallbackCompletion, RegistrationStart, UnixTimestamp,
 };
+use nwc_mobile_uniffi::MobileConnectionMetadata;
 
 impl AppCore {
     pub(super) fn open_nwa_request(&mut self, uri: String) {
