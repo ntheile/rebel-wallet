@@ -158,8 +158,8 @@ final class NwcAppManager {
     }
 
     private func observeWakeInbox() {
-        let observer = NotificationCenter.default.addObserver(
-            forName: NwcWakeInboxEvents.didChange,
+        let queueObserver = NotificationCenter.default.addObserver(
+            forName: NwcWakeInboxEvents.queueDidChange,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -168,6 +168,15 @@ final class NwcAppManager {
                 self?.drainQueuedWakeRequests()
             }
         }
-        notificationObservers.append(observer)
+        let debugObserver = NotificationCenter.default.addObserver(
+            forName: NwcWakeInboxEvents.debugDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshWakeDebugEntries()
+            }
+        }
+        notificationObservers.append(contentsOf: [queueObserver, debugObserver])
     }
 }

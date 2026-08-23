@@ -2,7 +2,8 @@ import Foundation
 import NwcMobileApple
 
 enum NwcWakeInboxEvents {
-    static let didChange = Notification.Name("RebelWalletNwcWakeInboxDidChange")
+    static let queueDidChange = Notification.Name("RebelWalletNwcWakeQueueDidChange")
+    static let debugDidChange = Notification.Name("RebelWalletNwcWakeDebugDidChange")
 }
 
 extension NwcQueuedWakeRequest {
@@ -45,7 +46,7 @@ enum NwcWakeInbox {
             NSLog("Could not persist nwc_wake request: %@", String(describing: error))
             return
         }
-        NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+        NotificationCenter.default.post(name: NwcWakeInboxEvents.queueDidChange, object: nil)
     }
 
     static func pendingRequests() -> [NwcQueuedWakeRequest] {
@@ -64,7 +65,7 @@ enum NwcWakeInbox {
             guard let store = wakeStore() else { throw CocoaError(.fileNoSuchFile) }
             let changed = try store.remove(eventIDs: eventIds)
             if changed {
-                NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+                NotificationCenter.default.post(name: NwcWakeInboxEvents.queueDidChange, object: nil)
             }
         } catch {
             NSLog("Could not acknowledge nwc_wake requests: %@", String(describing: error))
@@ -83,7 +84,7 @@ enum NwcWakeInbox {
             NSLog("Could not persist nwc_wake debug log: %@", String(describing: error))
             return
         }
-        NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+        NotificationCenter.default.post(name: NwcWakeInboxEvents.debugDidChange, object: nil)
 #endif
     }
 
@@ -109,7 +110,7 @@ enum NwcWakeInbox {
             return
         }
         store.clearDebugEntries()
-        NotificationCenter.default.post(name: NwcWakeInboxEvents.didChange, object: nil)
+        NotificationCenter.default.post(name: NwcWakeInboxEvents.debugDidChange, object: nil)
 #endif
     }
 

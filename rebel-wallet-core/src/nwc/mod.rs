@@ -14,7 +14,7 @@ use nwc_mobile::{
 use nwc_mobile_bark::execute_bark_wake;
 pub(crate) use nwc_mobile_http::ApnsWakeRegistrationConfig as NwcPushConfig;
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
-use nwc_mobile_tokio::{run_bounded_background_wake, BackgroundWakeWindow};
+use nwc_mobile_tokio::{run_bounded_background_wake, run_on_native_runtime, BackgroundWakeWindow};
 use nwc_mobile_uniffi::{
     validate_wake_envelope, MobileCancellation, MobileWakeDisposition, MobileWakeEnvelope,
 };
@@ -164,20 +164,35 @@ impl NwcExtensionEngine {
         {
             return rejected_disposition().into();
         }
+        let data_dir = self.data_dir.clone();
+        let secrets = self.secrets.clone();
+        let runtime_cancellation = cancellation.clone();
         let execution_cancellation = cancellation.clone();
-        run_bounded_background_wake(
-            Duration::from_millis(execution_milliseconds),
-            cancellation.as_ref(),
-            |window| self.execute_wake_inner(request, window, execution_cancellation),
-        )
-        .await
-        .into()
+        let result = run_on_native_runtime(async move {
+            run_bounded_background_wake(
+                Duration::from_millis(execution_milliseconds),
+                runtime_cancellation.as_ref(),
+                |window| {
+                    Self::execute_wake_inner(
+                        data_dir,
+                        secrets,
+                        request,
+                        window,
+                        execution_cancellation,
+                    )
+                },
+            )
+            .await
+        })
+        .await;
+        result.unwrap_or_else(|_| queued_disposition()).into()
     }
 }
 
 impl NwcExtensionEngine {
     async fn execute_wake_inner(
-        &self,
+        data_dir: PathBuf,
+        secrets: Arc<dyn SecretStore>,
         request: MobileWakeEnvelope,
         window: BackgroundWakeWindow,
         cancellation: Arc<MobileCancellation>,
@@ -186,22 +201,21 @@ impl NwcExtensionEngine {
             Ok(input) => input.core_input(),
             Err(_) => return rejected_disposition(),
         };
-        let Some(server_config) = extension_server_config(&self.data_dir) else {
+        let Some(server_config) = extension_server_config(&data_dir) else {
             return queued_disposition();
         };
-        let Some(mnemonic) = self
-            .secrets
+        let Some(mnemonic) = secrets
             .get_secret(WALLET_SEED_KEY.to_string())
             .map(Zeroizing::new)
             .and_then(|seed| Mnemonic::from_str(seed.as_str()).ok())
         else {
             return queued_disposition();
         };
-        if !ensure_nostr_secret(self.secrets.as_ref(), &mnemonic) || cancellation.is_cancelled() {
+        if !ensure_nostr_secret(secrets.as_ref(), &mnemonic) || cancellation.is_cancelled() {
             return queued_disposition();
         }
         let wallet = match open_bark_wallet(
-            self.data_dir.clone(),
+            data_dir.clone(),
             &mnemonic,
             WalletOpenMode::OpenExisting,
             server_config,
@@ -217,7 +231,7 @@ impl NwcExtensionEngine {
         if cancellation.is_cancelled() {
             return queued_disposition();
         }
-        let manager = match nwc_mobile::NwcApplicationManager::open(&self.data_dir) {
+        let manager = match nwc_mobile::NwcApplicationManager::open(&data_dir) {
             Ok(manager) => manager,
             Err(_) => return queued_disposition(),
         };
@@ -225,7 +239,7 @@ impl NwcExtensionEngine {
             manager.service().ledger(),
             wallet,
             &NostrRelayTransport,
-            &RebelSecretProvider::new(self.secrets.clone()),
+            &RebelSecretProvider::new(secrets),
             input,
             budget,
             cancellation.as_ref(),
