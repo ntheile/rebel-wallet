@@ -91,7 +91,7 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
             return .openApplication
         }
 
-        let result = await engine.executeWake(
+        let execution = await engine.executeWake(
             request: MobileWakeEnvelope(
                 relayUrl: payload.relayURL,
                 eventIdHex: payload.eventIDHex,
@@ -102,6 +102,13 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
             executionMilliseconds: executionMilliseconds,
             cancellation: cancellation.rust
         )
+        let result = execution.disposition
+        if !execution.diagnosticCodes.isEmpty {
+            NwcWakeInbox.appendDebug(
+                source: "NSE",
+                message: "NWC diagnostics: \(execution.diagnosticCodes.joined(separator: ", "))"
+            )
+        }
 
         let notification: MobileNotificationHint
         switch result {

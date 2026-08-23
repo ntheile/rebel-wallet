@@ -9,9 +9,9 @@ use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey, ToBech32}
 use nwc_mobile::{
     ClientSecretStore, ClientSecretStoreError, ConnectionId, HostError, HostErrorKind,
     Nip98SigningKey, NwcEncryption, NwcMethod, NwcSecretKey, QueueReason, RejectionCode,
-    SecretProvider, WakeDisposition,
+    SecretProvider, WakeDiagnosticCollector, WakeDiagnosticSink, WakeDisposition,
 };
-use nwc_mobile_bark::execute_bark_wake;
+use nwc_mobile_bark::execute_bark_wake_with_diagnostics;
 pub(crate) use nwc_mobile_http::ApnsWakeRegistrationConfig as NwcPushConfig;
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
 use nwc_mobile_tokio::{run_bounded_background_wake, run_on_native_runtime, BackgroundWakeWindow};
@@ -28,6 +28,13 @@ use crate::{NwcPermission, SecretStore, WalletNetwork};
 const APP_DATA_FILE: &str = "rebel-app-data.json";
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_EXTENSION_EXECUTION_MILLISECONDS: u64 = 30_000;
+
+/// Safe, non-secret result metadata from one NSE wake execution.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct NwcExtensionWakeExecution {
+    pub disposition: MobileWakeDisposition,
+    pub diagnostic_codes: Vec<String>,
+}
 
 // Existing Rebel clients advertise NIP-04. This must change atomically with
 // connection migration and info-event advertisement.
@@ -158,16 +165,18 @@ impl NwcExtensionEngine {
         request: MobileWakeEnvelope,
         execution_milliseconds: u64,
         cancellation: Arc<MobileCancellation>,
-    ) -> MobileWakeDisposition {
+    ) -> NwcExtensionWakeExecution {
         if execution_milliseconds == 0
             || execution_milliseconds > MAX_EXTENSION_EXECUTION_MILLISECONDS
         {
-            return rejected_disposition().into();
+            return wake_execution(rejected_disposition(), &WakeDiagnosticCollector::default());
         }
         let data_dir = self.data_dir.clone();
         let secrets = self.secrets.clone();
         let runtime_cancellation = cancellation.clone();
         let execution_cancellation = cancellation.clone();
+        let diagnostics = Arc::new(WakeDiagnosticCollector::default());
+        let execution_diagnostics: Arc<dyn WakeDiagnosticSink> = diagnostics.clone();
         let result = run_on_native_runtime(async move {
             run_bounded_background_wake(
                 Duration::from_millis(execution_milliseconds),
@@ -179,13 +188,17 @@ impl NwcExtensionEngine {
                         request,
                         window,
                         execution_cancellation,
+                        execution_diagnostics,
                     )
                 },
             )
             .await
         })
         .await;
-        result.unwrap_or_else(|_| queued_disposition()).into()
+        wake_execution(
+            result.unwrap_or_else(|_| queued_disposition()),
+            &diagnostics,
+        )
     }
 }
 
@@ -196,6 +209,7 @@ impl NwcExtensionEngine {
         request: MobileWakeEnvelope,
         window: BackgroundWakeWindow,
         cancellation: Arc<MobileCancellation>,
+        diagnostics: Arc<dyn WakeDiagnosticSink>,
     ) -> WakeDisposition {
         let input = match validate_wake_envelope(request) {
             Ok(input) => input.core_input(),
@@ -235,7 +249,7 @@ impl NwcExtensionEngine {
             Ok(manager) => manager,
             Err(_) => return queued_disposition(),
         };
-        execute_bark_wake(
+        execute_bark_wake_with_diagnostics(
             manager.service().ledger(),
             wallet,
             &NostrRelayTransport,
@@ -243,8 +257,23 @@ impl NwcExtensionEngine {
             input,
             budget,
             cancellation.as_ref(),
+            diagnostics,
         )
         .await
+    }
+}
+
+fn wake_execution(
+    disposition: WakeDisposition,
+    diagnostics: &WakeDiagnosticCollector,
+) -> NwcExtensionWakeExecution {
+    NwcExtensionWakeExecution {
+        disposition: disposition.into(),
+        diagnostic_codes: diagnostics
+            .codes()
+            .into_iter()
+            .map(|code| code.as_str().to_owned())
+            .collect(),
     }
 }
 
@@ -283,4 +312,22 @@ fn queued_disposition() -> WakeDisposition {
 
 fn rejected_disposition() -> WakeDisposition {
     WakeDisposition::rejected(RejectionCode::InvalidWakePayload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wake_execution_exposes_only_stable_diagnostic_codes() {
+        let diagnostics = WakeDiagnosticCollector::default();
+        diagnostics.record(nwc_mobile::WakeDiagnosticCode::PaymentFeeLimitExceeded);
+
+        let execution = wake_execution(queued_disposition(), &diagnostics);
+
+        assert_eq!(
+            execution.diagnostic_codes,
+            vec!["payment_fee_limit_exceeded"]
+        );
+    }
 }
