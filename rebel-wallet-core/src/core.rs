@@ -56,8 +56,8 @@ use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
 use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
 use crate::price::fetch_bitcoin_price;
 use crate::profile_cache::{
-    clear_profile_cache, clear_profile_picture_dir, ensure_nwc_icon_dir,
-    ensure_profile_picture_dir, new_profile_picture_download_semaphore, open_profile_cache,
+    clear_profile_cache, clear_profile_picture_dir, ensure_profile_picture_dir,
+    new_profile_picture_download_semaphore, open_profile_cache,
     save_own_profile_picture_remote_url, update_cached_picture,
 };
 use crate::time::{now_label, now_unix};
@@ -71,8 +71,7 @@ use crate::{
 };
 
 mod custom_address_flow;
-mod nwc_app_manager;
-mod nwc_icon_cache;
+mod nwc_flow;
 mod profile_prefetch;
 mod send_flow;
 mod wallet_lifecycle;
@@ -386,6 +385,7 @@ struct AppCore {
     profile_db: Option<rusqlite::Connection>,
     profile_picture_downloads: HashSet<String>,
     nwc_icon_downloads: HashSet<String>,
+    nwc_icon_cache: nwc_mobile::ApplicationIconCache,
     profile_picture_download_semaphore: Arc<tokio::sync::Semaphore>,
     profile_info_requests: HashSet<String>,
     payment_annotations: Vec<PaymentAnnotation>,
@@ -410,7 +410,8 @@ impl AppCore {
         rt: Runtime,
     ) -> Self {
         ensure_profile_picture_dir(&cache_dir);
-        ensure_nwc_icon_dir(&cache_dir);
+        let nwc_icon_cache = nwc_mobile::ApplicationIconCache::new(&cache_dir);
+        let _ = nwc_icon_cache.prepare();
         let nwc_manager = NwcApplicationManager::open(&data_dir).ok();
         Self {
             state: AppState::initial(),
@@ -433,6 +434,7 @@ impl AppCore {
             refresh_poll_attempt: 0,
             profile_picture_downloads: HashSet::new(),
             nwc_icon_downloads: HashSet::new(),
+            nwc_icon_cache,
             profile_picture_download_semaphore: new_profile_picture_download_semaphore(),
             profile_info_requests: HashSet::new(),
             payment_annotations: Vec::new(),

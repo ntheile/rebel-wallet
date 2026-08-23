@@ -1,8 +1,9 @@
 use super::*;
+use crate::profile_cache::normalize_profile_picture_to_jpeg;
 use crate::NwaRequestState;
 use nwc_mobile::{
-    ApplicationRegistrationCompletion, ApplicationRegistrationPass, NwaCallbackBegin,
-    NwaCallbackCompletion,
+    ApplicationIconUrl, ApplicationRegistrationCompletion, ApplicationRegistrationPass,
+    NwaCallbackBegin, NwaCallbackCompletion,
 };
 
 impl AppCore {
@@ -381,4 +382,118 @@ impl AppCore {
             let _ = tx.send(CoreMsg::Async(AsyncMsg::NwcPushRetryDue { nonce }));
         });
     }
+
+    pub(super) fn hydrate_nwc_icon_urls(&mut self) {
+        let icon_cache = &self.nwc_icon_cache;
+        for connection in &mut self.state.nwc.connections {
+            connection.icon_display_url = connection
+                .icon_url
+                .as_deref()
+                .and_then(|url| cached_nwc_icon_url(icon_cache, url));
+        }
+        if let Some(request) = self.state.nwa.request.as_ref() {
+            self.state.nwa.icon_display_url = request
+                .icon_url
+                .as_deref()
+                .and_then(|url| cached_nwc_icon_url(icon_cache, url));
+        }
+    }
+
+    pub(super) fn prefetch_nwc_icons(&mut self) {
+        let mut urls = self
+            .state
+            .nwc
+            .connections
+            .iter()
+            .filter_map(|connection| connection.icon_url.clone())
+            .collect::<Vec<_>>();
+        if let Some(url) = self
+            .state
+            .nwa
+            .request
+            .as_ref()
+            .and_then(|request| request.icon_url.clone())
+        {
+            urls.push(url);
+        }
+        urls.sort();
+        urls.dedup();
+        for url in urls {
+            self.prefetch_nwc_icon(url);
+        }
+    }
+
+    pub(super) fn prefetch_nwc_icon(&mut self, remote_url: String) {
+        let Ok(icon_url) = ApplicationIconUrl::parse(&remote_url) else {
+            return;
+        };
+        if self
+            .nwc_icon_cache
+            .cached_file_url(&icon_url)
+            .ok()
+            .flatten()
+            .is_some()
+            || !self.nwc_icon_downloads.insert(remote_url.clone())
+        {
+            self.refresh_nwc_icon_url(&remote_url);
+            return;
+        }
+
+        let tx = self.tx.clone();
+        let icon_cache = self.nwc_icon_cache.clone();
+        let semaphore = self.profile_picture_download_semaphore.clone();
+        self.rt.spawn(async move {
+            let failed_url = remote_url.clone();
+            let result = async {
+                let _permit = semaphore.acquire().await?;
+                let bytes = nwc_mobile_http::download_application_icon(&icon_url).await?;
+                let normalized = normalize_profile_picture_to_jpeg(&bytes)?;
+                icon_cache.store(&icon_url, &normalized)?;
+                Ok::<_, anyhow::Error>(remote_url)
+            }
+            .await;
+            let message = match result {
+                Ok(remote_url) => AsyncMsg::NwcIconCached { remote_url },
+                Err(_) => AsyncMsg::NwcIconCacheFailed {
+                    remote_url: failed_url,
+                },
+            };
+            let _ = tx.send(CoreMsg::Async(message));
+        });
+    }
+
+    pub(super) fn finish_nwc_icon_cache(&mut self, remote_url: String, succeeded: bool) {
+        self.nwc_icon_downloads.remove(&remote_url);
+        if succeeded {
+            self.refresh_nwc_icon_url(&remote_url);
+        }
+    }
+
+    pub(super) fn nwc_icon_display_url(&self, remote_url: Option<&str>) -> Option<String> {
+        remote_url.and_then(|url| cached_nwc_icon_url(&self.nwc_icon_cache, url))
+    }
+
+    fn refresh_nwc_icon_url(&mut self, remote_url: &str) {
+        let Some(file_url) = cached_nwc_icon_url(&self.nwc_icon_cache, remote_url) else {
+            return;
+        };
+        for connection in &mut self.state.nwc.connections {
+            if connection.icon_url.as_deref() == Some(remote_url) {
+                connection.icon_display_url = Some(file_url.clone());
+            }
+        }
+        if let Some(request) = self.state.nwa.request.as_ref() {
+            if request.icon_url.as_deref() == Some(remote_url) {
+                self.state.nwa.icon_display_url = Some(file_url);
+            }
+        }
+    }
+}
+
+fn cached_nwc_icon_url(
+    cache: &nwc_mobile::ApplicationIconCache,
+    remote_url: &str,
+) -> Option<String> {
+    let remote_url = ApplicationIconUrl::parse(remote_url).ok()?;
+    cache.cached_file_url(&remote_url).ok().flatten()
 }
