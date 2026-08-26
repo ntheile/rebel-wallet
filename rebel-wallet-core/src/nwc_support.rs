@@ -10,16 +10,15 @@ use nwc_mobile::{
     NwcApplicationManager, OperationBudget, UnixTimestamp, WakeDisposition, WakeEnvelope,
     WalletConnectionRequest, DEFAULT_MAXIMUM_CONNECTION_RELAYS,
 };
-use nwc_mobile_bark::{
-    execute_bark_wake, run_bark_invoice_notification_worker, run_bark_notification_worker,
-};
 use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 use nwc_mobile_uniffi::{MobileConnectionMetadata, MobileConnectionView};
 
 use super::AppCore;
 use crate::nostr_support::public_key_from_npub_or_hex;
 use crate::nwc::{
-    publish_nwc_info_event, NostrRelayTransport, NwcPushConfig, RebelSecretProvider, NWC_ENCRYPTION,
+    execute_bark_wake, publish_nwc_info_event, run_bark_invoice_notification_worker,
+    run_bark_notification_worker, NostrRelayTransport, NwcPushConfig, RebelSecretProvider,
+    NWC_ENCRYPTION,
 };
 use crate::updates::{AppUpdate, AsyncMsg, CoreMsg, HapticFeedback};
 use crate::wallet::remove_wallet_database_files;

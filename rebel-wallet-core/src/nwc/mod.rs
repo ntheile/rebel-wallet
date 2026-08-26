@@ -1,3 +1,5 @@
+mod nwc_bark_wallet;
+
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -7,13 +9,16 @@ use std::time::Duration;
 use anyhow::Context;
 use bip39::Mnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey, ToBech32};
+pub(crate) use nwc_bark_wallet::{
+    execute_bark_wake, execute_bark_wake_with_diagnostics, run_bark_invoice_notification_worker,
+    run_bark_notification_worker,
+};
 use nwc_mobile::{
     ClientSecretStore, ClientSecretStoreError, ConnectionId, HostError, HostErrorKind,
     Nip98SigningKey, NotificationHint, NwcEncryption, NwcMethod, NwcNotificationType, NwcSecretKey,
     QueueReason, RejectionCode, SecretProvider, WakeDiagnosticCollector, WakeDiagnosticSink,
     WakeDisposition,
 };
-use nwc_mobile_bark::{execute_bark_wake_with_diagnostics, run_bark_invoice_notification_worker};
 pub(crate) use nwc_mobile_http::ApnsWakeRegistrationConfig as NwcPushConfig;
 use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
