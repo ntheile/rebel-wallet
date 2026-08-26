@@ -76,6 +76,7 @@ ios-rust:
     env -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET -u CC -u CXX -u AR -u RANLIB \
       -u LIBRARY_PATH -u NIX_LDFLAGS -u NIX_CFLAGS_COMPILE \
       DEVELOPER_DIR="$DEV_DIR" SDKROOT="$SDK" CC="$TOOLCHAIN_BIN/clang" \
+      IPHONEOS_DEPLOYMENT_TARGET=17.0 \
       RUSTFLAGS="-C linker=$TOOLCHAIN_BIN/clang -C link-arg=$VFLAG -C link-arg=-isysroot -C link-arg=$SDK" \
       cargo build -p {{CORE_CRATE}} --lib --target "$TARGET" --release
   done

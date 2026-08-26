@@ -161,7 +161,6 @@ fn bark_config(server_config: ServerConfig) -> Config {
     let network = server_config.network.bitcoin_network();
     Config {
         server_address: server_config.server_address,
-        server_access_token: server_config.server_access_token,
         esplora_address: Some(server_config.esplora_address),
         user_agent: Some(USER_AGENT.to_string()),
         ..Config::network_default(network)

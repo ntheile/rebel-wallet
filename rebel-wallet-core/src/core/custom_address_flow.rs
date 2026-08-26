@@ -30,9 +30,10 @@ async fn register_custom_lightning_address(
     let quote = quote_registration(&client, &domain, &name, &ark_address_text).await?;
     let ark_address = ArkAddress::from_str(&quote.ark_address).context("invalid Ark address")?;
     let signature = wallet
-        .sign_address_message(&ark_address, quote.message.as_bytes())
+        .sign_message(quote.message.as_bytes(), &ark_address)
         .await
         .context("failed to sign custom address registration")?
+        .context("wallet does not control the Arkzap address key")?
         .to_string();
 
     let response = register_address(
