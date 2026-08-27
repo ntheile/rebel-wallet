@@ -6,19 +6,20 @@ use anyhow::Context;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey};
 use nwc_mobile::{
     parse_connection_relays, ApplicationConnectionMetadata, ForegroundWakeDecision,
-    ForegroundWakeOutcome, ForegroundWakeRetryCause, NeverCancelled, NotificationHint,
-    NwcApplicationManager, OperationBudget, UnixTimestamp, WakeDisposition, WakeEnvelope,
-    WalletConnectionRequest, DEFAULT_MAXIMUM_CONNECTION_RELAYS,
+    ForegroundWakeOutcome, ForegroundWakeRetryCause, NeverCancelled, NwcApplicationManager,
+    OperationBudget, UnixTimestamp, WakeDisposition, WakeEnvelope, WalletConnectionRequest,
+    DEFAULT_MAXIMUM_CONNECTION_RELAYS,
 };
 use nwc_mobile_http::InvoiceSettlementMonitorConfig;
-use nwc_mobile_tokio::{NwcNode, NwcNodeConfig};
+use nwc_mobile_tokio::{NwcMobile, NwcMobileConfig, NwcMobileWakeKind, NwcNode, NwcNodeConfig};
 use nwc_mobile_uniffi::{MobileConnectionMetadata, MobileConnectionView};
 
 use super::AppCore;
 use crate::nostr_support::public_key_from_npub_or_hex;
 use crate::nwc::{
     bark_wallet_info, publish_nwc_info_event, BarkNode, NostrRelayTransport, NwcPushConfig,
-    RebelSecretProvider, NWC_ENCRYPTION,
+    OpenedNwcBarkNodeProvider, RebelSecretProvider, RebelSettlementMonitorCompletion,
+    NWC_ENCRYPTION,
 };
 use crate::updates::{AppUpdate, AsyncMsg, CoreMsg, HapticFeedback};
 use crate::wallet::remove_wallet_database_files;
@@ -526,9 +527,6 @@ impl AppCore {
         let secrets = self.secrets.clone();
         let generation = self.wallet_generation;
         let monitor_config = self.nwc_settlement_monitor_config.clone();
-        let signing_key = self.nostr_keys().ok().and_then(|keys| {
-            nwc_mobile::Nip98SigningKey::from_bytes(keys.secret_key().to_secret_bytes()).ok()
-        });
         self.rt.spawn(async move {
             let event_id = request.event_id_hex.clone();
             let result = async {
@@ -541,14 +539,20 @@ impl AppCore {
                 )
                 .validate()
                 .context("invalid NWC wake envelope")?;
-                let manager =
-                    NwcApplicationManager::open(&data_dir).context("NWC ledger is unavailable")?;
-                let relays = NostrRelayTransport;
-                let secrets = RebelSecretProvider::new(secrets);
-                let budget = OperationBudget::new(NWC_FOREGROUND_OPERATION_TIMEOUT)
-                    .context("invalid NWC foreground budget")?;
                 let event_id = wake.event_id().clone();
-                let tracked_invoice = manager
+                let provider = OpenedNwcBarkNodeProvider::new(wallet);
+                let secret_provider = RebelSecretProvider::new(secrets.clone());
+                let mut config =
+                    NwcMobileConfig::new(&data_dir, provider, NostrRelayTransport, secret_provider);
+                if let Some(configured_monitor) = monitor_config {
+                    config = config.with_completion_handler(
+                        RebelSettlementMonitorCompletion::new(configured_monitor, secrets),
+                        Duration::from_secs(5),
+                    );
+                }
+                let mobile = NwcMobile::open(config).context("NWC ledger is unavailable")?;
+                let settlement_check = mobile
+                    .application_manager()
                     .service()
                     .ledger()
                     .nwc_invoice_monitor(&event_id)
@@ -560,39 +564,22 @@ impl AppCore {
                                 .relays()
                                 .iter()
                                 .any(|relay| relay.as_str() == wake.relay())
-                    });
-                let wallet_info = bark_wallet_info(wake.wallet_service_pubkey().clone());
-                let config = NwcNodeConfig::new(
-                    BarkNode::new(wallet),
-                    manager.service().ledger(),
-                    &relays,
-                    &secrets,
-                    wallet_info,
-                );
-                let node = NwcNode::new(config);
-                let disposition = if tracked_invoice.is_some() {
-                    let _ = node
-                        .handle_settlement_wake(&event_id, budget, &NeverCancelled)
-                        .await;
-                    WakeDisposition::Completed {
-                        notification: NotificationHint::Completed,
-                    }
+                    })
+                    .is_some();
+                let kind = if settlement_check {
+                    NwcMobileWakeKind::InvoiceSettlement
                 } else {
-                    node.handle_wake(wake, budget, &NeverCancelled).await
+                    NwcMobileWakeKind::Request
                 };
-                if let (Some(config), Some(signing_key)) = (monitor_config, signing_key) {
-                    let _ = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        nwc_mobile_http::update_invoice_settlement_monitor(
-                            manager.service().ledger(),
-                            config,
-                            &event_id,
-                            signing_key,
-                        ),
+                let outcome = mobile
+                    .execute_wake(
+                        wake,
+                        kind,
+                        NWC_FOREGROUND_OPERATION_TIMEOUT,
+                        &NeverCancelled,
                     )
                     .await;
-                }
-                Ok::<_, anyhow::Error>(disposition)
+                Ok::<_, anyhow::Error>(outcome.disposition())
             }
             .await;
 
