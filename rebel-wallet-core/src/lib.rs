@@ -44,7 +44,7 @@ uniffi::setup_scaffolding!();
 
 #[uniffi::export]
 pub fn nwc_relay_input_is_valid(value: String) -> bool {
-    core::nwc_relay_input_is_valid(&value)
+    nwc::nwc_relay_input_is_valid(&value)
 }
 
 pub(crate) const SIGNET_SERVER: &str = "https://ark.signet.2nd.dev";

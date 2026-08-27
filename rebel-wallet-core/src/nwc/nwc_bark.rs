@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::future::Future;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +15,9 @@ use bark::ark::lightning::PaymentHash as BarkPaymentHash;
 use bark::movement::{Movement, MovementStatus};
 use bark::persist::models::SettledLightningReceive;
 use bark::{FeeEstimate, Wallet};
+use bip39::Mnemonic;
 use bitcoin::Amount;
+use nostr_sdk::prelude::ToBech32;
 use nwc_mobile::{
     prepare_transaction_page, standard_wallet_info, AmountMsat, CreatedInvoice, HostError,
     HostErrorKind, HostFuture, InvoiceLookup, ListTransactionsRequest, MakeInvoiceRequest,
@@ -26,13 +29,111 @@ use nwc_mobile_bolt11::{
     created_invoice, exact_sats, parse_invoice, payment_amount_sats, quote_invoice_sats,
     sats_to_msats,
 };
-use nwc_mobile_tokio::{poll_until_terminal, sleep, spawn_abort_on_drop};
+use nwc_mobile_tokio::{
+    poll_until_terminal, sleep, spawn_abort_on_drop, LightningNodeProvider,
+    LightningNodeProviderFn, LightningNodeRequest, OpenedLightningNode, ReadyLightningNodeProvider,
+};
 use serde_json::Value;
+use zeroize::Zeroizing;
+
+use crate::core::{derive_nostr_keys_from_mnemonic, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
+use crate::persistence::{PersistedAppData, ServerConfig};
+use crate::wallet::{open_bark_wallet, WalletOpenMode};
+use crate::{SecretStore, WalletNetwork};
 
 const PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
 const PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 const INVOICE_SETTLEMENT_MAX_WAIT: Duration = Duration::from_secs(25);
 const INVOICE_SETTLEMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const APP_DATA_FILE: &str = "rebel-app-data.json";
+
+/// Opens Rebel's existing Bark wallet when a native worker starts cold.
+pub(super) fn cold_bark_provider(
+    data_dir: PathBuf,
+    secrets: Arc<dyn SecretStore>,
+) -> impl LightningNodeProvider {
+    LightningNodeProviderFn::new(move |request, context| {
+        let data_dir = data_dir.clone();
+        let secrets = secrets.clone();
+        Box::pin(async move {
+            if context.cancellation().is_cancelled() {
+                return Err(HostError::new(HostErrorKind::Cancelled));
+            }
+            let server_config = extension_server_config(&data_dir)
+                .ok_or_else(|| HostError::new(HostErrorKind::Unavailable))?;
+            let mnemonic = secrets
+                .get_secret(WALLET_SEED_KEY.to_string())
+                .map(Zeroizing::new)
+                .and_then(|seed| Mnemonic::from_str(seed.as_str()).ok())
+                .ok_or_else(unavailable)?;
+            ensure_nostr_secret(secrets.as_ref(), &mnemonic)?;
+            if context.cancellation().is_cancelled() {
+                return Err(HostError::new(HostErrorKind::Cancelled));
+            }
+            let wallet = open_bark_wallet(
+                data_dir,
+                &mnemonic,
+                WalletOpenMode::OpenExisting,
+                server_config,
+            )
+            .await
+            .map_err(|_| unavailable())?
+            .wallet;
+            if context.cancellation().is_cancelled() {
+                return Err(HostError::new(HostErrorKind::Cancelled));
+            }
+            Ok(opened_bark_node(wallet, request))
+        })
+    })
+}
+
+pub(super) fn opened_bark_provider(wallet: Wallet) -> impl LightningNodeProvider {
+    ReadyLightningNodeProvider::new(move |request| Ok(opened_bark_node(wallet.clone(), request)))
+}
+
+fn opened_bark_node(wallet: Wallet, request: LightningNodeRequest) -> OpenedLightningNode {
+    let wallet_info = bark_wallet_info(request.wallet_service_pubkey().clone());
+    let node = match request.diagnostics() {
+        Some(diagnostics) => NwcBarkLightning::with_diagnostics(wallet, diagnostics),
+        None => NwcBarkLightning::new(wallet),
+    };
+    OpenedLightningNode::new(node, wallet_info)
+}
+
+fn extension_server_config(data_dir: &std::path::Path) -> Option<ServerConfig> {
+    let raw = std::fs::read_to_string(data_dir.join(APP_DATA_FILE)).ok()?;
+    let data: PersistedAppData = serde_json::from_str(&raw).ok()?;
+    Some(
+        if data.network == WalletNetwork::Regtest && data.servers.network == WalletNetwork::Regtest
+        {
+            data.servers
+        } else {
+            ServerConfig::for_network(data.network)
+        },
+    )
+}
+
+fn ensure_nostr_secret(secrets: &dyn SecretStore, mnemonic: &Mnemonic) -> Result<(), HostError> {
+    if secrets.get_secret(NOSTR_SECRET_KEY.to_string()).is_some() {
+        return Ok(());
+    }
+    let mnemonic = Zeroizing::new(mnemonic.to_string());
+    let keys = derive_nostr_keys_from_mnemonic(mnemonic.as_str())
+        .map_err(|_| HostError::new(HostErrorKind::Internal))?;
+    let encoded = Zeroizing::new(
+        keys.secret_key()
+            .to_bech32()
+            .expect("secret-key bech32 encoding is infallible"),
+    );
+    secrets
+        .set_secret(NOSTR_SECRET_KEY.to_string(), encoded.to_string())
+        .then_some(())
+        .ok_or_else(unavailable)
+}
+
+const fn unavailable() -> HostError {
+    HostError::new(HostErrorKind::Unavailable)
+}
 
 /// An already-open Bark wallet exposed as a compact Lightning node.
 #[derive(Clone)]

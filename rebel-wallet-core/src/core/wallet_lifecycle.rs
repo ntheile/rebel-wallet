@@ -23,7 +23,7 @@ impl AppCore {
         self.load_app_data();
         self.refresh_cached_contact_profiles_on_startup();
         self.load_nostr_key();
-        self.sync_nwc_push_registrations();
+        self.with_nwc(|nwc, context| nwc.sync_push_registrations(context));
         self.refresh_price();
         if let Some(mnemonic) = self.secrets.get_secret(WALLET_SEED_KEY.to_string()) {
             self.state.busy.bootstrapping = true;
@@ -78,7 +78,8 @@ impl AppCore {
                 errors.push(format!("{e:#}"));
             }
         }
-        let (nwc_cleanup, nwc_errors) = self.remove_nwc_wallet_data();
+        let (nwc_cleanup, nwc_errors) =
+            self.with_nwc(|nwc, context| nwc.remove_wallet_data(context));
         errors.extend(nwc_errors);
 
         match std::fs::remove_file(&self.app_data_path) {
@@ -99,14 +100,14 @@ impl AppCore {
         state.show_launch_splash = false;
         self.state = state;
 
-        let mut warnings = self.reset_nwc_after_wallet_deletion();
+        let mut warnings = self.nwc.reset_after_wallet_deletion();
 
         if errors.is_empty() {
             if !self.secrets.delete_secret(WALLET_SEED_KEY.to_string()) {
                 errors.push("wallet seed".to_string());
             }
             let _ = self.secrets.delete_secret(NOSTR_SECRET_KEY.to_string());
-            errors.extend(self.delete_nwc_wallet_secrets(nwc_cleanup));
+            errors.extend(self.nwc.delete_wallet_secrets(nwc_cleanup));
         }
 
         warnings.extend(errors);
@@ -226,7 +227,7 @@ impl AppCore {
         let raw = match std::fs::read_to_string(&self.app_data_path) {
             Ok(raw) => raw,
             Err(_) => {
-                self.load_nwc_connections();
+                self.with_nwc(|nwc, context| nwc.load_connections(context));
                 return;
             }
         };
@@ -295,13 +296,15 @@ impl AppCore {
                 }
                 self.payment_annotations = data.payment_annotations;
                 self.zap_receipts = data.zap_receipts;
-                self.load_nwc_connections();
-                self.hydrate_nwc_icon_urls();
-                self.prefetch_nwc_icons();
+                self.with_nwc(|nwc, context| {
+                    nwc.load_connections(context);
+                    nwc.hydrate_icon_urls(context);
+                    nwc.prefetch_icons(context);
+                });
             }
             Err(e) => {
                 self.state.toast = Some(format!("Could not load local app data: {e}"));
-                self.load_nwc_connections();
+                self.with_nwc(|nwc, context| nwc.load_connections(context));
             }
         }
     }
