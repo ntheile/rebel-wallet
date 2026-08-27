@@ -1,9 +1,10 @@
-mod nwc_bark_lightning;
+mod nwa;
+mod nwc_bark;
 mod nwc_mobile;
 
 pub(crate) use nwc_mobile::{
-    nwc_mobile_config, opened_bark_provider, publish_nwc_info_event, rebel_secret_provider,
-    run_registration_worker, NwcPushConfig, NWC_ENCRYPTION,
+    nwc_budget_interval_display, nwc_relay_input_is_valid, NwcAppContext, NwcController,
+    NwcPushRegistrationUpdate,
 };
 pub use nwc_mobile::{
     NwcExtensionEngine, NwcExtensionWakeExecution, NwcSettlementNotificationStatus,

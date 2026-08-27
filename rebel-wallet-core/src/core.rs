@@ -25,8 +25,6 @@ use nostr_sdk::prelude::{
     nip04, Contact as NostrContact, ContactListBuilder, EventBuilder, EventBuilderTemplate, Filter,
     FinalizeEvent, Keys, Kind, PublicKey as NostrPublicKey, Tag, ToBech32,
 };
-use nwc_mobile::{ForegroundWakeCoordinator, NwcApplicationManager};
-use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 use tokio::runtime::Runtime;
 use zeroize::Zeroizing;
 
@@ -41,7 +39,7 @@ use crate::nostr_support::{
     profile_contact_from_metadata_json_with_petname, public_key_from_npub_or_hex,
     upload_profile_picture,
 };
-use crate::nwc::NwcPushConfig;
+use crate::nwc::{NwcAppContext, NwcController, NwcPushRegistrationUpdate};
 use crate::payments::{monitor_ark_receive, monitor_lightning_receive};
 use crate::persistence::{PaymentAnnotation, ZapReceiptRecord};
 use crate::price::fetch_bitcoin_price;
@@ -60,9 +58,6 @@ use crate::{
 };
 
 mod custom_address_flow;
-mod nwc_flow;
-#[path = "nwc_support.rs"]
-mod nwc_support;
 mod profile_prefetch;
 mod send_flow;
 mod wallet_lifecycle;
@@ -72,8 +67,6 @@ use wallet_work::{
     refresh_poll_delay, WalletWorkCoordinator, WalletWorkKind, WalletWorkRequest, WalletWorkToken,
     FOREGROUND_MAINTENANCE_INTERVAL, WALLET_WORK_TIMEOUT,
 };
-
-pub(crate) use nwc_support::{nwc_budget_interval_display, nwc_relay_input_is_valid};
 
 pub(crate) const WALLET_SEED_KEY: &str = "wallet_seed";
 pub(crate) const NOSTR_SECRET_KEY: &str = "nostr_secret";
@@ -322,17 +315,11 @@ struct AppCore {
     refresh_poll_attempt: u8,
     profile_db: Option<rusqlite::Connection>,
     profile_picture_downloads: HashSet<String>,
-    nwc_icon_downloads: HashSet<String>,
-    nwc_icon_cache: nwc_mobile::ApplicationIconCache,
     profile_picture_download_semaphore: Arc<tokio::sync::Semaphore>,
     profile_info_requests: HashSet<String>,
     payment_annotations: Vec<PaymentAnnotation>,
     zap_receipts: Vec<ZapReceiptRecord>,
-    nwc_wake_coordinator: ForegroundWakeCoordinator<String>,
-    nwc_in_flight_info_events: HashSet<String>,
-    nwc_manager: Option<NwcApplicationManager>,
-    nwc_push_config: NwcPushConfig,
-    nwc_settlement_monitor_config: Option<InvoiceSettlementMonitorConfig>,
+    nwc: NwcController,
     rev: u64,
     next_capability_id: u64,
     send_fee_estimate_request_id: u64,
@@ -349,14 +336,15 @@ impl AppCore {
         rt: Runtime,
     ) -> Self {
         ensure_profile_picture_dir(&cache_dir);
-        let nwc_icon_cache = nwc_mobile::ApplicationIconCache::new(&cache_dir);
-        let _ = nwc_icon_cache.prepare();
-        let nwc_manager = NwcApplicationManager::open(&data_dir).ok();
-        if let Some(manager) = nwc_manager.as_ref() {
-            // Republish replaceable capability events once per process so an
-            // installed upgrade cannot leave NWC clients on stale behavior.
-            let _ = manager.service().refresh_nwc_info_events();
-        }
+        let profile_picture_download_semaphore = new_profile_picture_download_semaphore();
+        let nwc = NwcController::new(
+            data_dir.clone(),
+            &cache_dir,
+            secrets.clone(),
+            tx.clone(),
+            rt.handle().clone(),
+            profile_picture_download_semaphore.clone(),
+        );
         Self {
             state: AppState::initial(),
             app_data_path: data_dir.join("rebel-app-data.json"),
@@ -377,17 +365,11 @@ impl AppCore {
             refresh_poll_scheduled: false,
             refresh_poll_attempt: 0,
             profile_picture_downloads: HashSet::new(),
-            nwc_icon_downloads: HashSet::new(),
-            nwc_icon_cache,
-            profile_picture_download_semaphore: new_profile_picture_download_semaphore(),
+            profile_picture_download_semaphore,
             profile_info_requests: HashSet::new(),
             payment_annotations: Vec::new(),
             zap_receipts: Vec::new(),
-            nwc_wake_coordinator: ForegroundWakeCoordinator::default(),
-            nwc_in_flight_info_events: HashSet::new(),
-            nwc_manager,
-            nwc_push_config: NwcPushConfig::default(),
-            nwc_settlement_monitor_config: None,
+            nwc,
             rev: 0,
             next_capability_id: 0,
             send_fee_estimate_request_id: 0,
@@ -401,9 +383,32 @@ impl AppCore {
             CoreMsg::Action(action) => self.handle_action(action),
             CoreMsg::Async(msg) => self.handle_async(msg),
         }
+        self.flush_nwc_output();
         self.rev += 1;
         self.state.rev = self.rev;
         self.state.refresh_derived();
+    }
+
+    fn with_nwc<R>(
+        &mut self,
+        operation: impl FnOnce(&mut NwcController, &mut NwcAppContext<'_>) -> R,
+    ) -> R {
+        let mut context = NwcAppContext {
+            state: &mut self.state,
+            wallet: self.wallet.clone(),
+            wallet_generation: self.wallet_generation,
+            rev: self.rev,
+        };
+        operation(&mut self.nwc, &mut context)
+    }
+
+    fn flush_nwc_output(&mut self) {
+        let output = self.nwc.take_output();
+        if output.save_app_data {
+            self.save_app_data();
+        }
+        self.pending_haptics.extend(output.haptics);
+        self.pending_side_effects.extend(output.side_effects);
     }
 
     fn handle_action(&mut self, action: AppAction) {
@@ -607,28 +612,50 @@ impl AppCore {
                 app_id,
                 environment,
                 install_id,
-            } => self.update_nwc_push_registration(
-                apns_device_token,
-                registration_status,
-                wake_server_url,
-                app_id,
-                environment,
-                install_id,
-            ),
-            AppAction::OpenNwaRequest { uri } => self.open_nwa_request(uri),
+            } => self.with_nwc(|nwc, context| {
+                nwc.update_push_registration(
+                    context,
+                    NwcPushRegistrationUpdate {
+                        apns_device_token,
+                        registration_status,
+                        wake_server_url,
+                        app_id,
+                        environment,
+                        install_id,
+                    },
+                )
+            }),
+            AppAction::OpenNwaRequest { uri } => {
+                self.with_nwc(|nwc, context| nwc.open_nwa_request(context, uri))
+            }
             AppAction::ApproveNwaRequest {
                 relay,
                 budget_sat,
                 budget_interval,
                 permissions,
-            } => self.approve_nwa_request(relay, budget_sat, budget_interval, permissions),
-            AppAction::RetryNwaCallback => self.retry_nwa_callback(),
-            AppAction::CancelNwaRequest => self.cancel_nwa_request(),
+            } => {
+                self.ensure_wallet_derived_nostr_key();
+                self.with_nwc(|nwc, context| {
+                    nwc.approve_nwa_request(
+                        context,
+                        relay,
+                        budget_sat,
+                        budget_interval,
+                        permissions,
+                    )
+                })
+            }
+            AppAction::RetryNwaCallback => {
+                self.with_nwc(|nwc, context| nwc.retry_nwa_callback(context))
+            }
+            AppAction::CancelNwaRequest => {
+                self.with_nwc(|nwc, context| nwc.cancel_nwa_request(context))
+            }
             AppAction::CompleteNwaCallbackOpen { opened } => {
-                self.complete_nwa_callback_open(opened)
+                self.with_nwc(|nwc, context| nwc.complete_nwa_callback_open(context, opened))
             }
             AppAction::ProcessNwcWakeRequests { requests } => {
-                self.enqueue_nwc_wake_requests(requests)
+                self.with_nwc(|nwc, context| nwc.enqueue_wake_requests(context, requests))
             }
             AppAction::CreateNwcConnection {
                 name,
@@ -636,12 +663,28 @@ impl AppCore {
                 budget_sat,
                 budget_interval,
                 permissions,
-            } => self.create_nwc_connection(name, relay, budget_sat, budget_interval, permissions),
+            } => {
+                self.ensure_wallet_derived_nostr_key();
+                self.with_nwc(|nwc, context| {
+                    nwc.create_connection(
+                        context,
+                        name,
+                        relay,
+                        budget_sat,
+                        budget_interval,
+                        permissions,
+                    )
+                })
+            }
             AppAction::RequestNwcConnectionExport {
                 id,
                 copy_to_clipboard,
-            } => self.request_nwc_connection_export(id, copy_to_clipboard),
-            AppAction::DeleteNwcConnection { id } => self.delete_nwc_connection(id),
+            } => {
+                self.with_nwc(|nwc, context| nwc.export_connection(context, id, copy_to_clipboard))
+            }
+            AppAction::DeleteNwcConnection { id } => {
+                self.with_nwc(|nwc, context| nwc.delete_connection(context, id))
+            }
             AppAction::GenerateNostrKey => self.generate_nostr_key(),
             AppAction::ImportNostrSecret { nsec_or_hex } => self.import_nostr_secret(nsec_or_hex),
             AppAction::ExportNostrSecret => self.export_nostr_secret(),
@@ -813,8 +856,10 @@ impl AppCore {
                 self.state.router.screen_stack.clear();
                 self.ensure_wallet_derived_nostr_key();
                 self.ensure_lightning_address();
-                self.publish_pending_nwc_info_events();
-                self.process_pending_nwc_wake_requests();
+                self.with_nwc(|nwc, context| {
+                    nwc.publish_pending_info_events(context);
+                    nwc.process_pending_wake_requests(context);
+                });
                 self.request_wallet_work(WalletWorkRequest::lifecycle(WalletWorkKind::Load));
                 self.request_maintenance(WalletWorkRequest::lifecycle(WalletWorkKind::Maintain));
                 self.claim_pending_lightning_receives();
@@ -914,7 +959,7 @@ impl AppCore {
                     self.state.receive.phase = ReceivePhase::Success;
                     self.request_haptic(HapticFeedback::NotificationSuccess);
                 }
-                self.reconcile_nwc_payment_notifications();
+                self.with_nwc(|nwc, context| nwc.reconcile_payment_notifications(context));
                 self.maintain_vtxos();
             }
             AsyncMsg::LightningReceivesClaimed { payment_hashes } => {
@@ -933,13 +978,13 @@ impl AppCore {
                     self.request_haptic(HapticFeedback::NotificationSuccess);
                 }
                 if !payment_hashes.is_empty() {
-                    self.reconcile_nwc_payment_notifications();
+                    self.with_nwc(|nwc, context| nwc.reconcile_payment_notifications(context));
                     self.maintain_vtxos();
                 }
             }
             AsyncMsg::LightningAddressReady(ark_address) => {
                 self.state.lightning_address.backing_ark_address = Some(ark_address.clone());
-                self.refresh_nwc_connection_uris_for_lud16();
+                self.with_nwc(|nwc, context| nwc.refresh_connection_uris(context));
                 self.save_lightning_address_ark_address(&ark_address);
                 self.save_app_data();
             }
@@ -1143,10 +1188,10 @@ impl AppCore {
                     .remove(&profile_picture_download_key(&pubkey, &remote_url));
             }
             AsyncMsg::NwcIconCached { remote_url } => {
-                self.finish_nwc_icon_cache(remote_url, true);
+                self.with_nwc(|nwc, context| nwc.finish_icon_cache(context, remote_url, true));
             }
             AsyncMsg::NwcIconCacheFailed { remote_url } => {
-                self.finish_nwc_icon_cache(remote_url, false);
+                self.with_nwc(|nwc, context| nwc.finish_icon_cache(context, remote_url, false));
             }
             AsyncMsg::NostrProfilePictureUploaded(url) => {
                 self.state.nostr.picture = url.clone();
@@ -1170,32 +1215,42 @@ impl AppCore {
                 generation,
                 request,
                 disposition,
-            } => self.finish_nwc_wake_engine(generation, request, disposition),
+            } => self.with_nwc(|nwc, context| {
+                nwc.finish_wake_engine(context, generation, request, disposition)
+            }),
             AsyncMsg::NwcWakeRequestFailed {
                 generation: _,
                 event_id,
                 error,
-            } => self.fail_nwc_wake_request(event_id, error),
+            } => self.with_nwc(|nwc, context| nwc.fail_wake_request(context, event_id, error)),
             AsyncMsg::NwcWakeRetryDue {
                 generation: _,
                 event_id,
-            } => self.retry_nwc_wake_request(event_id),
+            } => self.with_nwc(|nwc, context| nwc.retry_wake_request(context, event_id)),
             AsyncMsg::NwcInfoEventPublished {
                 client_pubkey,
                 relay,
-            } => self.finish_nwc_info_event(client_pubkey, relay, None),
+            } => self.with_nwc(|nwc, context| {
+                nwc.finish_info_event(context, client_pubkey, relay, None)
+            }),
             AsyncMsg::NwcInfoEventFailed {
                 client_pubkey,
                 relay,
                 error,
-            } => self.finish_nwc_info_event(client_pubkey, relay, Some(error)),
+            } => self.with_nwc(|nwc, context| {
+                nwc.finish_info_event(context, client_pubkey, relay, Some(error))
+            }),
             AsyncMsg::NwcPushRegistrationFinished {
                 applied,
                 deferred,
                 next_attempt_at,
                 error,
-            } => self.finish_nwc_push_registration(applied, deferred, next_attempt_at, error),
-            AsyncMsg::NwcPushRetryDue { nonce } => self.handle_nwc_push_retry_due(nonce),
+            } => self.with_nwc(|nwc, context| {
+                nwc.finish_push_registration(context, applied, deferred, next_attempt_at, error)
+            }),
+            AsyncMsg::NwcPushRetryDue { nonce } => {
+                self.with_nwc(|nwc, context| nwc.handle_push_retry_due(context, nonce))
+            }
             AsyncMsg::PriceUpdated { currency, price } => {
                 self.state.wallet.price_currency = currency;
                 self.state.wallet.btc_price = Some(price);
@@ -1367,10 +1422,7 @@ impl AppCore {
     fn foregrounded(&mut self) {
         self.wallet_foregrounded = true;
         self.cancel_refresh_poll(true);
-        self.refresh_nwc_connection_usage();
-        self.publish_pending_nwc_info_events();
-        self.sync_nwc_push_registrations();
-        self.prefetch_nwc_icons();
+        self.with_nwc(|nwc, context| nwc.foregrounded(context));
         let maintenance_due = self
             .last_maintenance_completed_at
             .is_none_or(|last| last.elapsed() >= FOREGROUND_MAINTENANCE_INTERVAL);
@@ -1690,7 +1742,7 @@ impl AppCore {
         self.last_maintenance_completed_at = None;
         self.wallet_retry_kind = None;
         self.has_pending_rounds = false;
-        self.reset_nwc_wallet_session();
+        self.nwc.reset_wallet_session();
         self.state.wallet.sync_error = None;
         self.cancel_refresh_poll(true);
         self.refresh_wallet_busy_state();
@@ -3696,6 +3748,33 @@ mod tests {
         assert!(store.deleted_keys().is_empty());
         let toast = core.state.toast.as_deref().expect("cleanup warning toast");
         assert!(toast.contains("cleanup warnings"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wallet_deletion_removes_secrets_when_empty_nwc_ledger_cannot_reopen() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let (store, mut core) = recording_secret_core(data_dir.path());
+        core.nwc.clear_manager_for_test();
+        crate::wallet::remove_wallet_database_files(
+            &nwc_mobile::NwcApplicationManager::database_path(data_dir.path()),
+        )
+        .expect("remove initial ledger");
+        std::fs::set_permissions(data_dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("make data directory read-only");
+
+        core.delete_wallet();
+
+        std::fs::set_permissions(data_dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore data directory permissions");
+        assert_eq!(
+            store.deleted_keys(),
+            vec![WALLET_SEED_KEY.to_string(), NOSTR_SECRET_KEY.to_string()]
+        );
+        let toast = core.state.toast.as_deref().expect("cleanup warning toast");
+        assert!(toast.contains("could not reopen NWC authorization storage"));
     }
 
     #[test]

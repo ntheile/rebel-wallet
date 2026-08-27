@@ -712,7 +712,7 @@ impl AppState {
             connection.budget_display = format_sats(connection.budget_sat);
             connection.spent_display = format_sats(connection.spent_sat);
             connection.budget_interval_display =
-                crate::core::nwc_budget_interval_display(connection.budget_interval).to_string();
+                crate::nwc::nwc_budget_interval_display(connection.budget_interval).to_string();
         }
 
         self.lightning_address.arkzap_address = self
