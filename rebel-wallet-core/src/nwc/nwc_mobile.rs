@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -8,18 +10,22 @@ use bark::Wallet;
 use bip39::Mnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, ToBech32};
 use nwc_mobile::{
-    HostError, HostErrorKind, HostFuture, Nip98SigningKey, NwcEncryption, NwcMethod,
-    NwcNotificationType, NwcSecretKey, OperationContext, ProtectedSecretStore, RejectionCode,
-    StoredNwcSecrets, WakeDiagnosticCollector, WakeDiagnosticSink, WakeDisposition,
+    standard_nwc_methods, HostError, HostErrorKind, Nip98SigningKey, NwcEncryption, NwcMethod,
+    NwcNotificationType, NwcSecretKey, ProtectedSecretStore, StoredNwcSecrets,
+    WakeDiagnosticCollector, WakeDiagnosticSink,
 };
 pub(crate) use nwc_mobile_http::ApnsWakeRegistrationConfig as NwcPushConfig;
 use nwc_mobile_http::{InvoiceSettlementCompletion, InvoiceSettlementMonitorConfig};
-pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
+use nwc_mobile_nostr::NostrRelayTransport;
 use nwc_mobile_tokio::{
-    LightningNodeProvider, LightningNodeRequest, NwcMobile, NwcMobileConfig,
-    NwcMobileSettlementStatus, NwcMobileWakeKind, OpenedLightningNode, ReadyLightningNodeProvider,
+    LightningNodeProvider, LightningNodeProviderFn, LightningNodeRequest, NwcMobile,
+    NwcMobileConfig, NwcMobileSettlementStatus, NwcMobileWakeKind, OpenedLightningNode,
+    ReadyLightningNodeProvider,
 };
-use nwc_mobile_uniffi::{validate_wake_envelope, MobileCancellation, MobileWakeEnvelope};
+use nwc_mobile_uniffi::{
+    extension_wake_execution, rejected_extension_wake_execution, validate_wake_envelope,
+    MobileCancellation, MobileWakeEnvelope,
+};
 pub use nwc_mobile_uniffi::{NwcExtensionWakeExecution, NwcSettlementNotificationStatus};
 use zeroize::Zeroizing;
 
@@ -28,12 +34,12 @@ use crate::persistence::{PersistedAppData, ServerConfig};
 use crate::wallet::{open_bark_wallet, WalletOpenMode};
 use crate::{NwcPermission, SecretStore, WalletNetwork};
 
-use super::nwc_bark_lightning::{bark_wallet_info, BarkNode};
+use super::nwc_bark_lightning::{bark_wallet_info, NwcBarkLightning};
 
 const APP_DATA_FILE: &str = "rebel-app-data.json";
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_EXTENSION_EXECUTION_MILLISECONDS: u64 = 30_000;
-pub(crate) const SETTLEMENT_MONITOR_RESERVE: Duration = Duration::from_secs(5);
+const SETTLEMENT_MONITOR_RESERVE: Duration = Duration::from_secs(5);
 
 // Existing Rebel clients advertise NIP-04. This must change atomically with
 // connection migration and info-event advertisement.
@@ -51,10 +57,13 @@ pub(crate) async fn publish_nwc_info_event(
         .context("invalid NWC client public key")?;
     let secret = NwcSecretKey::from_bytes(keys.secret_key().to_secret_bytes())
         .context("invalid NWC wallet service key")?;
-    let methods = implemented_permissions()
+    let approved_methods = permissions
         .into_iter()
-        .filter(|permission| client_pubkey.is_none() || permissions.contains(permission))
         .map(NwcMethod::from)
+        .collect::<BTreeSet<_>>();
+    let methods = standard_nwc_methods()
+        .into_iter()
+        .filter(|method| client_pubkey.is_none() || approved_methods.contains(method))
         .collect();
     nwc_mobile_nostr::publish_nwc_info_event_with_notifications(
         &relay,
@@ -70,17 +79,6 @@ pub(crate) async fn publish_nwc_info_event(
     )
     .await
     .context("failed to publish NWC info event")
-}
-
-const fn implemented_permissions() -> [NwcPermission; 6] {
-    [
-        NwcPermission::GetInfo,
-        NwcPermission::GetBalance,
-        NwcPermission::PayInvoice,
-        NwcPermission::MakeInvoice,
-        NwcPermission::LookupInvoice,
-        NwcPermission::ListTransactions,
-    ]
 }
 
 pub(crate) type RebelSecretProvider = StoredNwcSecrets<dyn SecretStore>;
@@ -108,41 +106,30 @@ impl ProtectedSecretStore for dyn SecretStore {
 }
 
 /// Opens Rebel's existing Bark wallet when a native worker starts cold.
-struct NwcBarkNodeProvider {
+fn cold_bark_provider(
     data_dir: PathBuf,
     secrets: Arc<dyn SecretStore>,
-}
-
-impl NwcBarkNodeProvider {
-    fn new(data_dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
-        Self { data_dir, secrets }
-    }
-}
-
-impl LightningNodeProvider for NwcBarkNodeProvider {
-    fn open_node<'a>(
-        &'a self,
-        request: LightningNodeRequest,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<OpenedLightningNode, HostError>> {
+) -> impl LightningNodeProvider {
+    LightningNodeProviderFn::new(move |request, context| {
+        let data_dir = data_dir.clone();
+        let secrets = secrets.clone();
         Box::pin(async move {
             if context.cancellation().is_cancelled() {
                 return Err(HostError::new(HostErrorKind::Cancelled));
             }
-            let server_config = extension_server_config(&self.data_dir)
+            let server_config = extension_server_config(&data_dir)
                 .ok_or_else(|| HostError::new(HostErrorKind::Unavailable))?;
-            let mnemonic = self
-                .secrets
+            let mnemonic = secrets
                 .get_secret(WALLET_SEED_KEY.to_string())
                 .map(Zeroizing::new)
                 .and_then(|seed| Mnemonic::from_str(seed.as_str()).ok())
                 .ok_or_else(unavailable)?;
-            ensure_nostr_secret(self.secrets.as_ref(), &mnemonic)?;
+            ensure_nostr_secret(secrets.as_ref(), &mnemonic)?;
             if context.cancellation().is_cancelled() {
                 return Err(HostError::new(HostErrorKind::Cancelled));
             }
             let wallet = open_bark_wallet(
-                self.data_dir.clone(),
+                data_dir,
                 &mnemonic,
                 WalletOpenMode::OpenExisting,
                 server_config,
@@ -155,7 +142,7 @@ impl LightningNodeProvider for NwcBarkNodeProvider {
             }
             Ok(opened_bark_node(wallet, request))
         })
-    }
+    })
 }
 
 pub(crate) fn opened_bark_provider(wallet: Wallet) -> impl LightningNodeProvider {
@@ -165,8 +152,8 @@ pub(crate) fn opened_bark_provider(wallet: Wallet) -> impl LightningNodeProvider
 fn opened_bark_node(wallet: Wallet, request: LightningNodeRequest) -> OpenedLightningNode {
     let wallet_info = bark_wallet_info(request.wallet_service_pubkey().clone());
     let node = match request.diagnostics() {
-        Some(diagnostics) => BarkNode::with_diagnostics(wallet, diagnostics),
-        None => BarkNode::new(wallet),
+        Some(diagnostics) => NwcBarkLightning::with_diagnostics(wallet, diagnostics),
+        None => NwcBarkLightning::new(wallet),
     };
     OpenedLightningNode::new(node, wallet_info)
 }
@@ -204,6 +191,31 @@ fn ensure_nostr_secret(secrets: &dyn SecretStore, mnemonic: &Mnemonic) -> Result
 
 const fn unavailable() -> HostError {
     HostError::new(HostErrorKind::Unavailable)
+}
+
+pub(crate) fn nwc_mobile_config<P>(
+    data_dir: impl AsRef<Path>,
+    provider: P,
+    secrets: Arc<dyn SecretStore>,
+    settlement_monitor: Option<InvoiceSettlementMonitorConfig>,
+) -> NwcMobileConfig
+where
+    P: LightningNodeProvider + 'static,
+{
+    let secret_provider = rebel_secret_provider(secrets);
+    let mut config = NwcMobileConfig::new(
+        data_dir,
+        provider,
+        NostrRelayTransport,
+        secret_provider.clone(),
+    );
+    if let Some(monitor) = settlement_monitor {
+        config = config.with_completion_handler(
+            InvoiceSettlementCompletion::new(monitor, secret_provider),
+            SETTLEMENT_MONITOR_RESERVE,
+        );
+    }
+    config
 }
 
 pub(crate) async fn run_registration_worker(
@@ -255,41 +267,24 @@ impl NwcExtensionEngine {
         if execution_milliseconds == 0
             || execution_milliseconds > MAX_EXTENSION_EXECUTION_MILLISECONDS
         {
-            return wake_execution(
-                rejected_disposition(),
-                &WakeDiagnosticCollector::default(),
-                NwcSettlementNotificationStatus::NotTracked,
-            );
+            return rejected_extension_wake_execution();
         }
-        let wake_kind = NwcMobileWakeKind::from_settlement_check(request.settlement_check);
-        let input = match validate_wake_envelope(request) {
-            Ok(input) => input.core_input(),
-            Err(_) => {
-                return wake_execution(
-                    rejected_disposition(),
-                    &WakeDiagnosticCollector::default(),
-                    NwcSettlementNotificationStatus::NotTracked,
-                )
-            }
+        let validated = match validate_wake_envelope(request) {
+            Ok(input) => input,
+            Err(_) => return rejected_extension_wake_execution(),
         };
+        let wake_kind = NwcMobileWakeKind::from_settlement_check(validated.settlement_check());
+        let input = validated.core_input();
         let data_dir = self.data_dir.clone();
-        let secrets = self.secrets.clone();
         let diagnostics = Arc::new(WakeDiagnosticCollector::default());
         let execution_diagnostics: Arc<dyn WakeDiagnosticSink> = diagnostics.clone();
-        let secret_provider = rebel_secret_provider(secrets);
-        let mut config = NwcMobileConfig::new(
+        let config = nwc_mobile_config(
             &data_dir,
-            NwcBarkNodeProvider::new(data_dir.clone(), self.secrets.clone()),
-            NostrRelayTransport,
-            secret_provider.clone(),
+            cold_bark_provider(data_dir.clone(), self.secrets.clone()),
+            self.secrets.clone(),
+            self.settlement_monitor_config.clone(),
         )
         .with_diagnostics(execution_diagnostics);
-        if let Some(monitor_config) = self.settlement_monitor_config.clone() {
-            config = config.with_completion_handler(
-                InvoiceSettlementCompletion::new(monitor_config, secret_provider),
-                SETTLEMENT_MONITOR_RESERVE,
-            );
-        }
         let result = NwcMobile::execute_native_wake(
             config,
             input,
@@ -298,27 +293,11 @@ impl NwcExtensionEngine {
             cancellation,
         )
         .await;
-        wake_execution(
+        extension_wake_execution(
             result.disposition(),
             &diagnostics,
             settlement_notification_status(result.settlement_status()),
         )
-    }
-}
-
-fn wake_execution(
-    disposition: WakeDisposition,
-    diagnostics: &WakeDiagnosticCollector,
-    settlement_notification_status: NwcSettlementNotificationStatus,
-) -> NwcExtensionWakeExecution {
-    NwcExtensionWakeExecution {
-        disposition: disposition.into(),
-        diagnostic_codes: diagnostics
-            .codes()
-            .into_iter()
-            .map(|code| code.as_str().to_owned())
-            .collect(),
-        settlement_notification_status,
     }
 }
 
@@ -329,35 +308,5 @@ fn settlement_notification_status(
         NwcMobileSettlementStatus::Pending => NwcSettlementNotificationStatus::Pending,
         NwcMobileSettlementStatus::Delivered => NwcSettlementNotificationStatus::Delivered,
         _ => NwcSettlementNotificationStatus::NotTracked,
-    }
-}
-
-fn rejected_disposition() -> WakeDisposition {
-    WakeDisposition::rejected(RejectionCode::InvalidWakePayload)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wake_execution_exposes_only_stable_diagnostic_codes() {
-        let diagnostics = WakeDiagnosticCollector::default();
-        diagnostics.record(nwc_mobile::WakeDiagnosticCode::PaymentFeeLimitExceeded);
-
-        let execution = wake_execution(
-            WakeDisposition::queued(nwc_mobile::QueueReason::WalletUnavailable),
-            &diagnostics,
-            NwcSettlementNotificationStatus::Pending,
-        );
-
-        assert_eq!(
-            execution.diagnostic_codes,
-            vec!["payment_fee_limit_exceeded"]
-        );
-        assert_eq!(
-            execution.settlement_notification_status,
-            NwcSettlementNotificationStatus::Pending
-        );
     }
 }

@@ -16,17 +16,17 @@ use bark::persist::models::SettledLightningReceive;
 use bark::{FeeEstimate, Wallet};
 use bitcoin::Amount;
 use nwc_mobile::{
-    AmountMsat, CreatedInvoice, HostError, HostErrorKind, HostFuture, InvoiceLookup, LightningNode,
-    ListTransactionsRequest, MakeInvoiceRequest, NwcMethod, NwcNotificationType, PayInvoiceRequest,
-    PaymentFailure, PaymentHash, PaymentPreimage, PaymentQuote, PaymentStatus, PublicKey,
-    TransactionDirection, UnixTimestamp, WakeDiagnosticCode, WakeDiagnosticSink, WalletInfo,
-    WalletTransaction,
+    prepare_transaction_page, standard_wallet_info, AmountMsat, CreatedInvoice, HostError,
+    HostErrorKind, HostFuture, InvoiceLookup, ListTransactionsRequest, MakeInvoiceRequest,
+    NwcLightningNode, NwcNotificationType, PayInvoiceRequest, PaymentFailure, PaymentHash,
+    PaymentPreimage, PaymentQuote, PaymentStatus, PublicKey, TransactionDirection, UnixTimestamp,
+    WakeDiagnosticCode, WakeDiagnosticSink, WalletInfo, WalletTransaction,
 };
 use nwc_mobile_bolt11::{
     created_invoice, exact_sats, parse_invoice, payment_amount_sats, quote_invoice_sats,
     sats_to_msats,
 };
-use nwc_mobile_tokio::{sleep, spawn_abort_on_drop};
+use nwc_mobile_tokio::{poll_until_terminal, sleep, spawn_abort_on_drop};
 use serde_json::Value;
 
 const PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
@@ -36,12 +36,12 @@ const INVOICE_SETTLEMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
 /// An already-open Bark wallet exposed as a compact Lightning node.
 #[derive(Clone)]
-pub(crate) struct BarkNode {
+pub(crate) struct NwcBarkLightning {
     wallet: Wallet,
     diagnostics: Option<Arc<dyn WakeDiagnosticSink>>,
 }
 
-impl BarkNode {
+impl NwcBarkLightning {
     /// Creates a node over an already-open Bark wallet.
     #[must_use]
     pub(crate) fn new(wallet: Wallet) -> Self {
@@ -70,7 +70,7 @@ impl BarkNode {
     }
 }
 
-impl LightningNode for BarkNode {
+impl NwcLightningNode for NwcBarkLightning {
     fn get_balance(&self) -> HostFuture<'_, Result<AmountMsat, HostError>> {
         Box::pin(async move {
             let balance = self
@@ -260,13 +260,7 @@ impl LightningNode for BarkNode {
                     .flatten()
             }));
 
-            transactions.retain(|transaction| transaction_matches(transaction, request));
-            transactions.sort_by_key(|transaction| std::cmp::Reverse(transaction.created_at));
-            Ok(transactions
-                .into_iter()
-                .skip(request.offset as usize)
-                .take(usize::from(request.limit))
-                .collect())
+            Ok(prepare_transaction_page(transactions, request))
         })
     }
 }
@@ -321,14 +315,14 @@ async fn wait_for_payment_terminal(
     wallet: &Wallet,
     payment_hash: BarkPaymentHash,
 ) -> Result<PaymentStatus, HostError> {
-    let deadline = Instant::now() + PAYMENT_SETTLE_TIMEOUT;
-    loop {
-        let status = payment_status_without_mailbox(wallet, payment_hash).await?;
-        if !matches!(status, PaymentStatus::Pending) || Instant::now() >= deadline {
-            return Ok(status);
-        }
-        sleep(PAYMENT_POLL_INTERVAL).await;
-    }
+    poll_until_terminal(
+        PAYMENT_SETTLE_TIMEOUT,
+        PAYMENT_POLL_INTERVAL,
+        || payment_status_without_mailbox(wallet, payment_hash),
+        |status| !matches!(status, PaymentStatus::Pending),
+    )
+    .await?
+    .ok_or_else(|| host_error(HostErrorKind::TimedOut))
 }
 
 /// Keeps Bark's durable mailbox stream alive while a bounded payment operation runs.
@@ -486,33 +480,23 @@ fn transaction_from_movement(movement: &Movement) -> Option<WalletTransaction> {
 }
 
 fn transaction_from_pending_receive(receive: &LightningReceive) -> Option<WalletTransaction> {
-    Some(WalletTransaction {
-        payment_hash: Some(PaymentHash::from_hex(&receive.payment_hash.to_string()).ok()?),
-        direction: TransactionDirection::Incoming,
-        amount: AmountMsat::from_msat(receive.invoice.amount_milli_satoshis()?),
-        fee: AmountMsat::default(),
-        created_at: UnixTimestamp::from_secs(receive.invoice.duration_since_epoch().as_secs()),
-        settled_at: None,
-        status: PaymentStatus::Pending,
-    })
+    Some(WalletTransaction::pending_incoming(
+        PaymentHash::from_hex(&receive.payment_hash.to_string()).ok()?,
+        AmountMsat::from_msat(receive.invoice.amount_milli_satoshis()?),
+        UnixTimestamp::from_secs(receive.invoice.duration_since_epoch().as_secs()),
+    ))
 }
 
 fn transaction_from_settled_receive(
     receive: &SettledLightningReceive,
 ) -> Option<WalletTransaction> {
-    Some(WalletTransaction {
-        payment_hash: Some(PaymentHash::from_hex(&receive.payment_hash.to_string()).ok()?),
-        direction: TransactionDirection::Incoming,
-        amount: sats_to_msats(receive.amount.to_sat()),
-        fee: AmountMsat::default(),
-        created_at: UnixTimestamp::from_secs(receive.invoice.duration_since_epoch().as_secs()),
-        settled_at: Some(timestamp(receive.settled_at.timestamp())),
-        status: PaymentStatus::Succeeded {
-            preimage: PaymentPreimage::from_hex(&receive.preimage.to_string()).ok()?,
-            amount: sats_to_msats(receive.amount.to_sat()),
-            fee: AmountMsat::default(),
-        },
-    })
+    Some(WalletTransaction::settled_incoming(
+        PaymentHash::from_hex(&receive.payment_hash.to_string()).ok()?,
+        PaymentPreimage::from_hex(&receive.preimage.to_string()).ok()?,
+        sats_to_msats(receive.amount.to_sat()),
+        UnixTimestamp::from_secs(receive.invoice.duration_since_epoch().as_secs()),
+        timestamp(receive.settled_at.timestamp()),
+    ))
 }
 
 fn transaction_from_receive_state(receive: &LightningReceiveState) -> Option<WalletTransaction> {
@@ -523,31 +507,12 @@ fn transaction_from_receive_state(receive: &LightningReceiveState) -> Option<Wal
 }
 
 fn transaction_from_pending_send(send: &LightningSend) -> Option<WalletTransaction> {
-    Some(WalletTransaction {
-        payment_hash: Some(PaymentHash::from_hex(&send.invoice.payment_hash().to_string()).ok()?),
-        direction: TransactionDirection::Outgoing,
-        amount: sats_to_msats(send.payment_amount.to_sat()),
-        fee: sats_to_msats(send.fee.to_sat()),
-        created_at: UnixTimestamp::from_secs(0),
-        settled_at: None,
-        status: PaymentStatus::Pending,
-    })
-}
-
-fn transaction_matches(transaction: &WalletTransaction, request: ListTransactionsRequest) -> bool {
-    if request
-        .from
-        .is_some_and(|from| transaction.created_at < from)
-        || request
-            .until
-            .is_some_and(|until| transaction.created_at > until)
-        || request
-            .direction
-            .is_some_and(|direction| transaction.direction != direction)
-    {
-        return false;
-    }
-    request.include_unpaid || matches!(transaction.status, PaymentStatus::Succeeded { .. })
+    Some(WalletTransaction::pending_outgoing(
+        PaymentHash::from_hex(&send.invoice.payment_hash().to_string()).ok()?,
+        sats_to_msats(send.payment_amount.to_sat()),
+        sats_to_msats(send.fee.to_sat()),
+        UnixTimestamp::from_secs(0),
+    ))
 }
 
 fn movement_direction(movement: &Movement) -> TransactionDirection {
@@ -604,27 +569,11 @@ fn timestamp(seconds: i64) -> UnixTimestamp {
     UnixTimestamp::from_secs(seconds.max(0) as u64)
 }
 
-fn supported_methods() -> [NwcMethod; 6] {
-    [
-        NwcMethod::GetInfo,
-        NwcMethod::GetBalance,
-        NwcMethod::MakeInvoice,
-        NwcMethod::PayInvoice,
-        NwcMethod::LookupInvoice,
-        NwcMethod::ListTransactions,
-    ]
-}
-
-fn supported_notifications() -> [NwcNotificationType; 1] {
-    // Do not advertise payment_received until the mobile host has a reliable
-    // server-side wake source. NWC clients such as Alby Go then poll
-    // lookup_invoice, which wakes the app and refreshes Bark's mailbox.
-    [NwcNotificationType::PaymentSent]
-}
-
 pub(crate) fn bark_wallet_info(service_pubkey: PublicKey) -> WalletInfo {
-    WalletInfo::new(Some(service_pubkey), supported_methods())
-        .with_notifications(supported_notifications())
+    // Do not advertise payment_received until the mobile host has a reliable server-side wake
+    // source. NWC clients such as Alby Go then poll lookup_invoice, which wakes the app and
+    // refreshes Bark's mailbox.
+    standard_wallet_info(service_pubkey, [NwcNotificationType::PaymentSent])
 }
 
 fn payment_preflight_failure(
@@ -654,44 +603,6 @@ const fn host_error(kind: HostErrorKind) -> HostError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn transaction(status: PaymentStatus) -> WalletTransaction {
-        WalletTransaction {
-            payment_hash: None,
-            direction: TransactionDirection::Incoming,
-            amount: AmountMsat::from_msat(1_000),
-            fee: AmountMsat::default(),
-            created_at: UnixTimestamp::from_secs(100),
-            settled_at: None,
-            status,
-        }
-    }
-
-    fn request() -> ListTransactionsRequest {
-        ListTransactionsRequest {
-            from: None,
-            until: None,
-            limit: 10,
-            offset: 0,
-            direction: None,
-            include_unpaid: true,
-        }
-    }
-
-    #[test]
-    fn advertises_only_implemented_nwc_methods() {
-        assert_eq!(
-            supported_methods(),
-            [
-                NwcMethod::GetInfo,
-                NwcMethod::GetBalance,
-                NwcMethod::MakeInvoice,
-                NwcMethod::PayInvoice,
-                NwcMethod::LookupInvoice,
-                NwcMethod::ListTransactions,
-            ]
-        );
-    }
 
     #[test]
     fn wallet_info_requires_lookup_polling_for_receive_settlement() {
@@ -733,33 +644,6 @@ mod tests {
             payment_preflight_failure(&fee, Some(Amount::from_sat(1_000)), Amount::from_sat(600),),
             None
         );
-    }
-
-    #[test]
-    fn transaction_filter_enforces_bounds_direction_and_payment_state() {
-        let settled = transaction(PaymentStatus::Succeeded {
-            preimage: PaymentPreimage::from_bytes([1_u8; 32]),
-            amount: AmountMsat::from_msat(1_000),
-            fee: AmountMsat::default(),
-        });
-        assert!(transaction_matches(&settled, request()));
-
-        let mut filtered = request();
-        filtered.from = Some(UnixTimestamp::from_secs(101));
-        assert!(!transaction_matches(&settled, filtered));
-        filtered = request();
-        filtered.until = Some(UnixTimestamp::from_secs(99));
-        assert!(!transaction_matches(&settled, filtered));
-        filtered = request();
-        filtered.direction = Some(TransactionDirection::Outgoing);
-        assert!(!transaction_matches(&settled, filtered));
-
-        let mut paid_only = request();
-        paid_only.include_unpaid = false;
-        assert!(!transaction_matches(
-            &transaction(PaymentStatus::Pending),
-            paid_only
-        ));
     }
 
     #[test]
