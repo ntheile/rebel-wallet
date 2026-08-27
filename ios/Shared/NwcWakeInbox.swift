@@ -31,7 +31,8 @@ extension NwcQueuedWakeRequest {
                 walletServicePublicKeyHex: request.walletServicePublicKeyHex,
                 embeddedEventJSON: request.embeddedEventJson
             ),
-            receivedAtSeconds: request.receivedAtSeconds
+            receivedAtSeconds: request.receivedAtSeconds,
+            settlementCheck: userInfo["settlement_check"] as? Bool == true
         )
     }
 

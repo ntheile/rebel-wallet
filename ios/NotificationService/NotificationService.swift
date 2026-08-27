@@ -127,9 +127,9 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
                 eventIdHex: payload.eventIDHex,
                 walletServicePublicKeyHex: payload.walletServicePublicKeyHex,
                 embeddedEventJson: payload.embeddedEventJSON,
-                receivedAtSeconds: UInt64(Date().timeIntervalSince1970)
+                receivedAtSeconds: UInt64(Date().timeIntervalSince1970),
+                settlementCheck: settlementCheck
             ),
-            settlementCheck: settlementCheck,
             executionMilliseconds: executionMilliseconds,
             cancellation: cancellation.rust
         )
@@ -214,7 +214,8 @@ private final class RebelNwcWakeExecutor: NwcWakeExecutor, @unchecked Sendable {
     private func enqueue(_ payload: NwcWakePayload) {
         NwcWakeInbox.enqueue(NwcQueuedWakeRequest(
             payload: payload,
-            receivedAtSeconds: UInt64(Date().timeIntervalSince1970)
+            receivedAtSeconds: UInt64(Date().timeIntervalSince1970),
+            settlementCheck: settlementCheck
         ))
     }
 }

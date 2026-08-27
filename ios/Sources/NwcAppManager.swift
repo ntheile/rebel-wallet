@@ -113,7 +113,8 @@ final class NwcAppManager {
                 eventIdHex: $0.payload.eventIDHex,
                 walletServicePublicKeyHex: $0.payload.walletServicePublicKeyHex,
                 embeddedEventJson: $0.payload.embeddedEventJSON,
-                receivedAtSeconds: $0.receivedAtSeconds
+                receivedAtSeconds: $0.receivedAtSeconds,
+                settlementCheck: $0.settlementCheck
             )
         }))
     }

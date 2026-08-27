@@ -1,5 +1,5 @@
 use super::*;
-use crate::nwc::{run_registration_worker, RebelSecretProvider, NWC_ENCRYPTION};
+use crate::nwc::{rebel_secret_provider, run_registration_worker, NWC_ENCRYPTION};
 use crate::profile_cache::normalize_profile_picture_to_jpeg;
 use crate::{NwaRequestState, NwcBudgetInterval, NwcConnection, NwcPermission};
 use nwc_mobile::{
@@ -248,7 +248,7 @@ impl AppCore {
             self.state.toast = Some("NWC connection was not found.".to_string());
             return;
         };
-        let provider = RebelSecretProvider::new(self.secrets.clone());
+        let provider = rebel_secret_provider(self.secrets.clone());
         let uri = match self
             .nwc_manager
             .as_ref()
