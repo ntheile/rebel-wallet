@@ -1,4 +1,4 @@
-//! Rebel Wallet's Bark implementation of the `nwc-mobile` Lightning node contract.
+//! Rebel Wallet's NWC Bark implementation of the `nwc-mobile` Lightning node contract.
 
 #![forbid(unsafe_code)]
 
