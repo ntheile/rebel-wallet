@@ -330,14 +330,15 @@ impl NwcExtensionEngine {
         }
         let wallet_info = bark_wallet_info(input.wallet_service_pubkey().clone());
         let secret_provider = RebelSecretProvider::new(secrets.clone());
+        let wallet = BarkNode::with_diagnostics(wallet, Arc::clone(&diagnostics));
         let config = NwcNodeConfig::new(
+            wallet,
             manager.service().ledger(),
             &NostrRelayTransport,
             &secret_provider,
             wallet_info,
         );
-        let wallet = BarkNode::with_diagnostics(wallet, Arc::clone(&diagnostics));
-        let node = NwcNode::new(config, wallet).with_diagnostics(diagnostics.as_ref());
+        let node = NwcNode::new(config).with_diagnostics(diagnostics.as_ref());
         let mut disposition = if settlement_check {
             let _ = node
                 .handle_settlement_wake(&event_id, budget, cancellation.as_ref())
