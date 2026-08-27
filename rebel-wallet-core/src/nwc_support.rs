@@ -562,9 +562,14 @@ impl AppCore {
                                 .any(|relay| relay.as_str() == wake.relay())
                     });
                 let wallet_info = bark_wallet_info(wake.wallet_service_pubkey().clone());
-                let config =
-                    NwcNodeConfig::new(manager.service().ledger(), &relays, &secrets, wallet_info);
-                let node = NwcNode::new(config, BarkNode::new(wallet));
+                let config = NwcNodeConfig::new(
+                    BarkNode::new(wallet),
+                    manager.service().ledger(),
+                    &relays,
+                    &secrets,
+                    wallet_info,
+                );
+                let node = NwcNode::new(config);
                 let disposition = if tracked_invoice.is_some() {
                     let _ = node
                         .handle_settlement_wake(&event_id, budget, &NeverCancelled)
@@ -630,12 +635,13 @@ impl AppCore {
             };
             let secret_provider = RebelSecretProvider::new(secrets);
             let config = NwcNodeConfig::new(
+                BarkNode::new(wallet),
                 manager.service().ledger(),
                 &NostrRelayTransport,
                 &secret_provider,
                 bark_wallet_info(wallet_service_pubkey),
             );
-            let node = NwcNode::new(config, BarkNode::new(wallet));
+            let node = NwcNode::new(config);
             let _ = node.run_notifications(budget, &NeverCancelled).await;
         });
     }
