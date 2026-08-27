@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::future::Future;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +15,9 @@ use bark::ark::lightning::PaymentHash as BarkPaymentHash;
 use bark::movement::{Movement, MovementStatus};
 use bark::persist::models::SettledLightningReceive;
 use bark::{FeeEstimate, Wallet};
+use bip39::Mnemonic;
 use bitcoin::Amount;
+use nostr_sdk::prelude::ToBech32;
 use nwc_mobile::{
     AmountMsat, CreatedInvoice, HostError, HostErrorKind, HostFuture, InvoiceLookup, LightningNode,
     ListTransactionsRequest, MakeInvoiceRequest, NwcMethod, NwcNotificationType, PayInvoiceRequest,
@@ -26,9 +29,18 @@ use nwc_mobile_bolt11::{
     created_invoice, exact_sats, parse_invoice, payment_amount_sats, quote_invoice_sats,
     sats_to_msats,
 };
-use nwc_mobile_tokio::{sleep, spawn_abort_on_drop};
+use nwc_mobile_tokio::{
+    sleep, spawn_abort_on_drop, LightningNodeProvider, LightningNodeRequest, OpenedLightningNode,
+};
 use serde_json::Value;
+use zeroize::Zeroizing;
 
+use crate::core::{derive_nostr_keys_from_mnemonic, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
+use crate::persistence::{PersistedAppData, ServerConfig};
+use crate::wallet::{open_bark_wallet, WalletOpenMode};
+use crate::{SecretStore, WalletNetwork};
+
+const APP_DATA_FILE: &str = "rebel-app-data.json";
 const PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
 const PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 const INVOICE_SETTLEMENT_MAX_WAIT: Duration = Duration::from_secs(25);
@@ -68,6 +80,126 @@ impl BarkNode {
             diagnostics.record(code);
         }
     }
+}
+
+/// Opens Rebel's existing Bark wallet when a native NWC worker starts cold.
+pub(crate) struct NwcBarkNodeProvider {
+    data_dir: PathBuf,
+    secrets: Arc<dyn SecretStore>,
+}
+
+impl NwcBarkNodeProvider {
+    #[must_use]
+    pub(crate) fn new(data_dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
+        Self { data_dir, secrets }
+    }
+}
+
+impl LightningNodeProvider for NwcBarkNodeProvider {
+    fn open_node<'a>(
+        &'a self,
+        request: LightningNodeRequest,
+        context: nwc_mobile::OperationContext<'a>,
+    ) -> HostFuture<'a, Result<OpenedLightningNode, HostError>> {
+        Box::pin(async move {
+            if context.cancellation().is_cancelled() {
+                return Err(host_error(HostErrorKind::Cancelled));
+            }
+            let server_config = extension_server_config(&self.data_dir)
+                .ok_or_else(|| host_error(HostErrorKind::Unavailable))?;
+            let mnemonic = self
+                .secrets
+                .get_secret(WALLET_SEED_KEY.to_string())
+                .map(Zeroizing::new)
+                .and_then(|seed| Mnemonic::from_str(seed.as_str()).ok())
+                .ok_or_else(|| host_error(HostErrorKind::Unavailable))?;
+            ensure_nostr_secret(self.secrets.as_ref(), &mnemonic)?;
+            if context.cancellation().is_cancelled() {
+                return Err(host_error(HostErrorKind::Cancelled));
+            }
+            let wallet = open_bark_wallet(
+                self.data_dir.clone(),
+                &mnemonic,
+                WalletOpenMode::OpenExisting,
+                server_config,
+            )
+            .await
+            .map_err(|_| host_error(HostErrorKind::Unavailable))?
+            .wallet;
+            if context.cancellation().is_cancelled() {
+                return Err(host_error(HostErrorKind::Cancelled));
+            }
+            let wallet_info = bark_wallet_info(request.wallet_service_pubkey().clone());
+            let node = match request.diagnostics() {
+                Some(diagnostics) => BarkNode::with_diagnostics(wallet, diagnostics),
+                None => BarkNode::new(wallet),
+            };
+            Ok(OpenedLightningNode::new(node, wallet_info))
+        })
+    }
+}
+
+/// Adapts the wallet already owned by Rebel's foreground actor to `NwcMobile`.
+pub(crate) struct OpenedNwcBarkNodeProvider {
+    wallet: Wallet,
+}
+
+impl OpenedNwcBarkNodeProvider {
+    #[must_use]
+    pub(crate) fn new(wallet: Wallet) -> Self {
+        Self { wallet }
+    }
+}
+
+impl LightningNodeProvider for OpenedNwcBarkNodeProvider {
+    fn open_node<'a>(
+        &'a self,
+        request: LightningNodeRequest,
+        context: nwc_mobile::OperationContext<'a>,
+    ) -> HostFuture<'a, Result<OpenedLightningNode, HostError>> {
+        Box::pin(async move {
+            if context.cancellation().is_cancelled() {
+                return Err(host_error(HostErrorKind::Cancelled));
+            }
+            let wallet_info = bark_wallet_info(request.wallet_service_pubkey().clone());
+            let node = match request.diagnostics() {
+                Some(diagnostics) => BarkNode::with_diagnostics(self.wallet.clone(), diagnostics),
+                None => BarkNode::new(self.wallet.clone()),
+            };
+            Ok(OpenedLightningNode::new(node, wallet_info))
+        })
+    }
+}
+
+fn extension_server_config(data_dir: &std::path::Path) -> Option<ServerConfig> {
+    let raw = std::fs::read_to_string(data_dir.join(APP_DATA_FILE)).ok()?;
+    let data: PersistedAppData = serde_json::from_str(&raw).ok()?;
+    Some(
+        if data.network == WalletNetwork::Regtest && data.servers.network == WalletNetwork::Regtest
+        {
+            data.servers
+        } else {
+            ServerConfig::for_network(data.network)
+        },
+    )
+}
+
+fn ensure_nostr_secret(secrets: &dyn SecretStore, mnemonic: &Mnemonic) -> Result<(), HostError> {
+    if secrets.get_secret(NOSTR_SECRET_KEY.to_string()).is_some() {
+        return Ok(());
+    }
+    let mnemonic = Zeroizing::new(mnemonic.to_string());
+    let keys = derive_nostr_keys_from_mnemonic(mnemonic.as_str())
+        .map_err(|_| host_error(HostErrorKind::Internal))?;
+    let encoded = Zeroizing::new(
+        keys.secret_key()
+            .to_bech32()
+            .expect("secret-key bech32 encoding is infallible"),
+    );
+    secrets
+        .set_secret(NOSTR_SECRET_KEY.to_string(), encoded.to_string())
+        .then_some(())
+        .ok_or_else(|| host_error(HostErrorKind::Unavailable))
 }
 
 impl LightningNode for BarkNode {

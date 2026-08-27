@@ -1,46 +1,37 @@
 mod nwc_bark_node;
 
 use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use bip39::Mnemonic;
-use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey, ToBech32};
-pub(crate) use nwc_bark_node::{bark_wallet_info, BarkNode};
+use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey};
+pub(crate) use nwc_bark_node::{
+    bark_wallet_info, BarkNode, NwcBarkNodeProvider, OpenedNwcBarkNodeProvider,
+};
 use nwc_mobile::{
-    ClientSecretStore, ClientSecretStoreError, ConnectionId, HostError, HostErrorKind,
-    Nip98SigningKey, NotificationHint, NwcEncryption, NwcMethod, NwcNotificationType, NwcSecretKey,
-    QueueReason, RejectionCode, SecretProvider, WakeDiagnosticCollector, WakeDiagnosticSink,
-    WakeDisposition,
+    ClientSecretStore, ClientSecretStoreError, ConnectionId, HostError, HostErrorKind, HostFuture,
+    Nip98SigningKey, NwcEncryption, NwcMethod, NwcNotificationType, NwcSecretKey, QueueReason,
+    RejectionCode, SecretProvider, WakeDiagnosticCollector, WakeDiagnosticSink, WakeDisposition,
 };
 pub(crate) use nwc_mobile_http::ApnsWakeRegistrationConfig as NwcPushConfig;
 use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
 use nwc_mobile_tokio::{
-    run_bounded_background_wake, run_on_native_runtime, BackgroundWakeWindow, NwcNode,
-    NwcNodeConfig,
+    run_on_native_runtime, NwcMobile, NwcMobileCompletionContext, NwcMobileCompletionHandler,
+    NwcMobileConfig, NwcMobileSettlementStatus, NwcMobileWakeKind,
 };
 use nwc_mobile_uniffi::{
     validate_wake_envelope, MobileCancellation, MobileWakeDisposition, MobileWakeEnvelope,
 };
 use zeroize::Zeroizing;
 
-use crate::core::{derive_nostr_keys_from_mnemonic, NOSTR_SECRET_KEY, WALLET_SEED_KEY};
-use crate::persistence::{PersistedAppData, ServerConfig};
-use crate::wallet::{open_bark_wallet, WalletOpenMode};
-use crate::{NwcPermission, SecretStore, WalletNetwork};
+use crate::core::NOSTR_SECRET_KEY;
+use crate::{NwcPermission, SecretStore};
 
-const APP_DATA_FILE: &str = "rebel-app-data.json";
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_EXTENSION_EXECUTION_MILLISECONDS: u64 = 30_000;
-const SETTLEMENT_MONITOR_RESERVE: Duration = Duration::from_secs(5);
-
-const SETTLEMENT_NOT_TRACKED: u8 = 0;
-const SETTLEMENT_PENDING: u8 = 1;
-const SETTLEMENT_DELIVERED: u8 = 2;
+pub(crate) const SETTLEMENT_MONITOR_RESERVE: Duration = Duration::from_secs(5);
 
 /// Safe settlement-notification state for native notification presentation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, uniffi::Enum)]
@@ -214,181 +205,56 @@ impl NwcExtensionEngine {
                 NwcSettlementNotificationStatus::NotTracked,
             );
         }
-        let data_dir = self.data_dir.clone();
-        let secrets = self.secrets.clone();
-        let runtime_cancellation = cancellation.clone();
-        let execution_cancellation = cancellation.clone();
-        let diagnostics = Arc::new(WakeDiagnosticCollector::default());
-        let execution_diagnostics: Arc<dyn WakeDiagnosticSink> = diagnostics.clone();
-        let settlement_status = Arc::new(AtomicU8::new(SETTLEMENT_NOT_TRACKED));
-        let execution_settlement_status = settlement_status.clone();
-        let monitor_config = self.settlement_monitor_config.clone();
-        let result = run_on_native_runtime(async move {
-            run_bounded_background_wake(
-                Duration::from_millis(execution_milliseconds),
-                runtime_cancellation.as_ref(),
-                |window| {
-                    Self::execute_wake_inner(
-                        data_dir,
-                        secrets,
-                        request,
-                        settlement_check,
-                        window,
-                        execution_cancellation,
-                        execution_diagnostics,
-                        monitor_config,
-                        execution_settlement_status,
-                    )
-                },
-            )
-            .await
-        })
-        .await;
-        wake_execution(
-            result.unwrap_or_else(|_| queued_disposition()),
-            &diagnostics,
-            settlement_status_from_byte(settlement_status.load(Ordering::Acquire)),
-        )
-    }
-}
-
-impl NwcExtensionEngine {
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_wake_inner(
-        data_dir: PathBuf,
-        secrets: Arc<dyn SecretStore>,
-        request: MobileWakeEnvelope,
-        settlement_check: bool,
-        window: BackgroundWakeWindow,
-        cancellation: Arc<MobileCancellation>,
-        diagnostics: Arc<dyn WakeDiagnosticSink>,
-        monitor_config: Option<InvoiceSettlementMonitorConfig>,
-        settlement_status: Arc<AtomicU8>,
-    ) -> WakeDisposition {
         let input = match validate_wake_envelope(request) {
             Ok(input) => input.core_input(),
-            Err(_) => return rejected_disposition(),
+            Err(_) => {
+                return wake_execution(
+                    rejected_disposition(),
+                    &WakeDiagnosticCollector::default(),
+                    NwcSettlementNotificationStatus::NotTracked,
+                )
+            }
         };
-        let Some(server_config) = extension_server_config(&data_dir) else {
-            return queued_disposition();
-        };
-        let Some(mnemonic) = secrets
-            .get_secret(WALLET_SEED_KEY.to_string())
-            .map(Zeroizing::new)
-            .and_then(|seed| Mnemonic::from_str(seed.as_str()).ok())
-        else {
-            return queued_disposition();
-        };
-        if !ensure_nostr_secret(secrets.as_ref(), &mnemonic) || cancellation.is_cancelled() {
-            return queued_disposition();
-        }
-        let manager = match nwc_mobile::NwcApplicationManager::open(&data_dir) {
-            Ok(manager) => manager,
-            Err(_) => return queued_disposition(),
-        };
-        let event_id = input.event_id().clone();
-        let initial_monitor = manager
-            .service()
-            .ledger()
-            .nwc_invoice_monitor(&event_id)
-            .ok()
-            .flatten();
-        if settlement_check
-            && !initial_monitor.as_ref().is_some_and(|monitor| {
-                monitor.wallet_service_pubkey() == input.wallet_service_pubkey()
-                    && monitor
-                        .relays()
-                        .iter()
-                        .any(|relay| relay.as_str() == input.relay())
-            })
-        {
-            return rejected_disposition();
-        }
-        let wallet = match open_bark_wallet(
-            data_dir.clone(),
-            &mnemonic,
-            WalletOpenMode::OpenExisting,
-            server_config,
-        )
-        .await
-        {
-            Ok(opened) => opened.wallet,
-            Err(_) => return queued_disposition(),
-        };
-        let execution_time = if monitor_config.is_some() {
-            window
-                .remaining()
-                .saturating_sub(SETTLEMENT_MONITOR_RESERVE)
-        } else {
-            window.remaining()
-        };
-        let Ok(budget) = nwc_mobile::OperationBudget::new(execution_time) else {
-            return queued_disposition();
-        };
-        if cancellation.is_cancelled() {
-            return queued_disposition();
-        }
-        let wallet_info = bark_wallet_info(input.wallet_service_pubkey().clone());
-        let secret_provider = RebelSecretProvider::new(secrets.clone());
-        let wallet = BarkNode::with_diagnostics(wallet, Arc::clone(&diagnostics));
-        let config = NwcNodeConfig::new(
-            wallet,
-            manager.service().ledger(),
-            &NostrRelayTransport,
-            &secret_provider,
-            wallet_info,
-        );
-        let node = NwcNode::new(config).with_diagnostics(diagnostics.as_ref());
-        let mut disposition = if settlement_check {
-            let _ = node
-                .handle_settlement_wake(&event_id, budget, cancellation.as_ref())
+        let data_dir = self.data_dir.clone();
+        let secrets = self.secrets.clone();
+        let diagnostics = Arc::new(WakeDiagnosticCollector::default());
+        let execution_diagnostics: Arc<dyn WakeDiagnosticSink> = diagnostics.clone();
+        let monitor_config = self.settlement_monitor_config.clone();
+        let result = run_on_native_runtime(async move {
+            let provider = NwcBarkNodeProvider::new(data_dir.clone(), secrets.clone());
+            let secret_provider = RebelSecretProvider::new(secrets.clone());
+            let mut config =
+                NwcMobileConfig::new(&data_dir, provider, NostrRelayTransport, secret_provider)
+                    .with_diagnostics(execution_diagnostics);
+            if let Some(configured_monitor) = monitor_config {
+                config = config.with_completion_handler(
+                    RebelSettlementMonitorCompletion::new(configured_monitor, secrets),
+                    SETTLEMENT_MONITOR_RESERVE,
+                );
+            }
+            let mobile = match NwcMobile::open(config) {
+                Ok(mobile) => mobile,
+                Err(_) => return (queued_disposition(), NwcMobileSettlementStatus::NotTracked),
+            };
+            let kind = if settlement_check {
+                NwcMobileWakeKind::InvoiceSettlement
+            } else {
+                NwcMobileWakeKind::Request
+            };
+            let result = mobile
+                .execute_wake(
+                    input,
+                    kind,
+                    Duration::from_millis(execution_milliseconds),
+                    cancellation.as_ref(),
+                )
                 .await;
-            WakeDisposition::Completed {
-                notification: NotificationHint::Processing,
-            }
-        } else {
-            node.handle_wake(input, budget, cancellation.as_ref()).await
-        };
-        let monitor = manager
-            .service()
-            .ledger()
-            .nwc_invoice_monitor(&event_id)
-            .ok()
-            .flatten();
-        if let Some(monitor) = monitor.as_ref() {
-            let completed = monitor.completed();
-            settlement_status.store(
-                if completed {
-                    SETTLEMENT_DELIVERED
-                } else {
-                    SETTLEMENT_PENDING
-                },
-                Ordering::Release,
-            );
-            if settlement_check && completed {
-                disposition = WakeDisposition::Completed {
-                    notification: NotificationHint::Completed,
-                };
-            }
-        }
-        if let (Some(config), Some(_)) = (monitor_config, monitor) {
-            if let Some(signing_key) = extension_nip98_signing_key(secrets.as_ref()) {
-                let remaining = window.remaining();
-                if !remaining.is_zero() {
-                    let _ = tokio::time::timeout(
-                        remaining,
-                        nwc_mobile_http::update_invoice_settlement_monitor(
-                            manager.service().ledger(),
-                            config,
-                            &event_id,
-                            signing_key,
-                        ),
-                    )
-                    .await;
-                }
-            }
-        }
-        disposition
+            (result.disposition(), result.settlement_status())
+        })
+        .await;
+        let (disposition, settlement_status) = result
+            .unwrap_or_else(|_| (queued_disposition(), NwcMobileSettlementStatus::NotTracked));
+        wake_execution(disposition, &diagnostics, settlement_status.into())
     }
 }
 
@@ -408,11 +274,51 @@ fn wake_execution(
     }
 }
 
-fn settlement_status_from_byte(value: u8) -> NwcSettlementNotificationStatus {
-    match value {
-        SETTLEMENT_PENDING => NwcSettlementNotificationStatus::Pending,
-        SETTLEMENT_DELIVERED => NwcSettlementNotificationStatus::Delivered,
-        _ => NwcSettlementNotificationStatus::NotTracked,
+impl From<NwcMobileSettlementStatus> for NwcSettlementNotificationStatus {
+    fn from(value: NwcMobileSettlementStatus) -> Self {
+        match value {
+            NwcMobileSettlementStatus::Pending => Self::Pending,
+            NwcMobileSettlementStatus::Delivered => Self::Delivered,
+            _ => Self::NotTracked,
+        }
+    }
+}
+
+pub(crate) struct RebelSettlementMonitorCompletion {
+    config: InvoiceSettlementMonitorConfig,
+    secrets: Arc<dyn SecretStore>,
+}
+
+impl RebelSettlementMonitorCompletion {
+    pub(crate) fn new(
+        config: InvoiceSettlementMonitorConfig,
+        secrets: Arc<dyn SecretStore>,
+    ) -> Self {
+        Self { config, secrets }
+    }
+}
+
+impl NwcMobileCompletionHandler for RebelSettlementMonitorCompletion {
+    fn complete<'a>(
+        &'a self,
+        context: NwcMobileCompletionContext<'a>,
+    ) -> HostFuture<'a, Result<(), HostError>> {
+        Box::pin(async move {
+            if context.operation().cancellation().is_cancelled() {
+                return Err(HostError::new(HostErrorKind::Cancelled));
+            }
+            let signing_key = extension_nip98_signing_key(self.secrets.as_ref())
+                .ok_or_else(|| HostError::new(HostErrorKind::Unavailable))?;
+            nwc_mobile_http::update_invoice_settlement_monitor(
+                context.ledger(),
+                self.config.clone(),
+                context.request_event_id(),
+                signing_key,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|_| HostError::new(HostErrorKind::Unavailable))
+        })
     }
 }
 
@@ -420,35 +326,6 @@ fn extension_nip98_signing_key(secrets: &dyn SecretStore) -> Option<Nip98Signing
     let encoded = secrets.get_secret(NOSTR_SECRET_KEY.to_string())?;
     let secret = SecretKey::parse(&encoded).ok()?;
     Nip98SigningKey::from_bytes(secret.to_secret_bytes()).ok()
-}
-
-fn extension_server_config(data_dir: &std::path::Path) -> Option<ServerConfig> {
-    let raw = std::fs::read_to_string(data_dir.join(APP_DATA_FILE)).ok()?;
-    let data: PersistedAppData = serde_json::from_str(&raw).ok()?;
-    Some(
-        if data.network == WalletNetwork::Regtest && data.servers.network == WalletNetwork::Regtest
-        {
-            data.servers
-        } else {
-            ServerConfig::for_network(data.network)
-        },
-    )
-}
-
-fn ensure_nostr_secret(secrets: &dyn SecretStore, mnemonic: &Mnemonic) -> bool {
-    if secrets.get_secret(NOSTR_SECRET_KEY.to_string()).is_some() {
-        return true;
-    }
-    let mnemonic = Zeroizing::new(mnemonic.to_string());
-    let Ok(keys) = derive_nostr_keys_from_mnemonic(mnemonic.as_str()) else {
-        return false;
-    };
-    let encoded = Zeroizing::new(
-        keys.secret_key()
-            .to_bech32()
-            .expect("secret-key bech32 encoding is infallible"),
-    );
-    secrets.set_secret(NOSTR_SECRET_KEY.to_string(), encoded.to_string())
 }
 
 fn queued_disposition() -> WakeDisposition {
