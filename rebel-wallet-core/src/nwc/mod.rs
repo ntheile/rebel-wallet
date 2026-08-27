@@ -31,7 +31,7 @@ use crate::{NwcPermission, SecretStore};
 
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_EXTENSION_EXECUTION_MILLISECONDS: u64 = 30_000;
-const SETTLEMENT_MONITOR_RESERVE: Duration = Duration::from_secs(5);
+pub(crate) const SETTLEMENT_MONITOR_RESERVE: Duration = Duration::from_secs(5);
 
 /// Safe settlement-notification state for native notification presentation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, uniffi::Enum)]

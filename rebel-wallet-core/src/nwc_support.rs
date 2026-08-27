@@ -19,7 +19,7 @@ use crate::nostr_support::public_key_from_npub_or_hex;
 use crate::nwc::{
     bark_wallet_info, publish_nwc_info_event, BarkNode, NostrRelayTransport, NwcPushConfig,
     OpenedNwcBarkNodeProvider, RebelSecretProvider, RebelSettlementMonitorCompletion,
-    NWC_ENCRYPTION,
+    NWC_ENCRYPTION, SETTLEMENT_MONITOR_RESERVE,
 };
 use crate::updates::{AppUpdate, AsyncMsg, CoreMsg, HapticFeedback};
 use crate::wallet::remove_wallet_database_files;
@@ -547,7 +547,7 @@ impl AppCore {
                 if let Some(configured_monitor) = monitor_config {
                     config = config.with_completion_handler(
                         RebelSettlementMonitorCompletion::new(configured_monitor, secrets),
-                        Duration::from_secs(5),
+                        SETTLEMENT_MONITOR_RESERVE,
                     );
                 }
                 let mobile = NwcMobile::open(config).context("NWC ledger is unavailable")?;
