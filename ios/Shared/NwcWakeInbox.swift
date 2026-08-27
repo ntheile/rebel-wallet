@@ -32,7 +32,7 @@ extension NwcQueuedWakeRequest {
                 embeddedEventJSON: request.embeddedEventJson
             ),
             receivedAtSeconds: request.receivedAtSeconds,
-            settlementCheck: userInfo["settlement_check"] as? Bool == true
+            settlementCheck: request.settlementCheck
         )
     }
 

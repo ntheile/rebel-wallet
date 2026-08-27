@@ -47,7 +47,7 @@ final class NotificationService: UNNotificationServiceExtension {
             return
         }
         let settlementMonitor = NwcWakeInbox.settlementMonitorConfiguration()
-        let isSettlementCheck = request.content.userInfo["settlement_check"] as? Bool == true
+        let isSettlementCheck = wake.settlementCheck
 
         let engine = NwcExtensionEngine(
             dataDir: dataDirectory,
