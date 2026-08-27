@@ -12,20 +12,15 @@ use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, ToBech32};
 use nwc_mobile::{
     standard_nwc_methods, HostError, HostErrorKind, Nip98SigningKey, NwcEncryption, NwcMethod,
     NwcNotificationType, NwcSecretKey, ProtectedSecretStore, StoredNwcSecrets,
-    WakeDiagnosticCollector, WakeDiagnosticSink,
 };
 pub(crate) use nwc_mobile_http::ApnsWakeRegistrationConfig as NwcPushConfig;
 use nwc_mobile_http::{InvoiceSettlementCompletion, InvoiceSettlementMonitorConfig};
 use nwc_mobile_nostr::NostrRelayTransport;
 use nwc_mobile_tokio::{
-    LightningNodeProvider, LightningNodeProviderFn, LightningNodeRequest, NwcMobile,
-    NwcMobileConfig, NwcMobileSettlementStatus, NwcMobileWakeKind, OpenedLightningNode,
-    ReadyLightningNodeProvider,
+    LightningNodeProvider, LightningNodeProviderFn, LightningNodeRequest, NwcMobileConfig,
+    OpenedLightningNode, ReadyLightningNodeProvider,
 };
-use nwc_mobile_uniffi::{
-    extension_wake_execution, rejected_extension_wake_execution, validate_wake_envelope,
-    MobileCancellation, MobileWakeEnvelope,
-};
+use nwc_mobile_uniffi::{execute_native_extension_wake, MobileCancellation, MobileWakeEnvelope};
 pub use nwc_mobile_uniffi::{NwcExtensionWakeExecution, NwcSettlementNotificationStatus};
 use zeroize::Zeroizing;
 
@@ -38,7 +33,6 @@ use super::nwc_bark_lightning::{bark_wallet_info, NwcBarkLightning};
 
 const APP_DATA_FILE: &str = "rebel-app-data.json";
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_EXTENSION_EXECUTION_MILLISECONDS: u64 = 30_000;
 const SETTLEMENT_MONITOR_RESERVE: Duration = Duration::from_secs(5);
 
 // Existing Rebel clients advertise NIP-04. This must change atomically with
@@ -264,49 +258,13 @@ impl NwcExtensionEngine {
         execution_milliseconds: u64,
         cancellation: Arc<MobileCancellation>,
     ) -> NwcExtensionWakeExecution {
-        if execution_milliseconds == 0
-            || execution_milliseconds > MAX_EXTENSION_EXECUTION_MILLISECONDS
-        {
-            return rejected_extension_wake_execution();
-        }
-        let validated = match validate_wake_envelope(request) {
-            Ok(input) => input,
-            Err(_) => return rejected_extension_wake_execution(),
-        };
-        let wake_kind = NwcMobileWakeKind::from_settlement_check(validated.settlement_check());
-        let input = validated.core_input();
         let data_dir = self.data_dir.clone();
-        let diagnostics = Arc::new(WakeDiagnosticCollector::default());
-        let execution_diagnostics: Arc<dyn WakeDiagnosticSink> = diagnostics.clone();
         let config = nwc_mobile_config(
             &data_dir,
             cold_bark_provider(data_dir.clone(), self.secrets.clone()),
             self.secrets.clone(),
             self.settlement_monitor_config.clone(),
-        )
-        .with_diagnostics(execution_diagnostics);
-        let result = NwcMobile::execute_native_wake(
-            config,
-            input,
-            wake_kind,
-            Duration::from_millis(execution_milliseconds),
-            cancellation,
-        )
-        .await;
-        extension_wake_execution(
-            result.disposition(),
-            &diagnostics,
-            settlement_notification_status(result.settlement_status()),
-        )
-    }
-}
-
-fn settlement_notification_status(
-    value: NwcMobileSettlementStatus,
-) -> NwcSettlementNotificationStatus {
-    match value {
-        NwcMobileSettlementStatus::Pending => NwcSettlementNotificationStatus::Pending,
-        NwcMobileSettlementStatus::Delivered => NwcSettlementNotificationStatus::Delivered,
-        _ => NwcSettlementNotificationStatus::NotTracked,
+        );
+        execute_native_extension_wake(config, request, execution_milliseconds, cancellation).await
     }
 }
