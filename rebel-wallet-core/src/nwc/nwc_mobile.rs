@@ -28,7 +28,7 @@ use crate::persistence::{PersistedAppData, ServerConfig};
 use crate::wallet::{open_bark_wallet, WalletOpenMode};
 use crate::{NwcPermission, SecretStore, WalletNetwork};
 
-use super::bark_lightning::{bark_wallet_info, BarkNode};
+use super::nwc_bark_lightning::{bark_wallet_info, BarkNode};
 
 const APP_DATA_FILE: &str = "rebel-app-data.json";
 const INFO_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
