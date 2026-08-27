@@ -17,9 +17,8 @@ use nwc_mobile_uniffi::{MobileConnectionMetadata, MobileConnectionView};
 use super::AppCore;
 use crate::nostr_support::public_key_from_npub_or_hex;
 use crate::nwc::{
-    bark_wallet_info, publish_nwc_info_event, BarkNode, NostrRelayTransport, NwcPushConfig,
-    OpenedNwcBarkNodeProvider, RebelSecretProvider, RebelSettlementMonitorCompletion,
-    NWC_ENCRYPTION, SETTLEMENT_MONITOR_RESERVE,
+    bark_wallet_info, opened_bark_provider, publish_nwc_info_event, rebel_secret_provider,
+    BarkNode, NostrRelayTransport, NwcPushConfig, NWC_ENCRYPTION, SETTLEMENT_MONITOR_RESERVE,
 };
 use crate::updates::{AppUpdate, AsyncMsg, CoreMsg, HapticFeedback};
 use crate::wallet::remove_wallet_database_files;
@@ -179,7 +178,7 @@ impl AppCore {
             }
         };
 
-        let provider = RebelSecretProvider::new(self.secrets.clone());
+        let provider = rebel_secret_provider(self.secrets.clone());
         let created = self
             .nwc_manager
             .as_ref()
@@ -277,7 +276,7 @@ impl AppCore {
         if deleted_connections.is_empty() {
             return;
         }
-        let provider = RebelSecretProvider::new(self.secrets.clone());
+        let provider = rebel_secret_provider(self.secrets.clone());
         let revocation_result = self
             .nwc_manager
             .as_ref()
@@ -539,42 +538,28 @@ impl AppCore {
                 )
                 .validate()
                 .context("invalid NWC wake envelope")?;
-                let event_id = wake.event_id().clone();
-                let provider = OpenedNwcBarkNodeProvider::new(wallet);
-                let secret_provider = RebelSecretProvider::new(secrets.clone());
-                let mut config =
-                    NwcMobileConfig::new(&data_dir, provider, NostrRelayTransport, secret_provider);
+                let provider = opened_bark_provider(wallet);
+                let secret_provider = rebel_secret_provider(secrets);
+                let mut config = NwcMobileConfig::new(
+                    &data_dir,
+                    provider,
+                    NostrRelayTransport,
+                    secret_provider.clone(),
+                );
                 if let Some(configured_monitor) = monitor_config {
                     config = config.with_completion_handler(
-                        RebelSettlementMonitorCompletion::new(configured_monitor, secrets),
+                        nwc_mobile_http::InvoiceSettlementCompletion::new(
+                            configured_monitor,
+                            secret_provider,
+                        ),
                         SETTLEMENT_MONITOR_RESERVE,
                     );
                 }
                 let mobile = NwcMobile::open(config).context("NWC ledger is unavailable")?;
-                let settlement_check = mobile
-                    .application_manager()
-                    .service()
-                    .ledger()
-                    .nwc_invoice_monitor(&event_id)
-                    .ok()
-                    .flatten()
-                    .filter(|monitor| {
-                        monitor.wallet_service_pubkey() == wake.wallet_service_pubkey()
-                            && monitor
-                                .relays()
-                                .iter()
-                                .any(|relay| relay.as_str() == wake.relay())
-                    })
-                    .is_some();
-                let kind = if settlement_check {
-                    NwcMobileWakeKind::InvoiceSettlement
-                } else {
-                    NwcMobileWakeKind::Request
-                };
                 let outcome = mobile
                     .execute_wake(
                         wake,
-                        kind,
+                        NwcMobileWakeKind::from_settlement_check(request.settlement_check),
                         NWC_FOREGROUND_OPERATION_TIMEOUT,
                         &NeverCancelled,
                     )
@@ -620,7 +605,7 @@ impl AppCore {
             let Ok(budget) = OperationBudget::new(NWC_FOREGROUND_OPERATION_TIMEOUT) else {
                 return;
             };
-            let secret_provider = RebelSecretProvider::new(secrets);
+            let secret_provider = rebel_secret_provider(secrets);
             let config = NwcNodeConfig::new(
                 BarkNode::new(wallet),
                 manager.service().ledger(),
@@ -857,6 +842,7 @@ mod tests {
             wallet_service_public_key_hex: "wallet".to_string(),
             embedded_event_json: None,
             received_at_seconds: 100,
+            settlement_check: false,
         }
     }
 
