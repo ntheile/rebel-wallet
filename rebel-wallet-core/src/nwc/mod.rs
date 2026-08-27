@@ -1,4 +1,4 @@
-mod bark_node;
+mod nwc_bark_node;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-pub(crate) use bark_node::{bark_wallet_info, BarkNode};
 use bip39::Mnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey, ToBech32};
+pub(crate) use nwc_bark_node::{bark_wallet_info, BarkNode};
 use nwc_mobile::{
     ClientSecretStore, ClientSecretStoreError, ConnectionId, HostError, HostErrorKind,
     Nip98SigningKey, NotificationHint, NwcEncryption, NwcMethod, NwcNotificationType, NwcSecretKey,
