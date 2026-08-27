@@ -1,4 +1,4 @@
-//! Rebel Wallet's Bark implementation of the `nwc-mobile` host contract.
+//! Rebel Wallet's Bark implementation of the `nwc-mobile` Lightning node contract.
 
 #![forbid(unsafe_code)]
 
@@ -16,66 +16,51 @@ use bark::persist::models::SettledLightningReceive;
 use bark::{FeeEstimate, Wallet};
 use bitcoin::Amount;
 use nwc_mobile::{
-    AmountMsat, CancellationSignal, CreatedInvoice, EventId, HostError, HostErrorKind, HostFuture,
-    InvoiceLookup, InvoiceNotificationError, InvoiceNotificationWorker,
-    InvoiceNotificationWorkerReport, ListTransactionsRequest, MakeInvoiceRequest, NotificationHint,
-    NwcMethod, NwcNotificationType, NwcWalletBackend, OperationBudget, OperationContext,
-    PayInvoiceRequest, PaymentFailure, PaymentHash, PaymentPreimage, PaymentQuote, PaymentStatus,
-    PublicKey, RelayTransport, SecretProvider, SystemClock, TransactionDirection, UnixTimestamp,
-    WakeDiagnosticCode, WakeDiagnosticSink, WakeDisposition, WakeEngine, WakeInput, WakeLedger,
-    WakePolicy, WalletInfo, WalletTransaction,
+    AmountMsat, CreatedInvoice, HostError, HostErrorKind, HostFuture, InvoiceLookup, LightningNode,
+    ListTransactionsRequest, MakeInvoiceRequest, NwcMethod, NwcNotificationType, PayInvoiceRequest,
+    PaymentFailure, PaymentHash, PaymentPreimage, PaymentQuote, PaymentStatus, PublicKey,
+    TransactionDirection, UnixTimestamp, WakeDiagnosticCode, WakeDiagnosticSink, WalletInfo,
+    WalletTransaction,
 };
 use nwc_mobile_bolt11::{
     created_invoice, exact_sats, parse_invoice, payment_amount_sats, quote_invoice_sats,
     sats_to_msats,
 };
-use nwc_mobile_tokio::{run_with_context, sleep, spawn_abort_on_drop};
+use nwc_mobile_tokio::{sleep, spawn_abort_on_drop};
 use serde_json::Value;
 
 const PAYMENT_SETTLE_TIMEOUT: Duration = Duration::from_secs(22);
 const PAYMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 const INVOICE_SETTLEMENT_MAX_WAIT: Duration = Duration::from_secs(25);
-const INVOICE_SETTLEMENT_COMPLETION_RESERVE: Duration = Duration::from_secs(3);
 const INVOICE_SETTLEMENT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
-/// Adapts an already-open Bark wallet to the `nwc-mobile` host contract.
+/// An already-open Bark wallet exposed as a compact Lightning node.
 #[derive(Clone)]
-pub(crate) struct NwcBarkWallet {
+pub(crate) struct BarkNode {
     wallet: Wallet,
-    service_pubkey: PublicKey,
     diagnostics: Option<Arc<dyn WakeDiagnosticSink>>,
-    await_invoice_settlement: bool,
 }
 
-impl NwcBarkWallet {
-    /// Creates an adapter with the public wallet-service identity it advertises.
+impl BarkNode {
+    /// Creates a node over an already-open Bark wallet.
     #[must_use]
-    pub(crate) fn new(wallet: Wallet, service_pubkey: PublicKey) -> Self {
+    pub(crate) fn new(wallet: Wallet) -> Self {
         Self {
             wallet,
-            service_pubkey,
             diagnostics: None,
-            await_invoice_settlement: false,
         }
     }
-    /// Creates an adapter that emits bounded, non-secret execution codes.
+
+    /// Creates a node that emits bounded, non-secret execution codes.
     #[must_use]
     pub(crate) fn with_diagnostics(
         wallet: Wallet,
-        service_pubkey: PublicKey,
         diagnostics: Arc<dyn WakeDiagnosticSink>,
     ) -> Self {
         Self {
             wallet,
-            service_pubkey,
             diagnostics: Some(diagnostics),
-            await_invoice_settlement: false,
         }
-    }
-
-    fn awaiting_invoice_settlement(mut self) -> Self {
-        self.await_invoice_settlement = true;
-        self
     }
 
     fn record_diagnostic(&self, code: WakeDiagnosticCode) {
@@ -85,274 +70,52 @@ impl NwcBarkWallet {
     }
 }
 
-/// Executes one wake using an already-open Bark wallet and standard policy.
-///
-/// This is the shared assembly point used by foreground applications and native
-/// background extensions. The wake envelope selects the advertised service
-/// identity; authorization is still loaded from the durable ledger before any
-/// wallet or secret capability is used.
-pub(crate) async fn execute_bark_wake(
-    ledger: &WakeLedger,
-    wallet: Wallet,
-    relays: &dyn RelayTransport,
-    secrets: &dyn SecretProvider,
-    input: WakeInput,
-    budget: OperationBudget,
-    cancellation: &dyn CancellationSignal,
-) -> WakeDisposition {
-    let started = Instant::now();
-    let request_event_id = input.event_id().clone();
-    let wallet = NwcBarkWallet::new(wallet, input.wallet_service_pubkey().clone());
-    let disposition = WakeEngine::new(
-        ledger,
-        &wallet,
-        relays,
-        secrets,
-        &SystemClock,
-        WakePolicy::default(),
-    )
-    .execute(input, budget, cancellation)
-    .await;
-    if let Ok(notification_budget) =
-        OperationBudget::new(budget.timeout().saturating_sub(started.elapsed()))
-    {
-        let worker = InvoiceNotificationWorker::new(ledger, &wallet, relays, secrets, &SystemClock);
-        let _ = run_invoice_notification_worker(
-            ledger,
-            &worker,
-            &request_event_id,
-            lingers_for_invoice_settlement(disposition),
-            notification_budget,
-            cancellation,
-        )
-        .await;
-    }
-    disposition
-}
-
-/// Executes one wake while reporting bounded, non-secret diagnostic codes.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn execute_bark_wake_with_diagnostics(
-    ledger: &WakeLedger,
-    wallet: Wallet,
-    relays: &dyn RelayTransport,
-    secrets: &dyn SecretProvider,
-    input: WakeInput,
-    budget: OperationBudget,
-    cancellation: &dyn CancellationSignal,
-    diagnostics: Arc<dyn WakeDiagnosticSink>,
-) -> WakeDisposition {
-    let started = Instant::now();
-    let request_event_id = input.event_id().clone();
-    let wallet = NwcBarkWallet::with_diagnostics(
-        wallet,
-        input.wallet_service_pubkey().clone(),
-        Arc::clone(&diagnostics),
-    );
-    let disposition = WakeEngine::new(
-        ledger,
-        &wallet,
-        relays,
-        secrets,
-        &SystemClock,
-        WakePolicy::default(),
-    )
-    .with_diagnostics(diagnostics.as_ref())
-    .execute(input, budget, cancellation)
-    .await;
-    if let Ok(notification_budget) =
-        OperationBudget::new(budget.timeout().saturating_sub(started.elapsed()))
-    {
-        let worker = InvoiceNotificationWorker::new(ledger, &wallet, relays, secrets, &SystemClock);
-        let _ = run_invoice_notification_worker(
-            ledger,
-            &worker,
-            &request_event_id,
-            lingers_for_invoice_settlement(disposition),
-            notification_budget,
-            cancellation,
-        )
-        .await;
-    }
-    disposition
-}
-
-const fn lingers_for_invoice_settlement(disposition: WakeDisposition) -> bool {
-    matches!(
-        disposition.notification(),
-        NotificationHint::Request {
-            method: NwcMethod::MakeInvoice
-        }
-    )
-}
-
-async fn run_invoice_notification_worker(
-    ledger: &WakeLedger,
-    worker: &InvoiceNotificationWorker<'_>,
-    request_event_id: &EventId,
-    linger: bool,
-    budget: OperationBudget,
-    cancellation: &dyn CancellationSignal,
-) -> Result<InvoiceNotificationWorkerReport, InvoiceNotificationError> {
-    let deadline = Instant::now() + budget.timeout();
-    let mut aggregate = InvoiceNotificationWorkerReport::default();
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let Ok(pass_budget) = OperationBudget::new(remaining) else {
-            return Ok(aggregate);
-        };
-        let report = worker.run(pass_budget, cancellation).await?;
-        aggregate.inspected = aggregate.inspected.saturating_add(report.inspected);
-        aggregate.pending = report.pending;
-        aggregate.expired = aggregate.expired.saturating_add(report.expired);
-        aggregate.delivered = aggregate.delivered.saturating_add(report.delivered);
-        aggregate.retryable = report.retryable;
-
-        let target_pending = ledger
-            .nwc_invoice_monitor(request_event_id)
-            .map_err(|_| InvoiceNotificationError::Ledger)?
-            .is_some_and(|monitor| !monitor.completed());
-        if !linger || !target_pending || cancellation.is_cancelled() {
-            return Ok(aggregate);
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining <= INVOICE_SETTLEMENT_POLL_INTERVAL {
-            return Ok(aggregate);
-        }
-        sleep(INVOICE_SETTLEMENT_POLL_INTERVAL).await;
-    }
-}
-
-/// Reconciles Bark invoices and durably publishes pending NIP-47 payment notifications.
-pub(crate) async fn run_bark_notification_worker(
-    ledger: &WakeLedger,
-    wallet: Wallet,
-    wallet_service_pubkey: PublicKey,
-    relays: &dyn RelayTransport,
-    secrets: &dyn SecretProvider,
-    budget: OperationBudget,
-    cancellation: &dyn CancellationSignal,
-) -> Result<InvoiceNotificationWorkerReport, InvoiceNotificationError> {
-    let wallet = NwcBarkWallet::new(wallet, wallet_service_pubkey);
-    InvoiceNotificationWorker::new(ledger, &wallet, relays, secrets, &SystemClock)
-        .run(budget, cancellation)
-        .await
-}
-
-/// Reconciles one exact Bark invoice and publishes its NIP-47 notification.
-///
-/// This is the preferred entry point for a server-scheduled mobile settlement
-/// wake because it does not replay the original NIP-47 request and it cannot be
-/// delayed behind unrelated pending invoices.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_bark_invoice_notification_worker(
-    ledger: &WakeLedger,
-    wallet: Wallet,
-    wallet_service_pubkey: PublicKey,
-    request_event_id: &EventId,
-    relays: &dyn RelayTransport,
-    secrets: &dyn SecretProvider,
-    budget: OperationBudget,
-    cancellation: &dyn CancellationSignal,
-) -> Result<InvoiceNotificationWorkerReport, InvoiceNotificationError> {
-    let wallet = NwcBarkWallet::new(wallet, wallet_service_pubkey).awaiting_invoice_settlement();
-    InvoiceNotificationWorker::new(ledger, &wallet, relays, secrets, &SystemClock)
-        .run_invoice(request_event_id, budget, cancellation)
-        .await
-}
-
-impl NwcWalletBackend for NwcBarkWallet {
-    fn get_info<'a>(
-        &'a self,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<WalletInfo, HostError>> {
+impl LightningNode for BarkNode {
+    fn get_balance(&self) -> HostFuture<'_, Result<AmountMsat, HostError>> {
         Box::pin(async move {
-            run_with_context(context, async {
-                Ok(wallet_info(self.service_pubkey.clone()))
-            })
-            .await
+            let balance = self
+                .wallet
+                .balance()
+                .await
+                .map_err(|_| host_error(HostErrorKind::Internal))?;
+            Ok(sats_to_msats(balance.spendable.to_sat()))
         })
     }
 
-    fn get_balance<'a>(
-        &'a self,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<AmountMsat, HostError>> {
-        Box::pin(async move {
-            run_with_context(context, async {
-                let balance = self
-                    .wallet
-                    .balance()
-                    .await
-                    .map_err(|_| host_error(HostErrorKind::Internal))?;
-                Ok(sats_to_msats(balance.spendable.to_sat()))
-            })
-            .await
-        })
-    }
-
-    fn make_invoice<'a>(
-        &'a self,
+    fn create_invoice(
+        &self,
         request: MakeInvoiceRequest,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<CreatedInvoice, HostError>> {
+    ) -> HostFuture<'_, Result<CreatedInvoice, HostError>> {
         Box::pin(async move {
             let amount_sat = exact_sats(request.amount())?;
             if amount_sat == 0 {
                 return Err(host_error(HostErrorKind::Rejected));
             }
-            run_with_context(context, async {
-                let invoice = self
-                    .wallet
-                    .bolt11_invoice(
-                        Amount::from_sat(amount_sat),
-                        request.description().map(ToString::to_string),
-                        None,
-                    )
-                    .await
-                    .map_err(|_| host_error(HostErrorKind::Internal))?;
-                created_invoice(invoice)
-            })
-            .await
+            let invoice = self
+                .wallet
+                .bolt11_invoice(
+                    Amount::from_sat(amount_sat),
+                    request.description().map(ToString::to_string),
+                    None,
+                )
+                .await
+                .map_err(|_| host_error(HostErrorKind::Internal))?;
+            created_invoice(invoice)
         })
     }
 
-    fn quote_payment<'a>(
+    fn quote_invoice<'a>(
         &'a self,
         invoice: &'a str,
         amount: Option<AmountMsat>,
-        context: OperationContext<'a>,
     ) -> HostFuture<'a, Result<PaymentQuote, HostError>> {
-        Box::pin(async move {
-            let quote = quote_invoice_sats(invoice, amount)?;
-            run_with_context(context, async move { Ok(quote) }).await
-        })
+        Box::pin(async move { quote_invoice_sats(invoice, amount) })
     }
 
-    fn payment_status<'a>(
-        &'a self,
-        payment_hash: &'a PaymentHash,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<PaymentStatus, HostError>> {
-        Box::pin(async move {
-            let payment_hash = bark_payment_hash(payment_hash)?;
-            run_with_context(
-                context,
-                run_with_bark_mailbox(
-                    self.wallet.clone(),
-                    wait_for_payment_terminal(&self.wallet, payment_hash),
-                ),
-            )
-            .await
-        })
-    }
-
-    fn start_payment<'a>(
-        &'a self,
+    fn pay_invoice(
+        &self,
         request: PayInvoiceRequest,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<PaymentStatus, HostError>> {
+    ) -> HostFuture<'_, Result<PaymentStatus, HostError>> {
         Box::pin(async move {
             let invoice = parse_invoice(request.invoice())?;
             let amount_sat = payment_amount_sats(&invoice, request.amount())?;
@@ -411,31 +174,23 @@ impl NwcWalletBackend for NwcBarkWallet {
                     })?;
                 wait_for_payment_terminal(&self.wallet, payment_hash).await
             };
-            run_with_context(context, run_with_bark_mailbox(self.wallet.clone(), payment)).await
+            run_with_bark_mailbox(self.wallet.clone(), payment).await
         })
     }
 
-    fn lookup_invoice<'a>(
-        &'a self,
+    fn lookup_invoice(
+        &self,
         request: InvoiceLookup,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<Option<WalletTransaction>, HostError>> {
+        settlement_timeout: Option<Duration>,
+    ) -> HostFuture<'_, Result<Option<WalletTransaction>, HostError>> {
         Box::pin(async move {
             let payment_hash = lookup_payment_hash(&request)?;
-            let settlement_wait = self
-                .await_invoice_settlement
-                .then(|| invoice_settlement_wait(context))
-                .filter(|wait| !wait.is_zero());
-            let result = run_with_context(
-                context,
-                reconcile_then_lookup_transaction(
-                    &self.wallet,
-                    payment_hash,
-                    context,
-                    settlement_wait,
-                ),
-            )
-            .await;
+            let settlement_wait = settlement_timeout
+                .filter(|timeout| !timeout.is_zero())
+                .map(|timeout| timeout.min(INVOICE_SETTLEMENT_MAX_WAIT));
+            let result =
+                reconcile_then_lookup_transaction(&self.wallet, payment_hash, settlement_wait)
+                    .await;
             match &result {
                 Ok(Some(transaction))
                     if matches!(transaction.status, PaymentStatus::Succeeded { .. }) =>
@@ -456,66 +211,62 @@ impl NwcWalletBackend for NwcBarkWallet {
         })
     }
 
-    fn list_transactions<'a>(
-        &'a self,
+    fn list_transactions(
+        &self,
         request: ListTransactionsRequest,
-        context: OperationContext<'a>,
-    ) -> HostFuture<'a, Result<Vec<WalletTransaction>, HostError>> {
+    ) -> HostFuture<'_, Result<Vec<WalletTransaction>, HostError>> {
         Box::pin(async move {
-            run_with_context(context, async {
-                // Bark's history and pending receive tables are local views. Refresh
-                // the durable mailbox first so an NWC client never receives a stale
-                // transaction list after the application has been suspended.
-                self.wallet.sync().await;
-                let mut transactions = self
-                    .wallet
-                    .history()
-                    .await
-                    .map_err(|_| host_error(HostErrorKind::Internal))?
-                    .iter()
-                    .filter_map(transaction_from_movement)
-                    .collect::<Vec<_>>();
-                let mut known_hashes = transactions
-                    .iter()
-                    .filter_map(|transaction| transaction.payment_hash.as_ref())
-                    .map(PaymentHash::to_hex)
-                    .collect::<BTreeSet<_>>();
+            // Bark's history and pending receive tables are local views. Refresh
+            // the durable mailbox first so an NWC client never receives a stale
+            // transaction list after the application has been suspended.
+            self.wallet.sync().await;
+            let mut transactions = self
+                .wallet
+                .history()
+                .await
+                .map_err(|_| host_error(HostErrorKind::Internal))?
+                .iter()
+                .filter_map(transaction_from_movement)
+                .collect::<Vec<_>>();
+            let mut known_hashes = transactions
+                .iter()
+                .filter_map(|transaction| transaction.payment_hash.as_ref())
+                .map(PaymentHash::to_hex)
+                .collect::<BTreeSet<_>>();
 
-                let receives = self
-                    .wallet
-                    .pending_lightning_receives()
-                    .await
-                    .map_err(|_| host_error(HostErrorKind::Internal))?;
-                transactions.extend(receives.iter().filter_map(|receive| {
-                    let hash = receive.payment_hash.to_string();
-                    known_hashes
-                        .insert(hash)
-                        .then(|| transaction_from_pending_receive(receive))
-                        .flatten()
-                }));
+            let receives = self
+                .wallet
+                .pending_lightning_receives()
+                .await
+                .map_err(|_| host_error(HostErrorKind::Internal))?;
+            transactions.extend(receives.iter().filter_map(|receive| {
+                let hash = receive.payment_hash.to_string();
+                known_hashes
+                    .insert(hash)
+                    .then(|| transaction_from_pending_receive(receive))
+                    .flatten()
+            }));
 
-                let sends = self
-                    .wallet
-                    .pending_lightning_sends()
-                    .await
-                    .map_err(|_| host_error(HostErrorKind::Internal))?;
-                transactions.extend(sends.iter().filter_map(|send| {
-                    let hash = send.invoice.payment_hash().to_string();
-                    known_hashes
-                        .insert(hash)
-                        .then(|| transaction_from_pending_send(send))
-                        .flatten()
-                }));
+            let sends = self
+                .wallet
+                .pending_lightning_sends()
+                .await
+                .map_err(|_| host_error(HostErrorKind::Internal))?;
+            transactions.extend(sends.iter().filter_map(|send| {
+                let hash = send.invoice.payment_hash().to_string();
+                known_hashes
+                    .insert(hash)
+                    .then(|| transaction_from_pending_send(send))
+                    .flatten()
+            }));
 
-                transactions.retain(|transaction| transaction_matches(transaction, request));
-                transactions.sort_by_key(|transaction| std::cmp::Reverse(transaction.created_at));
-                Ok(transactions
-                    .into_iter()
-                    .skip(request.offset as usize)
-                    .take(usize::from(request.limit))
-                    .collect())
-            })
-            .await
+            transactions.retain(|transaction| transaction_matches(transaction, request));
+            transactions.sort_by_key(|transaction| std::cmp::Reverse(transaction.created_at));
+            Ok(transactions
+                .into_iter()
+                .skip(request.offset as usize)
+                .take(usize::from(request.limit))
+                .collect())
         })
     }
 }
@@ -648,9 +399,25 @@ async fn lookup_transaction(
 async fn reconcile_then_lookup_transaction(
     wallet: &Wallet,
     payment_hash: BarkPaymentHash,
-    context: OperationContext<'_>,
     settlement_wait: Option<Duration>,
 ) -> Result<Option<WalletTransaction>, HostError> {
+    // `nwc-mobile` derives payment reconciliation from the same node lookup
+    // used by NIP-47. Drive Bark's mailbox-backed outgoing state first so an
+    // ambiguous or late payment cannot remain pending merely because the
+    // containing process was started by an NSE wake.
+    let payment_status = run_with_bark_mailbox(
+        wallet.clone(),
+        wait_for_payment_terminal(wallet, payment_hash),
+    )
+    .await?;
+    if !matches!(payment_status, PaymentStatus::Unknown) {
+        let mut transaction = lookup_transaction(wallet, payment_hash)
+            .await?
+            .ok_or_else(|| host_error(HostErrorKind::Internal))?;
+        transaction.status = payment_status;
+        return Ok(Some(transaction));
+    }
+
     // A settled receive is already durable and needs no network refresh. This
     // fast path also lets the notification worker publish payment_received in
     // the same NSE wake without repeating the mailbox round trip.
@@ -667,46 +434,19 @@ async fn reconcile_then_lookup_transaction(
     // Ark state to drive the receive action. A server-scheduled settlement
     // wake keeps driving this exact invoice until it settles or the bounded
     // wait expires; ordinary lookup_invoice requests still perform one pass.
-    if let Some(deadline) = settlement_deadline {
-        if let Some(sync_context) = context_before(deadline, context) {
-            let sync_result = run_with_context(sync_context, async {
-                wallet.sync().await;
-                Ok(())
-            })
-            .await;
-            if sync_result.is_err_and(|error| error.kind() == HostErrorKind::Cancelled) {
-                return Err(host_error(HostErrorKind::Cancelled));
-            }
-        }
-    } else {
-        wallet.sync().await;
-    }
+    wallet.sync().await;
 
     loop {
-        let claim_result = if let Some(deadline) = settlement_deadline {
-            let Some(claim_context) = context_before(deadline, context) else {
-                break;
-            };
-            run_with_context(claim_context, async {
-                wallet
-                    .try_claim_lightning_receive(payment_hash, false)
-                    .await
-                    .map_err(|_| host_error(HostErrorKind::Internal))
-            })
+        let claim_result = wallet
+            .try_claim_lightning_receive(payment_hash, false)
             .await
-        } else {
-            wallet
-                .try_claim_lightning_receive(payment_hash, false)
-                .await
-                .map_err(|_| host_error(HostErrorKind::Internal))
-        };
+            .map_err(|_| host_error(HostErrorKind::Internal));
 
         match claim_result {
             Ok(receive @ LightningReceiveState::Settled(_)) => {
                 return Ok(transaction_from_receive_state(&receive));
             }
             Ok(_) => {}
-            Err(error) if error.kind() == HostErrorKind::Cancelled => return Err(error),
             Err(_) => {}
         }
 
@@ -723,23 +463,6 @@ async fn reconcile_then_lookup_transaction(
     // Preserve outgoing and history-only lookup behavior, and return the last
     // durable incoming state when a transient claim attempt could not advance.
     lookup_transaction(wallet, payment_hash).await
-}
-
-fn invoice_settlement_wait(context: OperationContext<'_>) -> Duration {
-    context
-        .budget()
-        .timeout()
-        .saturating_sub(INVOICE_SETTLEMENT_COMPLETION_RESERVE)
-        .min(INVOICE_SETTLEMENT_MAX_WAIT)
-}
-
-fn context_before<'a>(
-    deadline: Instant,
-    context: OperationContext<'a>,
-) -> Option<OperationContext<'a>> {
-    OperationBudget::new(deadline.saturating_duration_since(Instant::now()))
-        .ok()
-        .map(|budget| OperationContext::new(budget, context.cancellation()))
 }
 
 fn transaction_from_movement(movement: &Movement) -> Option<WalletTransaction> {
@@ -899,7 +622,7 @@ fn supported_notifications() -> [NwcNotificationType; 1] {
     [NwcNotificationType::PaymentSent]
 }
 
-fn wallet_info(service_pubkey: PublicKey) -> WalletInfo {
+pub(crate) fn bark_wallet_info(service_pubkey: PublicKey) -> WalletInfo {
     WalletInfo::new(Some(service_pubkey), supported_methods())
         .with_notifications(supported_notifications())
 }
@@ -976,53 +699,11 @@ mod tests {
             PublicKey::from_hex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
                 .expect("service public key");
         assert_eq!(
-            wallet_info(service_pubkey)
+            bark_wallet_info(service_pubkey)
                 .notifications()
                 .collect::<Vec<_>>(),
             vec![NwcNotificationType::PaymentSent]
         );
-    }
-
-    #[test]
-    fn only_successful_make_invoice_wakes_linger_for_settlement() {
-        assert!(lingers_for_invoice_settlement(WakeDisposition::Completed {
-            notification: NotificationHint::Request {
-                method: NwcMethod::MakeInvoice,
-            },
-        }));
-        assert!(!lingers_for_invoice_settlement(
-            WakeDisposition::Completed {
-                notification: NotificationHint::Request {
-                    method: NwcMethod::LookupInvoice,
-                },
-            }
-        ));
-        assert!(!lingers_for_invoice_settlement(WakeDisposition::Rejected {
-            code: nwc_mobile::RejectionCode::InvalidRequest,
-            notification: NotificationHint::OpenApplication,
-        }));
-    }
-
-    #[test]
-    fn invoice_settlement_wait_preserves_completion_time_and_caps_polling() {
-        let cancellation = nwc_mobile::NeverCancelled;
-        let context = OperationContext::new(
-            OperationBudget::new(Duration::from_secs(40)).expect("budget"),
-            &cancellation,
-        );
-        assert_eq!(invoice_settlement_wait(context), Duration::from_secs(25));
-
-        let context = OperationContext::new(
-            OperationBudget::new(Duration::from_secs(20)).expect("budget"),
-            &cancellation,
-        );
-        assert_eq!(invoice_settlement_wait(context), Duration::from_secs(17));
-
-        let context = OperationContext::new(
-            OperationBudget::new(Duration::from_secs(2)).expect("budget"),
-            &cancellation,
-        );
-        assert!(invoice_settlement_wait(context).is_zero());
     }
 
     #[test]

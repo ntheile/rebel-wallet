@@ -1,4 +1,4 @@
-mod nwc_bark_wallet;
+mod bark_node;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -7,12 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+pub(crate) use bark_node::{bark_wallet_info, BarkNode};
 use bip39::Mnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey as NostrPublicKey, SecretKey, ToBech32};
-pub(crate) use nwc_bark_wallet::{
-    execute_bark_wake, execute_bark_wake_with_diagnostics, run_bark_invoice_notification_worker,
-    run_bark_notification_worker,
-};
 use nwc_mobile::{
     ClientSecretStore, ClientSecretStoreError, ConnectionId, HostError, HostErrorKind,
     Nip98SigningKey, NotificationHint, NwcEncryption, NwcMethod, NwcNotificationType, NwcSecretKey,
@@ -22,7 +19,10 @@ use nwc_mobile::{
 pub(crate) use nwc_mobile_http::ApnsWakeRegistrationConfig as NwcPushConfig;
 use nwc_mobile_http::InvoiceSettlementMonitorConfig;
 pub(crate) use nwc_mobile_nostr::NostrRelayTransport;
-use nwc_mobile_tokio::{run_bounded_background_wake, run_on_native_runtime, BackgroundWakeWindow};
+use nwc_mobile_tokio::{
+    run_bounded_background_wake, run_on_native_runtime, BackgroundWakeWindow, NwcNode,
+    NwcNodeConfig,
+};
 use nwc_mobile_uniffi::{
     validate_wake_envelope, MobileCancellation, MobileWakeDisposition, MobileWakeEnvelope,
 };
@@ -328,33 +328,25 @@ impl NwcExtensionEngine {
         if cancellation.is_cancelled() {
             return queued_disposition();
         }
+        let wallet_info = bark_wallet_info(input.wallet_service_pubkey().clone());
+        let secret_provider = RebelSecretProvider::new(secrets.clone());
+        let config = NwcNodeConfig::new(
+            manager.service().ledger(),
+            &NostrRelayTransport,
+            &secret_provider,
+            wallet_info,
+        );
+        let wallet = BarkNode::with_diagnostics(wallet, Arc::clone(&diagnostics));
+        let node = NwcNode::new(config, wallet).with_diagnostics(diagnostics.as_ref());
         let mut disposition = if settlement_check {
-            let _ = run_bark_invoice_notification_worker(
-                manager.service().ledger(),
-                wallet,
-                input.wallet_service_pubkey().clone(),
-                &event_id,
-                &NostrRelayTransport,
-                &RebelSecretProvider::new(secrets.clone()),
-                budget,
-                cancellation.as_ref(),
-            )
-            .await;
+            let _ = node
+                .handle_settlement_wake(&event_id, budget, cancellation.as_ref())
+                .await;
             WakeDisposition::Completed {
                 notification: NotificationHint::Processing,
             }
         } else {
-            execute_bark_wake_with_diagnostics(
-                manager.service().ledger(),
-                wallet,
-                &NostrRelayTransport,
-                &RebelSecretProvider::new(secrets.clone()),
-                input,
-                budget,
-                cancellation.as_ref(),
-                diagnostics,
-            )
-            .await
+            node.handle_wake(input, budget, cancellation.as_ref()).await
         };
         let monitor = manager
             .service()

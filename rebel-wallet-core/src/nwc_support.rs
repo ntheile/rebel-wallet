@@ -11,14 +11,14 @@ use nwc_mobile::{
     WalletConnectionRequest, DEFAULT_MAXIMUM_CONNECTION_RELAYS,
 };
 use nwc_mobile_http::InvoiceSettlementMonitorConfig;
+use nwc_mobile_tokio::{NwcNode, NwcNodeConfig};
 use nwc_mobile_uniffi::{MobileConnectionMetadata, MobileConnectionView};
 
 use super::AppCore;
 use crate::nostr_support::public_key_from_npub_or_hex;
 use crate::nwc::{
-    execute_bark_wake, publish_nwc_info_event, run_bark_invoice_notification_worker,
-    run_bark_notification_worker, NostrRelayTransport, NwcPushConfig, RebelSecretProvider,
-    NWC_ENCRYPTION,
+    bark_wallet_info, publish_nwc_info_event, BarkNode, NostrRelayTransport, NwcPushConfig,
+    RebelSecretProvider, NWC_ENCRYPTION,
 };
 use crate::updates::{AppUpdate, AsyncMsg, CoreMsg, HapticFeedback};
 use crate::wallet::remove_wallet_database_files;
@@ -561,32 +561,19 @@ impl AppCore {
                                 .iter()
                                 .any(|relay| relay.as_str() == wake.relay())
                     });
+                let wallet_info = bark_wallet_info(wake.wallet_service_pubkey().clone());
+                let config =
+                    NwcNodeConfig::new(manager.service().ledger(), &relays, &secrets, wallet_info);
+                let node = NwcNode::new(config, BarkNode::new(wallet));
                 let disposition = if tracked_invoice.is_some() {
-                    let _ = run_bark_invoice_notification_worker(
-                        manager.service().ledger(),
-                        wallet,
-                        wake.wallet_service_pubkey().clone(),
-                        &event_id,
-                        &relays,
-                        &secrets,
-                        budget,
-                        &NeverCancelled,
-                    )
-                    .await;
+                    let _ = node
+                        .handle_settlement_wake(&event_id, budget, &NeverCancelled)
+                        .await;
                     WakeDisposition::Completed {
                         notification: NotificationHint::Completed,
                     }
                 } else {
-                    execute_bark_wake(
-                        manager.service().ledger(),
-                        wallet,
-                        &relays,
-                        &secrets,
-                        wake,
-                        budget,
-                        &NeverCancelled,
-                    )
-                    .await
+                    node.handle_wake(wake, budget, &NeverCancelled).await
                 };
                 if let (Some(config), Some(signing_key)) = (monitor_config, signing_key) {
                     let _ = tokio::time::timeout(
@@ -641,16 +628,15 @@ impl AppCore {
             let Ok(budget) = OperationBudget::new(NWC_FOREGROUND_OPERATION_TIMEOUT) else {
                 return;
             };
-            let _ = run_bark_notification_worker(
+            let secret_provider = RebelSecretProvider::new(secrets);
+            let config = NwcNodeConfig::new(
                 manager.service().ledger(),
-                wallet,
-                wallet_service_pubkey,
                 &NostrRelayTransport,
-                &RebelSecretProvider::new(secrets),
-                budget,
-                &NeverCancelled,
-            )
-            .await;
+                &secret_provider,
+                bark_wallet_info(wallet_service_pubkey),
+            );
+            let node = NwcNode::new(config, BarkNode::new(wallet));
+            let _ = node.run_notifications(budget, &NeverCancelled).await;
         });
     }
 
