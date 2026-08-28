@@ -80,8 +80,6 @@ pub(crate) struct ServerConfig {
     #[serde(default)]
     pub(crate) network: WalletNetwork,
     pub(crate) server_address: String,
-    #[serde(skip)]
-    pub(crate) server_access_token: Option<String>,
     pub(crate) esplora_address: String,
 }
 
@@ -90,7 +88,6 @@ impl ServerConfig {
         Self {
             network,
             server_address: network.server_address().to_string(),
-            server_access_token: network.server_access_token().map(str::to_string),
             esplora_address: network.esplora_address().to_string(),
         }
     }
@@ -99,7 +96,6 @@ impl ServerConfig {
         Self {
             network: wallet.network,
             server_address: wallet.server_address.clone(),
-            server_access_token: wallet.network.server_access_token().map(str::to_string),
             esplora_address: wallet.esplora_address.clone(),
         }
     }

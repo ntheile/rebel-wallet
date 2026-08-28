@@ -160,7 +160,6 @@ impl AppCore {
                 ServerConfig {
                     network,
                     server_address,
-                    server_access_token: network.server_access_token().map(str::to_string),
                     esplora_address,
                 }
             }

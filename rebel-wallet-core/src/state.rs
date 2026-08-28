@@ -189,10 +189,6 @@ impl WalletNetwork {
         }
     }
 
-    pub(crate) fn server_access_token(&self) -> Option<&'static str> {
-        None
-    }
-
     pub(crate) fn esplora_address(&self) -> &'static str {
         match self {
             Self::Mainnet => MAINNET_ESPLORA,
@@ -1195,8 +1191,6 @@ mod tests {
             WalletNetwork::Regtest.db_file_name(),
             "rebel-wallet-regtest.sqlite"
         );
-        assert_eq!(WalletNetwork::Signet.server_access_token(), None);
-        assert_eq!(WalletNetwork::Mainnet.server_access_token(), None);
     }
 
     #[test]
