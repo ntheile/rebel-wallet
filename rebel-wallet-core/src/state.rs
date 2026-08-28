@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::custom_address::validate_custom_address_name;
-use crate::{MAINNET_ESPLORA, MAINNET_SERVER, SIGNET_ESPLORA, SIGNET_SERVER};
+use crate::{
+    NwaState, NwcConnection, NwcProcessedWakeRequest, NwcWakeRequest, MAINNET_ESPLORA,
+    MAINNET_SERVER, REGTEST_ESPLORA, REGTEST_SERVER, SIGNET_ESPLORA, SIGNET_SERVER,
+};
 
 mod send;
 
@@ -27,6 +30,24 @@ pub struct AppState {
     pub toast: Option<String>,
     pub busy: BusyState,
     pub capability_request: Option<CapabilityRequest>,
+    pub push_notifications: PushNotificationState,
+    pub nwa: NwaState,
+    pub nwc: NwcState,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct PushNotificationState {
+    pub apns_device_token: Option<String>,
+    pub registration_status: String,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct NwcState {
+    pub connections: Vec<NwcConnection>,
+    pub default_relay: String,
+    pub pending_wake_requests: Vec<NwcWakeRequest>,
+    pub processed_wake_requests: Vec<NwcProcessedWakeRequest>,
+    pub last_wake_status: String,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -92,12 +113,16 @@ pub enum Screen {
     Send,
     Receive,
     Profile,
+    Nwc,
     LightningAddress,
     Backup,
     Restore,
     Network,
     Currency,
     ContactDetail { contact_id: String },
+    NwcWakeLogs,
+    NwcWakeStatus,
+    NwcConnectionDetail { connection_id: String },
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
@@ -120,6 +145,7 @@ pub enum WalletNetwork {
     #[default]
     Mainnet,
     Signet,
+    Regtest,
 }
 
 impl WalletNetwork {
@@ -127,6 +153,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "Mainnet",
             Self::Signet => "Signet",
+            Self::Regtest => "Regtest",
         }
     }
 
@@ -134,6 +161,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "Real bitcoin network",
             Self::Signet => "Test bitcoin network",
+            Self::Regtest => "Local development network",
         }
     }
 
@@ -141,6 +169,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => bitcoin::Network::Bitcoin,
             Self::Signet => bitcoin::Network::Signet,
+            Self::Regtest => bitcoin::Network::Regtest,
         }
     }
 
@@ -148,6 +177,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => "rebel-wallet-mainnet.sqlite",
             Self::Signet => "rebel-wallet-signet.sqlite",
+            Self::Regtest => "rebel-wallet-regtest.sqlite",
         }
     }
 
@@ -155,6 +185,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => MAINNET_SERVER,
             Self::Signet => SIGNET_SERVER,
+            Self::Regtest => REGTEST_SERVER,
         }
     }
 
@@ -162,6 +193,7 @@ impl WalletNetwork {
         match self {
             Self::Mainnet => MAINNET_ESPLORA,
             Self::Signet => SIGNET_ESPLORA,
+            Self::Regtest => REGTEST_ESPLORA,
         }
     }
 }
@@ -583,6 +615,24 @@ impl AppState {
             toast: None,
             busy: BusyState::default(),
             capability_request: None,
+            push_notifications: PushNotificationState {
+                apns_device_token: None,
+                registration_status: "Not requested".to_string(),
+            },
+            nwa: NwaState {
+                request: None,
+                icon_display_url: None,
+                approving: false,
+                error_message: None,
+                callback_pending: false,
+            },
+            nwc: NwcState {
+                connections: vec![],
+                default_relay: "wss://relay.getalby.com\nwss://relay2.getalby.com".to_string(),
+                pending_wake_requests: vec![],
+                processed_wake_requests: vec![],
+                last_wake_status: "No wake requests".to_string(),
+            },
         }
     }
 
@@ -653,6 +703,13 @@ impl AppState {
         };
 
         send::refresh_send_derived(self);
+
+        for connection in &mut self.nwc.connections {
+            connection.budget_display = format_sats(connection.budget_sat);
+            connection.spent_display = format_sats(connection.spent_sat);
+            connection.budget_interval_display =
+                crate::nwc::nwc_budget_interval_display(connection.budget_interval).to_string();
+        }
 
         self.lightning_address.arkzap_address = self
             .lightning_address
@@ -739,7 +796,11 @@ fn supported_price_currencies() -> Vec<CurrencyOption> {
 }
 
 fn supported_networks() -> Vec<NetworkOption> {
-    [WalletNetwork::Mainnet, WalletNetwork::Signet]
+    let mut networks = vec![WalletNetwork::Mainnet, WalletNetwork::Signet];
+    if cfg!(feature = "regtest") {
+        networks.push(WalletNetwork::Regtest);
+    }
+    networks
         .into_iter()
         .map(|network| NetworkOption {
             name: network.display_name().to_string(),
@@ -1099,7 +1160,10 @@ mod tests {
         let mut state = AppState::initial();
         state.refresh_derived();
 
-        assert_eq!(state.supported_networks.len(), 2);
+        assert_eq!(
+            state.supported_networks.len(),
+            if cfg!(feature = "regtest") { 3 } else { 2 }
+        );
         assert!(state
             .supported_networks
             .iter()
@@ -1109,12 +1173,23 @@ mod tests {
             .iter()
             .any(|network| network.network == WalletNetwork::Mainnet));
         assert_eq!(
+            state
+                .supported_networks
+                .iter()
+                .any(|network| network.network == WalletNetwork::Regtest),
+            cfg!(feature = "regtest")
+        );
+        assert_eq!(
             WalletNetwork::Signet.db_file_name(),
             "rebel-wallet-signet.sqlite"
         );
         assert_eq!(
             WalletNetwork::Mainnet.db_file_name(),
             "rebel-wallet-mainnet.sqlite"
+        );
+        assert_eq!(
+            WalletNetwork::Regtest.db_file_name(),
+            "rebel-wallet-regtest.sqlite"
         );
     }
 
